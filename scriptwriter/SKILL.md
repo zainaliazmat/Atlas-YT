@@ -18,16 +18,25 @@ back to a source already in the brief.**
 - `research_brief.json` — Sage's pack. Your raw material AND your fence. You may
   shape, order, and dramatize what's in it; you may NOT introduce a fact it doesn't
   contain. The fields you read:
-  - `verified_facts[]` — `{claim, sources:[url], confidence}`. **These are the only
-    facts you may assert.** Each is your ground for a claim.
-  - `key_statistics[]`, `timeline[]`, `notable_quotes[]` — supporting material you
-    may weave in, each carrying its own source.
+  - `verified_facts[]` — `{claim, sources:[url], confidence}`. The facts you may
+    assert. Each is a ground for a claim; **prefer `confidence: high` for the hook and
+    for anything on screen.**
+  - `key_statistics[]` — `{stat, value, date, source}`. Specific numbers, each with
+    its OWN source and (often) a date. Cite a stat-claim with its `[S#]` so it's
+    grounded to *that* source. A `date` means the figure is a **snapshot** — keep the
+    qualifier, never restate it as the current standing. A single-sourced stat (or one
+    echoed in `contested_or_uncertain` / `open_questions`) is shaky: hedge or omit it.
+  - `timeline[]`, `notable_quotes[]` — supporting material you may weave in, each
+    carrying its own source.
   - `myths_and_corrections[]` — gold for hooks and tension; assert the *correction*,
     never the myth as fact.
   - `contested_or_uncertain[]` — usable only if attributed/softened ("the evidence
     is mixed…"), never stated as settled.
+  - `open_questions[]` — what the research could NOT settle. Never assert anything here
+    as a flat fact; if you raise it, frame it as open.
   - `overview`, `angle`, `target_audience`, `working_title` — shape the arc, the
-    framing, and the reading level. No `target_length` exists; you set the runtime.
+    framing, and the reading level. The `overview` often flags which facts are shaky —
+    heed it. No `target_length` exists; you set the runtime.
   - `sources[]` — `{url, title, credibility_note}`. The citation table every claim's
     `source_ref` must resolve into.
 
@@ -76,32 +85,57 @@ This is the part that cannot be skipped or fudged. **A claim that can't be tagge
 a brief source doesn't ship.**
 
 For every line of narration that asserts a fact, emit a claim object. You do NOT
-write the citation index yourself — you point at the brief fact the line rests on,
-by its tag (`F0`, `F1`, … = the index of the entry in `verified_facts`). The engine
-then deterministically resolves that tag to a real `source_ref`:
+write the citation index yourself — you point at the brief item the line rests on, by
+its tag. The engine then deterministically resolves that tag to a real `source_ref`
+(a 0-based index into the brief's `sources[]`). **Cite each claim to what actually
+supports it** — there are two tag families, and using the right one is the rule:
 
-1. Look up the fact you tagged → its `sources` (URLs).
-2. Take the first of those URLs that actually appears in the brief's top-level
-   `sources[]` → the claim's `source_ref` is that source's **0-based index**.
-3. **If the tag is unknown, or none of its source URLs resolve to a brief source,
-   the claim cannot be grounded — and it does not ship.** The line is dropped. If
-   dropping it empties a scene, the scene is dropped too.
+- **`F<index>`** — a `verified_facts` entry. The engine takes the first of that fact's
+  source URLs that appears in `sources[]`; the `source_ref` is that source's index.
+- **`S<index>`** — a `key_statistics` entry. The engine resolves the STAT'S OWN
+  `source` to its index. **A claim that asserts a specific number must use the `[S#]`
+  of the statistic carrying that figure** — so the number is cited to the evidence that
+  actually backs it, not to a borrowed fact's source. Never paste one blanket tag onto
+  every claim; the citation must point at the real support.
 
-So: you assert only what the brief verified, and you point each assertion at the
-exact fact that backs it. A vivid line you can't ground gets cut, not smuggled. This
-is non-negotiable — the Fact-Checker re-derives the same resolution downstream, and
-a claim that points nowhere is flagged and blocks the whole production.
+3. **If the tag is unknown, or its source URL doesn't resolve to a brief source, the
+   claim cannot be grounded — and it does not ship.** The line is dropped. If dropping
+   it empties a scene, the scene is dropped too.
+
+So: you assert only what the brief established, and you point each assertion at the
+exact item that backs it. A vivid line you can't ground gets cut, not smuggled — the
+Fact-Checker re-derives the same resolution downstream, and a claim that points
+nowhere (or at the wrong source) is flagged and blocks the whole production. (The
+engine also runs a deterministic numeric-citation check: a number cited to a source
+that doesn't carry it is repaired or caught here, before the gate.)
 
 Rules for claims:
-- Assert only `verified_facts` (and their `sources`). Do not assert a
-  `contested_or_uncertain` item as fact; if you use it, soften/attribute it and
-  don't tag it as a hard claim.
+- Assert only what the brief carries (`verified_facts` and `key_statistics`). Don't
+  assert a `contested_or_uncertain` or `open_questions` item as fact; if you use it,
+  soften/attribute it and don't tag it as a hard claim.
 - Never assert the myth side of a `myths_and_corrections` pair. Assert the
   correction (tag it to the fact that establishes the correction).
-- One claim per asserted fact. If a sentence asserts two facts, it's two claims (or,
+- One claim per asserted fact/number. If a sentence asserts two, it's two claims (or,
   better, two scenes).
 - Don't invent a statistic, quote, date, or source. If the brief doesn't carry it,
   you don't have it.
+
+### Step 4b — Honor the reliability metadata (trustworthy specifics, not fewer)
+Richness is wanted — keep the specific numbers. The discipline is about *which* get
+asserted flat and *which* get hedged:
+- **Prefer high-confidence facts** for the hook and for any `on_screen_text`.
+- **A shaky figure is never a flat current fact.** A figure is shaky if it is
+  single-sourced, carries a date/snapshot, or echoes a `contested_or_uncertain` /
+  `open_questions` item. Either hedge it with its qualifier ("by one early-2026
+  snapshot…", "a single benchmark put it near 90…") or omit it. Well-corroborated,
+  stable figures (multi-source, no volatility flag) may stay as confident claims.
+- **Preserve temporal qualifiers.** If the brief dates a figure, keep the date in the
+  line. Never present a snapshot as the present standing.
+- **`on_screen_text` must never show an unhedged shaky number** (e.g. no bare
+  "76.8%" card for a dated/single-sourced benchmark — that's an unqualified assertion).
+- **Stay internally consistent.** If the script's argument is "rankings change every
+  version / these models are a generation behind," do not also assert a specific
+  "current leader" number that contradicts it. Pick one and mean it.
 
 ## Step 5 — Bound the runtime, then self-check
 - Aim for a tight arc — typically 6–10 scenes — plus the one detour. Sum the
@@ -132,14 +166,16 @@ the writing and the tagging, not the bookkeeping.
       "visual_note": "what is literally on screen",
       "duration_est_sec": 7.5,
       "claims": [
-        {"text": "the exact factual line asserted", "support": "F3"}
+        {"text": "the exact factual line asserted", "support": "F3"},
+        {"text": "a line asserting a specific number", "support": "S1"}
       ]
     }
   ]
 }
 ```
 
-- `support` MUST be a tag (`F<index>`) of an entry in the brief's `verified_facts`.
+- `support` MUST be a tag: `F<index>` of a `verified_facts` entry, OR `S<index>` of a
+  `key_statistics` entry (use `S#` whenever the claim asserts that stat's number).
   Never a URL, never an index you made up. The engine does the resolving.
 - A scene that asserts no fact (a hook, a CTA, a pure-talk transition) has
   `"claims": []`. That is correct, not an omission.

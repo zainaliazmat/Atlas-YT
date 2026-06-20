@@ -186,19 +186,37 @@ def _source_url_index(brief: dict) -> dict[str, int]:
     return out
 
 
-def resolve_support(support, verified_facts: list, url_to_idx: dict[str, int]):
+def resolve_support(support, verified_facts: list, url_to_idx: dict[str, int],
+                    key_statistics: list | None = None):
     """Turn the brain's `support` tag into a concrete source_ref (int) or None.
 
-    A tag is `F<index>` / `f<index>` / a bare integer pointing at verified_facts.
-    The fact's first source URL that exists in the brief's top-level sources wins,
-    and the returned ref is THAT source's index. A URL passed directly is honored as
-    a fallback. None means "couldn't ground it" -> the claim must not ship.
+    Two tag families, both resolving to a 0-based index into the brief's top-level
+    `sources[]` (what the contract — and the Fact-Checker — expect):
+    - `F<index>` / `f<index>` / a bare integer -> a `verified_facts` entry. Its first
+      source URL that exists in the brief's sources wins; the ref is THAT source's index.
+    - `S<index>` / `s<index>` -> a `key_statistics` entry. The STAT'S OWN `source` URL
+      (the evidence carrying that figure) is resolved to its index — so a statistic is
+      cited to the source that actually supports it, not to a borrowed fact's source.
+
+    A URL passed directly is honored as a fallback. None means "couldn't ground it" ->
+    the claim must not ship.
     """
     if support is None:
         return None
     s = str(support).strip()
     if not s:
         return None
+    # S<index> -> a key_statistics entry, cited to its OWN source.
+    sm = re.match(r"^[Ss](\d+)$", s)
+    if sm:
+        stats = key_statistics or []
+        si = int(sm.group(1))
+        if 0 <= si < len(stats):
+            url = (stats[si] or {}).get("source")
+            if url and url in url_to_idx:
+                return url_to_idx[url]
+        return None
+    # F<index> (or a bare integer) -> a verified_facts entry.
     m = re.match(r"^[Ff]?(\d+)$", s)
     if m:
         fi = int(m.group(1))
@@ -210,6 +228,112 @@ def resolve_support(support, verified_facts: list, url_to_idx: dict[str, int]):
         return None
     # Direct URL fallback (the brain disobeyed and gave a URL): honor it iff real.
     return url_to_idx.get(s)
+
+
+# ----------------------------------------------------------------------
+# Numeric-citation correctness — a deterministic safety net so a statistic is
+# cited to the source that actually carries its figure (not a borrowed fact's
+# source). This catches the live failure class — a stat asserted with a constant /
+# wrong source_ref — in the engine, not only downstream at the fact-check gate.
+# ----------------------------------------------------------------------
+_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _norm_num(tok: str) -> str:
+    """Canonicalize a numeric token: drop leading zeros + trailing fractional zeros.
+
+    "076" -> "76"; "90.20" -> "90.2"; "2000000" -> "2000000" (NEVER scientific
+    notation, which would collide distinct large figures). Keeps exact magnitude.
+    """
+    if "." in tok:
+        ip, fp = tok.split(".", 1)
+        fp = fp.rstrip("0")
+        ip = str(int(ip)) if ip else "0"
+        return f"{ip}.{fp}" if fp else ip
+    return str(int(tok))
+
+
+def _figures(text: str) -> set[str]:
+    """Normalized numeric tokens in `text` (commas stripped, zeros canonicalized).
+
+    "$1,200" -> {"1200"}; "76.8%" -> {"76.8"}; "2,000,000" -> {"2000000"}. Used to
+    match a claim's figures against the brief's key_statistics values.
+    """
+    out: set[str] = set()
+    for m in _NUM_RE.finditer((text or "").replace(",", "")):
+        try:
+            out.add(_norm_num(m.group(0)))
+        except ValueError:
+            continue
+    return out
+
+
+def _stat_figure_citable(brief: dict, url_to_idx: dict[str, int]) -> dict[str, set[int]]:
+    """Map each key_statistic FIGURE -> the brief.sources indices that back it.
+
+    A figure is keyed only when the stat carrying it has a `source` that resolves to a
+    real brief source (i.e. it is citable). So `correct = union of these` is the set of
+    source indices a claim asserting that figure is allowed to cite.
+    """
+    out: dict[str, set[int]] = {}
+    for stat in (brief.get("key_statistics") or []):
+        if not isinstance(stat, dict):
+            continue
+        idx = url_to_idx.get(stat.get("source"))
+        if idx is None:
+            continue
+        for fig in _figures(str(stat.get("value", ""))):
+            out.setdefault(fig, set()).add(idx)
+    return out
+
+
+def _reconcile_numeric_ref(text: str, ref: int,
+                           fig_citable: dict[str, set[int]]) -> int:
+    """Repair a numeric claim's source_ref to the source that carries its figure.
+
+    If the claim asserts a figure that is a citable key_statistic value and the current
+    `ref` isn't one of that figure's real sources, re-point it to the correct one. Only
+    ever IMPROVES a citation — never drops a claim (richness is preserved); a figure
+    with no citable stat source is left untouched.
+    """
+    correct: set[int] = set()
+    for fig in _figures(text):
+        correct |= fig_citable.get(fig, set())
+    if not correct or ref in correct:
+        return ref
+    return min(correct)
+
+
+def find_numeric_citation_problems(script: dict, brief: dict) -> list[dict]:
+    """Deterministic guard: numeric claims whose source_ref doesn't carry their figure.
+
+    For every claim asserting a figure that exists in the brief's key_statistics, the
+    claim's `source_ref` must resolve to a brief source that is that statistic's own
+    source. Returns one record per offending claim (empty = all numeric citations are
+    sound). Pure + offline — the engine self-checks before the fact-check gate does.
+    """
+    sources = brief.get("sources") or []
+    url_to_idx = _source_url_index(brief)
+    fig_citable = _stat_figure_citable(brief, url_to_idx)
+    problems: list[dict] = []
+    for scene in script.get("scenes", []):
+        for c in scene.get("claims", []):
+            correct: set[int] = set()
+            for fig in _figures(c.get("text", "")):
+                correct |= fig_citable.get(fig, set())
+            if not correct:
+                continue  # no citable statistic figure in this claim -> nothing to check
+            resolved, src = resolve_source_ref(c.get("source_ref"), sources)
+            idx = sources.index(src) if (resolved and src in sources) else None
+            if idx not in correct:
+                problems.append({
+                    "claim_id": c.get("claim_id"),
+                    "scene_no": scene.get("scene_no"),
+                    "source_ref": c.get("source_ref"),
+                    "expected_source_idx": sorted(correct),
+                    "text": c.get("text", ""),
+                })
+    return problems
 
 
 # ----------------------------------------------------------------------
@@ -225,14 +349,26 @@ def _facts_block(brief: dict) -> str:
     return "\n".join(lines) or "(no verified facts)"
 
 
+def _stat_is_dated(stat: dict) -> bool:
+    """True if a key_statistic carries a real date/snapshot qualifier (not 'n.d.')."""
+    d = str(stat.get("date", "") or "").strip().lower()
+    return bool(d) and d not in ("n.d.", "nd", "n/a", "na", "unknown", "—", "-")
+
+
 def _supporting_block(brief: dict) -> str:
     out = []
     stats = (brief.get("key_statistics") or [])[:MAX_STATS]
     if stats:
-        out.append("KEY STATISTICS (assert via the verified fact they belong to):")
-        for s in stats:
-            out.append(f"  - {s.get('stat','')}: {s.get('value','')} "
-                       f"({s.get('date','n.d.')}) — {s.get('source','')}")
+        out.append(
+            "KEY STATISTICS — tag a claim asserting one of these with its [S#] (NOT an "
+            "[F#]); the engine cites it to the stat's OWN source. A stat carrying a date "
+            "is a SNAPSHOT: keep the date in the line, never state it as the current "
+            "standing. A stat that is single-sourced or echoes a CONTESTED/OPEN item "
+            "below must be hedged with its qualifier or omitted — never a flat fact:")
+        for i, s in enumerate(stats):
+            flag = "  ⟨dated snapshot — keep the qualifier⟩" if _stat_is_dated(s) else ""
+            out.append(f"  [S{i}] {s.get('stat','')}: {s.get('value','')} "
+                       f"({s.get('date','n.d.')}) — {s.get('source','')}{flag}")
     myths = (brief.get("myths_and_corrections") or [])
     if myths:
         out.append("\nMYTHS -> CORRECTIONS (great for the hook; assert the CORRECTION, "
@@ -241,10 +377,16 @@ def _supporting_block(brief: dict) -> str:
             out.append(f"  - MYTH: {m.get('myth','')}  ->  TRUTH: {m.get('correction','')}")
     contested = (brief.get("contested_or_uncertain") or [])
     if contested:
-        out.append("\nCONTESTED (use ONLY if you soften/attribute it — never as a hard "
-                   "claim, never tag it):")
+        out.append("\nCONTESTED / UNCERTAIN (use ONLY softened/attributed — never as a "
+                   "hard claim, never tag it; a figure here is NOT a settled fact):")
         for c in contested:
             out.append(f"  - {c.get('claim','')}  (why: {c.get('why','')})")
+    open_qs = (brief.get("open_questions") or [])
+    if open_qs:
+        out.append("\nOPEN QUESTIONS (the brief flags these as unsettled — do NOT assert "
+                   "anything here as a flat fact; if you raise it, frame it as open):")
+        for q in open_qs:
+            out.append(f"  - {q}")
     quotes = (brief.get("notable_quotes") or [])[:MAX_QUOTES]
     if quotes:
         out.append("\nNOTABLE QUOTES (short, attributed):")
@@ -267,17 +409,33 @@ def _build_prompt(brief: dict) -> str:
         f"TOPIC: {brief.get('topic','')}\n"
         f"AUDIENCE: {audience}{angle_note}{title_note}\n\n"
         f"OVERVIEW:\n{overview}\n\n"
-        f"VERIFIED FACTS — the ONLY facts you may assert. Tag each claim to one of "
-        f"these by its [F#]:\n{_facts_block(brief)}\n\n"
+        f"VERIFIED FACTS — the facts you may assert. Each has a (confidence). Tag a "
+        f"claim resting on one of these with its [F#]:\n{_facts_block(brief)}\n\n"
         f"{_supporting_block(brief)}\n\n"
         "Apply the METHOD. Find the through-line, open on a hook that earns the first "
-        "five seconds (no throat-clearing), order the verified facts into one-point "
-        "scenes, earn ONE vivid sourced detour, and close on a clean CTA (never 'in "
-        "conclusion'). For EVERY factual line, emit a claim whose `support` is the "
-        "[F#] tag of the verified fact it rests on — do NOT write a URL or an index. "
-        "A line you can't tag to a verified fact must be cut. Hook and CTA scenes "
-        "usually assert no fact and carry \"claims\": []. Return ONLY the JSON object "
-        "from 'Your output contract'."
+        "five seconds (no throat-clearing), order the facts into one-point scenes, earn "
+        "ONE vivid sourced detour, and close on a clean CTA (never 'in conclusion').\n\n"
+        "CITE EACH CLAIM TO WHAT ACTUALLY SUPPORTS IT:\n"
+        "- A claim resting on a verified fact -> `support` = its [F#].\n"
+        "- A claim asserting a STATISTIC/number -> `support` = the [S#] of the key "
+        "statistic carrying that exact figure (so it's cited to that stat's own source, "
+        "not a borrowed one). Never reuse one blanket tag for every claim.\n"
+        "- Do NOT write a URL or a raw index; the engine resolves your tag. A line you "
+        "can't tag must be cut.\n\n"
+        "HONOR RELIABILITY — trustworthy specifics, not fewer specifics:\n"
+        "- Prefer HIGH-confidence facts for the hook and any on_screen_text.\n"
+        "- A figure that is single-sourced, dated/a snapshot, or echoes a CONTESTED or "
+        "OPEN-QUESTION item must NOT be asserted as a flat current fact. Hedge it with "
+        "its qualifier ('by one early-2026 snapshot…', 'a single benchmark put it near "
+        "90…') or omit it. Well-corroborated, stable figures may stay as confident "
+        "claims. PRESERVE the brief's dates/qualifiers — never present a snapshot as the "
+        "present standing.\n"
+        "- on_screen_text must never display an unhedged shaky number.\n"
+        "- Stay internally consistent: if the video says rankings change every version / "
+        "models are a generation behind, do NOT also assert a specific 'current leader' "
+        "number that contradicts it.\n\n"
+        "Hook and CTA scenes usually assert no fact and carry \"claims\": []. Return "
+        "ONLY the JSON object from 'Your output contract'."
     )
 
 
@@ -317,7 +475,9 @@ def assemble_script(brief: dict, llm_out: dict) -> dict:
     ValueError if nothing groundable survives (an honest engine failure).
     """
     facts = brief.get("verified_facts") or []
+    stats = brief.get("key_statistics") or []
     url_to_idx = _source_url_index(brief)
+    fig_citable = _stat_figure_citable(brief, url_to_idx)
 
     assembled: list[dict] = []
     for raw in (llm_out.get("scenes") or []):
@@ -332,9 +492,12 @@ def assemble_script(brief: dict, llm_out: dict) -> dict:
             text = (c.get("text") or "").strip()
             if not text:
                 continue
-            ref = resolve_support(c.get("support"), facts, url_to_idx)
+            ref = resolve_support(c.get("support"), facts, url_to_idx, stats)
             if ref is None:
                 continue  # can't tag it to a brief source -> it does not ship
+            # Deterministic safety net: a numeric claim is cited to the source that
+            # actually carries its figure, repairing a borrowed/constant ref.
+            ref = _reconcile_numeric_ref(text, ref, fig_citable)
             kept_claims.append({"text": text, "source_ref": ref})
 
         # A point/detour scene whose only claims were dropped is asserting an

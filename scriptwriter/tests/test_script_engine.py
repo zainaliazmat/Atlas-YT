@@ -252,6 +252,139 @@ def test_hook_throat_clearing_heuristic():
     assert not engine.hook_opens_with_throat_clearing("")
 
 
+# ----------------------------------------------------------------------
+# Citation discipline + numeric-citation guard (the hardening for the
+# fact-check block: a statistic must be cited to the source carrying its figure,
+# not a borrowed/constant ref). All offline — the brain is mocked.
+# ----------------------------------------------------------------------
+# A brief whose key_statistics has (i) a single-sourced/dated snapshot figure and
+# (ii) a stable, multi-context figure — each with its OWN source in the table.
+BRIEF_STATS = {
+    "topic": "frontier LLM comparison",
+    "angle": "why the leaderboard is a moving target",
+    "target_audience": "developers",
+    "overview": "Benchmarks move fast; some 'leads' are single-sourced snapshots.",
+    "verified_facts": [
+        {"claim": "The frontier leaderboard reshuffles with almost every release.",
+         "sources": ["https://ai.example/churn"], "confidence": "high"},
+    ],
+    "key_statistics": [
+        {"stat": "SWE-bench Verified top score", "value": "76.8%", "date": "Feb 2026",
+         "source": "https://failingfast.io/swe"},
+        {"stat": "reported training GPU-hours", "value": "2,000,000", "date": "",
+         "source": "https://arxiv.org/abs/2401.00001"},
+    ],
+    "sources": [
+        {"url": "https://ai.example/churn", "title": "Leaderboard churn"},          # 0
+        {"url": "https://failingfast.io/swe", "title": "SWE-bench tracker"},        # 1
+        {"url": "https://arxiv.org/abs/2401.00001", "title": "Training report"},    # 2
+    ],
+}
+
+
+def _stats_script():
+    """A well-formed brain reply that cites a verified fact (F0) and two stats (S0/S1)."""
+    return {
+        "working_title": "The Moving Target",
+        "hook": "The benchmark leader changes almost every release.",
+        "cta": "Which model are you watching?",
+        "scenes": [
+            {"beat": "hook", "point": "it churns",
+             "narration": "The leaderboard reshuffles every release.",
+             "on_screen_text": "it churns", "visual_note": "a", "duration_est_sec": 5,
+             "claims": [{"text": "The frontier leaderboard reshuffles with almost "
+                         "every release.", "support": "F0"}]},
+            {"beat": "point", "point": "swe snapshot",
+             "narration": "By one early-2026 snapshot, the SWE-bench Verified top "
+                          "score was 76.8%.",
+             "on_screen_text": "early-2026 snapshot", "visual_note": "b",
+             "duration_est_sec": 8,
+             "claims": [{"text": "By one early-2026 snapshot the SWE-bench Verified "
+                         "top score was 76.8%.", "support": "S0"}]},
+            {"beat": "point", "point": "compute",
+             "narration": "One model reported about 2,000,000 training GPU-hours.",
+             "on_screen_text": "~2M GPU-hours", "visual_note": "c",
+             "duration_est_sec": 8,
+             "claims": [{"text": "One report put training at about 2,000,000 "
+                         "GPU-hours.", "support": "S1"}]},
+            {"beat": "cta", "point": "turn outward", "narration": "Which one?",
+             "on_screen_text": "", "visual_note": "host", "duration_est_sec": 4,
+             "claims": []},
+        ],
+    }
+
+
+def test_figures_normalizes_numeric_tokens():
+    assert engine._figures("76.8%") == {"76.8"}
+    assert engine._figures("$1,200") == {"1200"}
+    assert engine._figures("about 2,000,000 GPU-hours") == {"2000000"}
+    assert engine._figures("90.20") == {"90.2"}
+    assert engine._figures("no numbers here") == set()
+
+
+def test_resolve_support_handles_stat_tags():
+    facts = BRIEF_STATS["verified_facts"]
+    stats = BRIEF_STATS["key_statistics"]
+    u2i = engine._source_url_index(BRIEF_STATS)
+    assert engine.resolve_support("F0", facts, u2i, stats) == 0   # fact -> its source
+    assert engine.resolve_support("S0", facts, u2i, stats) == 1   # stat -> ITS OWN source
+    assert engine.resolve_support("S1", facts, u2i, stats) == 2
+    assert engine.resolve_support("S9", facts, u2i, stats) is None  # out of range
+    # backward-compatible: omitting key_statistics still resolves F-tags
+    assert engine.resolve_support("F0", facts, u2i) == 0
+
+
+def test_each_numeric_claim_cites_the_statistic_carrying_its_figure():
+    script = engine.write_script(BRIEF_STATS, chat_fn=_chat_returning(_stats_script()))
+    # contract-valid
+    stamped = {"schema_version": contracts.CONTRACT_VERSION, **script}
+    ok, errors = contracts.validate("script", stamped)
+    assert ok, errors
+    # the engine's own deterministic guard sees no numeric-citation problems
+    assert engine.find_numeric_citation_problems(script, BRIEF_STATS) == []
+    # and concretely: each figure is cited to the source that actually carries it
+    by_fig = {}
+    for s in script["scenes"]:
+        for c in s["claims"]:
+            for fig in engine._figures(c["text"]):
+                by_fig.setdefault(fig, c["source_ref"])
+    assert by_fig["76.8"] == 1        # failingfast.io/swe, not the borrowed fact source
+    assert by_fig["2000000"] == 2     # arxiv training report
+
+
+def test_mistagged_statistic_is_repaired_to_its_own_source():
+    # The brain borrows the general fact's tag (F0 -> source 0) for the 76.8% stat.
+    obj = _stats_script()
+    obj["scenes"][1]["claims"][0]["support"] = "F0"
+    script = engine.write_script(BRIEF_STATS, chat_fn=_chat_returning(obj))
+    swe = next(c for s in script["scenes"] for c in s["claims"]
+               if "76.8" in engine._figures(c["text"]))
+    assert swe["source_ref"] == 1     # repaired from 0 -> the stat's real evidence
+    assert engine.find_numeric_citation_problems(script, BRIEF_STATS) == []
+
+
+def test_guard_flags_a_deliberately_miscited_numeric_claim():
+    bad = {"scenes": [{"scene_no": 1, "point": "p", "narration": "n", "claims": [
+        {"claim_id": "s1c1", "text": "The SWE-bench top score was 76.8%.",
+         "source_ref": 0}]}]}                      # cites churn source, not the stat's
+    probs = engine.find_numeric_citation_problems(bad, BRIEF_STATS)
+    assert len(probs) == 1
+    assert probs[0]["claim_id"] == "s1c1"
+    assert probs[0]["expected_source_idx"] == [1]
+
+    # the same claim cited correctly is clean
+    good = {"scenes": [{"scene_no": 1, "point": "p", "narration": "n", "claims": [
+        {"claim_id": "s1c1", "text": "The SWE-bench top score was 76.8%.",
+         "source_ref": 1}]}]}
+    assert engine.find_numeric_citation_problems(good, BRIEF_STATS) == []
+
+    # a non-numeric claim (no statistic figure) is never flagged by this guard
+    nonnum = {"scenes": [{"scene_no": 1, "point": "p", "narration": "n", "claims": [
+        {"claim_id": "s1c1", "text": "The leaderboard reshuffles constantly.",
+         "source_ref": 0}]}]}
+    assert engine.find_numeric_citation_problems(nonnum, BRIEF_STATS) == []
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
