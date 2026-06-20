@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/narration_transcript.schema.json",
+  "title": "narration.transcript.json — timed narration segments for sync",
+  "description": "The downstream timing AUTHORITY: the Composition Engineer prefers a scene's narration segment span over the script's duration_est_sec, and offsets captions off it. Segment start/end are GLOBAL (cumulative across the whole video), tagged with scene_no. Cadence builds these deterministically from per-scene tts durations (no ASR). An OPTIONAL per-segment `words[]` (additive; populated only when whisper.cpp word-level enrichment is available) is documented here but stays optional so the deterministic per-scene transcript validates unchanged; additionalProperties stays true.",
+  "type": "object",
+  "required": ["schema_version", "segments"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "total_duration_sec": {"type": "number"},
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["scene_no", "start_sec", "end_sec", "text"],
+        "additionalProperties": true,
+        "properties": {
+          "scene_no": {"type": "integer"},
+          "start_sec": {"type": "number"},
+          "end_sec": {"type": "number"},
+          "text": {"type": "string"},
+          "words": {
+            "type": "array",
+            "description": "additive (optional): word-level timings for finer caption sync, folded in only when whisper.cpp transcribe enrichment is available. Each word's time is GLOBAL, like its segment.",
+            "items": {
+              "type": "object",
+              "required": ["start", "end", "text"],
+              "additionalProperties": true,
+              "properties": {
+                "start": {"type": "number"},
+                "end": {"type": "number"},
+                "text": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

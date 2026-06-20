@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/script.schema.json",
+  "title": "script.json — the narration + on-screen beats, one point per scene",
+  "type": "object",
+  "required": ["schema_version", "working_title", "scenes"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "working_title": {"type": "string"},
+    "hook": {"type": "string"},
+    "cta": {"type": "string"},
+    "total_scenes": {"type": "integer"},
+    "est_runtime_sec": {"type": "number"},
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["scene_no", "point", "narration"],
+        "additionalProperties": true,
+        "properties": {
+          "scene_no": {"type": "integer"},
+          "beat": {"type": "string"},
+          "point": {"type": "string"},
+          "narration": {"type": "string"},
+          "on_screen_text": {"type": "string"},
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["claim_id", "text"],
+              "additionalProperties": true,
+              "properties": {
+                "claim_id": {"type": "string"},
+                "text": {"type": "string"},
+                "source_ref": {"type": ["string", "integer", "null"]}
+              }
+            }
+          },
+          "visual_note": {"type": "string"},
+          "duration_est_sec": {"type": "number"}
+        }
+      }
+    }
+  }
+}

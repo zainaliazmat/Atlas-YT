@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/style_guide.schema.json",
+  "title": "style_guide.json — the look (additively extensible via schema_version)",
+  "description": "v1.1. The Art Director (Iris) ADDED render-detail fields under a bumped schema_version ('1.1'): `fps` and a global `textures`/overlay set. They are OPTIONAL (additive) so older artifacts and the offline stub producers — which stamp '1.0' and omit them — still validate; additionalProperties stays true so older readers never break.",
+  "type": "object",
+  "required": ["schema_version", "palette"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "palette": {
+      "type": "object",
+      "required": ["signature_highlight"],
+      "additionalProperties": true,
+      "properties": {
+        "primary": {"type": "string"},
+        "bg": {"type": "string"},
+        "text": {"type": "string"},
+        "accents": {"type": "array", "items": {"type": "string"}},
+        "signature_highlight": {"type": "string",
+          "description": "Atlas's one signature flourish — the #FFD000 highlighter beat."}
+      }
+    },
+    "typography": {"type": "object", "additionalProperties": true},
+    "motion": {"type": "object", "additionalProperties": true},
+    "layout": {"type": "object", "additionalProperties": true},
+    "fps": {"type": "integer", "minimum": 12, "maximum": 60,
+      "description": "schema_version 1.1 (additive): base render frame rate. The Art Director sets it (default 30); a 12fps 'stutter' is a per-scene EFFECT, not this base rate."},
+    "textures": {
+      "type": "array",
+      "description": "schema_version 1.1 (additive): the always-on, global hand-made overlay layer (paper, grain, halftone, …). Structure is fixed here; the allowed texture NAMES are grounded in the Art Director's vocabulary (value-level), refinable by the Composition Engineer without another schema bump.",
+      "items": {"oneOf": [
+        {"type": "string"},
+        {"type": "object", "required": ["name"], "additionalProperties": true,
+         "properties": {"name": {"type": "string"}, "params": {"type": "object", "additionalProperties": true}}}
+      ]}
+    },
+    "dos": {"type": "array", "items": {"type": "string"}},
+    "donts": {"type": "array", "items": {"type": "string"}},
+    "reference_note": {"type": "string"}
+  }
+}

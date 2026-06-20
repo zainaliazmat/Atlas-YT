@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/audio_manifest.schema.json",
+  "title": "audio_manifest.json — the mix, wired into the scene HTML",
+  "description": "v1.1. The Audio / Sound Designer (Cadence) ADDED, under a bumped schema_version ('1.1'): per-track clearance fields (`license`, `attribution`, `status`, `license_code`, `license_url`, `provenance`, `source`, `share_alike`, `flag`), the signature-SFX scene anchor (`scene_no`, `at_sec`, `name`), a per-track `vo_uri`, and top-level `master_uri` / `vo_uri` / `mix`. ALL are OPTIONAL (additive) so the offline stub producer — which stamps '1.0' and omits them — still validates against this one schema (contracts.validate is NOT version-aware; it always loads the latest file, so the new fields MUST stay optional). additionalProperties stays true so older readers never break. The license+attribution guarantee for music/sfx is enforced in Cadence's engine, not the schema.",
+  "type": "object",
+  "required": ["schema_version", "total_duration_sec", "tracks"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "total_duration_sec": {"type": "number"},
+    "master_uri": {"type": ["string", "null"],
+      "description": "schema_version 1.1 (additive): the pre-mixed documentary master (VO + ducked bed + baked accent), trimmed to total_duration_sec. The narration track's `uri` already points here (the master-bridge: the renderer muxes the narration uri); `master_uri` records it so the clean follow-up — Mason muxing `master_uri`, narration `uri` back to the pure VO — needs no further schema change. null when no master was rendered (VO-only fallback)."},
+    "vo_uri": {"type": "string",
+      "description": "schema_version 1.1 (additive): the pure VO (narration.wav) the transcript describes, back-referenced so downstream can recover the un-mixed narration."},
+    "tracks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["role", "uri"],
+        "additionalProperties": true,
+        "properties": {
+          "role": {"type": "string", "enum": ["narration", "music", "sfx"]},
+          "uri": {"type": "string"},
+          "gain_db": {"type": "number"},
+          "ducking": {"type": ["boolean", "string"],
+            "description": "false = not ducked; a string names the sidechain key (e.g. \"narration\") the bed ducks under."},
+          "vo_uri": {"type": "string",
+            "description": "1.1 (additive): on the narration track, the pure VO when `uri` is the master."},
+          "license": {"type": "string",
+            "description": "1.1 (additive): the human license label. Cadence's engine refuses to ship a music/sfx track without license + attribution."},
+          "license_code": {"type": "string"},
+          "license_url": {"type": "string"},
+          "attribution": {"type": "string", "description": "1.1 (additive): renderable TASL credit."},
+          "provenance": {"type": "string"},
+          "source": {"type": "string"},
+          "status": {"type": "string", "enum": ["cleared", "sourced", "placeholder"],
+            "description": "1.1 (additive): a `placeholder` track is flagged and EXCLUDED from the master mix (never baked); `cleared`/`sourced` carry a verified license + attribution."},
+          "share_alike": {"type": "boolean"},
+          "flag": {"type": "string"},
+          "suggested_query": {"type": "string"},
+          "scene_no": {"type": "integer",
+            "description": "1.1 (additive): for the signature SFX, the storyboard scene whose signature_beat it accents."},
+          "at_sec": {"type": "number",
+            "description": "1.1 (additive): for the signature SFX, the global cut time (its scene's first transcript segment start) the accent lands on."},
+          "name": {"type": "string"}
+        }
+      }
+    },
+    "wired_into": {"type": "array", "items": {"type": "string"}},
+    "mix": {"type": "object", "additionalProperties": true,
+      "description": "schema_version 1.1 (additive): a human-readable record of the documentary-mix discipline applied (the rule, the VO/bed/sfx gains, whether the master rendered)."}
+  }
+}

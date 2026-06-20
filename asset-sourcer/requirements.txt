@@ -1,0 +1,16 @@
+# Magpie, The Asset Sourcer — dependencies.
+
+python-dotenv         # loads keys from your local .env
+requests              # the source-client network seam (search + download)
+claude-agent-sdk      # the co-worker chat seam (converse) + the memory distiller, via your subscription
+
+# Optional — only if you switch MAGPIE_LLM to "gemini":
+# google-generativeai
+
+# (MAGPIE_LLM=deepseek needs no extra package — it uses raw `requests` above.)
+#
+# Source-API keys are OPTIONAL and FREE. Most of the allowlist is keyless. A missing
+# optional key is NOT an error — that source is skipped silently:
+#   SMITHSONIAN_API_KEY   (free: https://api.data.gov/signup/)
+#   PEXELS_API_KEY        (free: https://www.pexels.com/api/)
+#   PIXABAY_API_KEY       (free: https://pixabay.com/api/docs/)

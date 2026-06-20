@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/project.schema.json",
+  "title": "project.json — the Showrunner's master state for one video",
+  "type": "object",
+  "required": ["schema_version", "project_id", "slug", "status", "config", "stages"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "project_id": {"type": "string"},
+    "slug": {"type": "string"},
+    "created": {"type": ["number", "string"]},
+    "updated": {"type": ["number", "string"]},
+    "title": {"type": "string"},
+    "niche": {"type": "string"},
+    "topic": {"type": "string"},
+    "brief": {"type": "string"},
+    "status": {"type": "string"},
+    "config": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "gates": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "factcheck": {"type": "boolean"},
+            "final_render": {"type": "boolean"}
+          }
+        },
+        "unattended": {"type": "boolean"}
+      }
+    },
+    "stages": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["status"],
+        "additionalProperties": true,
+        "properties": {
+          "status": {"type": "string",
+                     "enum": ["pending", "running", "done", "blocked", "failed"]},
+          "artifact": {"type": ["string", "null"]},
+          "validated": {"type": "boolean"},
+          "updated": {"type": ["number", "string"]},
+          "note": {"type": "string"}
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["status"],
+        "additionalProperties": true,
+        "properties": {
+          "status": {"type": "string",
+                     "enum": ["pending", "blocked", "approved", "rejected"]},
+          "details": {"type": ["object", "null"]}
+        }
+      }
+    },
+    "artifacts": {"type": "object", "additionalProperties": {"type": "string"}},
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "ts": {"type": ["number", "string"]},
+          "stage": {"type": "string"},
+          "decision": {"type": "string"},
+          "why": {"type": "string"}
+        }
+      }
+    }
+  }
+}

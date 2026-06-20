@@ -1,0 +1,10 @@
+# Viral Scout dependencies.
+requests              # HTTP calls to the YouTube API + autocomplete endpoint + the DeepSeek brain
+claude-agent-sdk      # DEFAULT brain (research + chat) via your Claude subscription
+python-dotenv         # loads API keys from your local .env file
+pytrends              # OPTIONAL Google Trends layer (unofficial; best-effort, degrades gracefully)
+
+# Optional — only if you switch SAGE_LLM to "gemini":
+# google-generativeai
+
+# (SAGE_LLM=deepseek needs no extra package — it uses raw `requests` above.)

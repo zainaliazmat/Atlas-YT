@@ -1,0 +1,7 @@
+{
+  // Point VS Code's Python tooling at the project venv so imports like
+  // dotenv / claude_agent_sdk resolve in the editor (they're installed there,
+  // not system-wide). Fixes "Cannot find module" false positives.
+  "python.defaultInterpreterPath": "${workspaceFolder}/venv/bin/python",
+  "python.terminal.activateEnvironment": true
+}

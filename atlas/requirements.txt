@@ -1,0 +1,21 @@
+# Atlas — the YT Manager (orchestrator over Scout & Sage).
+#
+# Atlas DEPENDS ON its sibling projects (youtube-topic-agent, topic-researcher):
+# it imports their engines in-process. Install THEIR requirements too (or just
+# share one venv at the repo root, which is the intended setup):
+#     pip install -r ../youtube-topic-agent/requirements.txt
+#     pip install -r ../topic-researcher/requirements.txt
+#     pip install -r requirements.txt
+
+# Default brain: Claude on your Claude Code subscription (no API key).
+claude-agent-sdk>=0.2.105
+
+# Loads keys from the shared root .env.
+python-dotenv>=1.0.0
+
+# Validates the frozen artifact contracts (atlas/contracts/*.schema.json).
+jsonschema>=4.0.0
+
+# --- Alternative brains (only needed if you set ATLAS_LLM) ---
+# google-generativeai>=0.8.0   # ATLAS_LLM=gemini
+# requests>=2.31.0             # ATLAS_LLM=deepseek (also used by Sage's search)

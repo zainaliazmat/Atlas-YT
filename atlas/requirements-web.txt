@@ -1,0 +1,20 @@
+# Atlas — web operator UI (optional, additive).
+#
+# The terminal REPL (python run.py chat) needs NONE of this. Install it only to run
+# the web meeting room. It shares the same root .env and the same chat_state.json as
+# the terminal Atlas — see web/README.md. Free/MIT; no paid services, no Ollama.
+#
+#     pip install -r requirements.txt        # core (terminal)
+#     pip install -r requirements-web.txt     # + the web UI
+#
+#     chainlit run web/app.py -w              # -> http://localhost:8000
+#
+# TRANSITIVE DEPS — NOT OLLAMA: chainlit -> literalai -> traceloop-sdk pulls a suite
+# of `opentelemetry-instrumentation-*` packages, INCLUDING
+# `opentelemetry-instrumentation-ollama`. That is a passive OpenTelemetry *shim*, not
+# the Ollama runtime. literalai does a top-level `from traceloop.sdk import Traceloop`,
+# so the suite can't be uninstalled without breaking `import chainlit`. Verified the
+# ollama shim is DORMANT: it is never imported (`import chainlit` loads zero ollama
+# modules). Nothing here runs or depends on Ollama — the fleet's no-Ollama policy holds.
+
+chainlit>=2.11,<3

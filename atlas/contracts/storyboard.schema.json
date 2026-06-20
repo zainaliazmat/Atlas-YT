@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/storyboard.schema.json",
+  "title": "storyboard.json — scene-by-scene plan (additively extensible via schema_version)",
+  "description": "v1.1. The Art Director (Iris) ADDED a per-scene `effects` array under a bumped schema_version ('1.1'). It is OPTIONAL (additive) so older artifacts and the offline stub producer — which stamps '1.0' and omits it — still validate; additionalProperties stays true so older readers never break.",
+  "type": "object",
+  "required": ["schema_version", "scenes"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "total_scenes": {"type": "integer"},
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["scene_no", "layout"],
+        "additionalProperties": true,
+        "properties": {
+          "scene_no": {"type": "integer"},
+          "layout": {"type": "string"},
+          "shots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "kind": {"type": "string"},
+                "content": {"type": "string"},
+                "asset_ref": {"type": ["string", "null"]}
+              }
+            }
+          },
+          "on_screen_text": {"type": "string"},
+          "transition": {"type": "string"},
+          "effects": {
+            "type": "array",
+            "description": "schema_version 1.1 (additive): the per-scene, VARYING techniques (distinct from the style guide's always-on global textures and from layout). Structure is fixed here; the allowed effect NAMES are grounded in the Art Director's vocabulary (value-level), refinable by the Composition Engineer without another schema bump.",
+            "items": {"oneOf": [
+              {"type": "string"},
+              {"type": "object", "required": ["name"], "additionalProperties": true,
+               "properties": {"name": {"type": "string"}, "params": {"type": "object", "additionalProperties": true}}}
+            ]}
+          },
+          "signature_beat": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

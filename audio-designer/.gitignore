@@ -1,0 +1,15 @@
+# Secrets — never commit real keys.
+.env
+
+# Cadence's durable memory + run log (provider-agnostic state, machine-local).
+chat_state.json
+chat_state.json.corrupt-*
+memory.json
+
+# Standalone run outputs (the per-mix working dirs + synthesized audio).
+mixes/
+
+# Python.
+__pycache__/
+*.pyc
+.pytest_cache/

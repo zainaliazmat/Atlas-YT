@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/asset_manifest.schema.json",
+  "title": "asset_manifest.json — every sourced asset with its license",
+  "type": "object",
+  "required": ["schema_version", "assets"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["asset_id", "scene_no", "type", "license"],
+        "additionalProperties": true,
+        "properties": {
+          "asset_id": {"type": "string"},
+          "scene_no": {"type": "integer"},
+          "type": {"type": "string",
+                   "enum": ["image", "video", "icon", "data-viz"]},
+          "source": {"type": "string"},
+          "uri": {"type": "string"},
+          "license": {"type": "string"},
+          "attribution": {"type": "string"},
+          "status": {"type": "string",
+                     "enum": ["sourced", "placeholder", "cleared"]}
+        }
+      }
+    }
+  }
+}

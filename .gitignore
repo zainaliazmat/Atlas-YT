@@ -1,0 +1,20 @@
+# Secrets — never commit your real keys.
+.env
+
+# Python bytecode cache.
+__pycache__/
+*.pyc
+
+# The agent's learned memory (runs + wins) is personal/local.
+memory.json
+
+# Talk-to-Scout conversation state (transcript + distilled summary) is personal.
+chat_state.json
+chat_state.json.corrupt-*
+
+# Any local cache files the agent may write.
+*_cache.json
+
+# Local virtual environment.
+venv/
+.venv/

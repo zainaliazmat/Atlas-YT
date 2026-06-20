@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/composition_manifest.schema.json",
+  "title": "composition_manifest.json — the Composition Engineer's per-scene build + gate record",
+  "description": "v1.0. Mason (the Composition Engineer) emits this as the data of his compose stage: one record per scene (where the HTML/render landed, its determinism self-scan, the lint/validate/inspect auto-gate result, asset notes) plus a top-level verdict. additionalProperties stays true so the record can grow additively without a bump; atlas stamps schema_version at the boundary.",
+  "type": "object",
+  "required": ["schema_version", "scenes", "verdict"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "verdict": {"type": "string", "enum": ["pass", "blocked"]},
+    "summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "total": {"type": "integer"},
+        "gated_ok": {"type": "integer"},
+        "rendered": {"type": "integer"},
+        "auto_gate": {"type": "string", "enum": ["PASS", "FAIL"]},
+        "integrity_flags": {"type": "integer"},
+        "contrast_failures": {"type": "integer"}
+      }
+    },
+    "scenes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scene_no", "html_path", "render_status"],
+        "additionalProperties": true,
+        "properties": {
+          "scene_no": {"type": "integer"},
+          "html_path": {"type": "string"},
+          "render_path": {"type": ["string", "null"]},
+          "duration_sec": {"type": "number"},
+          "fps": {"type": "integer"},
+          "layout": {"type": "string"},
+          "transition": {"type": "string"},
+          "effects": {"type": "array", "items": {"type": "string"}},
+          "signature_beat": {"type": "boolean"},
+          "self_scan": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "ok": {"type": "boolean"},
+              "violations": {"type": "array"}
+            }
+          },
+          "gate": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "lint": {"type": ["object", "null"]},
+              "validate": {"type": ["object", "null"]},
+              "inspect": {"type": ["object", "null"]}
+            }
+          },
+          "assets": {"type": "object", "additionalProperties": true},
+          "render_status": {"type": "string",
+            "enum": ["rendered", "skipped", "failed", "pending"]}
+        }
+      }
+    }
+  }
+}

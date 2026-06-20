@@ -1,0 +1,32 @@
+# Secrets — never commit your real keys. Atlas reads the shared root .env.
+.env
+
+# Python bytecode cache.
+__pycache__/
+*.pyc
+
+# Atlas's meeting-room memory (distilled summary + recovery) is personal/local.
+chat_state.json
+chat_state.json.corrupt-*
+
+# Any local cache files.
+*_cache.json
+
+# Local debug log (produce_video arg-logging; see tools.configure_logging).
+atlas.log
+*.log
+
+# Generated video projects (project.json + artifacts + scenes + video.mp4).
+projects/
+
+# Local virtual environment.
+venv/
+.venv/
+
+# Chainlit (web operator UI) generated/transient files. chainlit.md (the welcome
+# screen) IS committed; everything else here is regenerated on each run.
+.chainlit/
+.files/
+
+# Per-agent web persona-chat memory (summary-only; personal/local, like chat_state.json).
+web_sessions/

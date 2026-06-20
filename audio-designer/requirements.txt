@@ -1,0 +1,25 @@
+# Cadence, The Audio / Sound Designer — Python dependencies.
+
+python-dotenv         # loads keys from your local .env
+requests              # the audio source-client network seam (search + download)
+claude-agent-sdk      # the co-worker chat seam (converse) + the memory distiller, via your subscription
+
+# tts (HyperFrames Kokoro-82M shells out to these — required for `narrate`):
+kokoro-onnx           # the Kokoro TTS model runtime
+soundfile             # WAV I/O for the Kokoro model
+
+# Optional — only if you switch AUDIO_LLM to "gemini":
+# google-generativeai
+
+# (AUDIO_LLM=deepseek needs no extra package — it uses raw `requests` above.)
+#
+# SYSTEM prerequisites (NOT pip — install separately; see SKILL.md / README):
+#   - Node 22+ and the HyperFrames CLI (`npx hyperframes`)   — tts + (optional) transcribe
+#   - FFmpeg + FFprobe                                        — concat, the mix, probing
+#   - whisper.cpp                                             — OPTIONAL, word-level
+#       transcript enrichment only; absent by default and never required.
+#
+# Audio source-API keys are OPTIONAL and FREE. Most of the allowlist is keyless
+# (Openverse, Wikimedia, Internet Archive). A missing optional key is NOT an error —
+# that source is skipped silently:
+#   FREESOUND_API_KEY     (free: https://freesound.org/apiv2/apply/)

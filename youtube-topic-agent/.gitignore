@@ -1,0 +1,19 @@
+# Scout's per-user chat memory — distilled summary + recovery backlog. Local only.
+chat_state.json
+chat_state.json.corrupt-*
+
+# Atomic-write temp files (temp + rename); should never linger, but just in case.
+*.tmp.*
+
+# Local run caches — regenerated on demand, not source.
+channel_cache.json          # per-channel median-views baselines (--deep), 7-day TTL
+channel_cache.json.corrupt-*
+trends_cache.json           # Google Trends results, daily TTL
+trends_cache.json.corrupt-*
+
+# Python bytecode / caches
+__pycache__/
+*.pyc
+
+# Secrets live one level up in YT-AGENTS/.env, but never commit a stray one here.
+.env

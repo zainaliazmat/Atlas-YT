@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/research_brief.schema.json",
+  "title": "research_brief.json — Sage's research pack, reused, with a thin envelope",
+  "type": "object",
+  "required": ["schema_version", "topic", "overview", "verified_facts", "sources"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "topic": {"type": "string"},
+    "angle": {"type": "string"},
+    "generated": {"type": "string"},
+    "working_title": {"type": "string"},
+    "target_audience": {"type": "string"},
+    "overview": {"type": "string"},
+    "verified_facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["claim"],
+        "additionalProperties": true,
+        "properties": {
+          "claim": {"type": "string"},
+          "confidence": {"type": "string"},
+          "sources": {"type": "array"}
+        }
+      }
+    },
+    "myths_and_corrections": {"type": "array"},
+    "contested_or_uncertain": {"type": "array"},
+    "key_statistics": {"type": "array"},
+    "timeline": {"type": "array"},
+    "notable_quotes": {"type": "array"},
+    "open_questions": {"type": "array"},
+    "suggested_angles": {"type": "array"},
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["url"],
+        "additionalProperties": true,
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "credibility_note": {"type": "string"}
+        }
+      }
+    }
+  }
+}

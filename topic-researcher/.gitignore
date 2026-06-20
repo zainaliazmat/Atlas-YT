@@ -1,0 +1,20 @@
+# Secrets
+.env
+
+# Sage's per-user chat memory (distilled summary + recovery backlog). Local only.
+chat_state.json
+chat_state.json.corrupt-*
+
+# Engine run log
+memory.json
+memory.json.corrupt-*
+
+# Generated research packs (regenerable output). Drop this line if you want them committed.
+research_packs/
+
+# Atomic-write temp files (temp + rename); should never linger, but just in case.
+*.tmp.*
+
+# Python bytecode / caches
+__pycache__/
+*.pyc
