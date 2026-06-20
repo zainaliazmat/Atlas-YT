@@ -53,6 +53,18 @@ def _offline_factcheck(monkeypatch):
 # offline + deterministic, pin the script producer back to the offline stub here.
 # (Marlow's engine — including the claim-traceability guard — is unit-tested in
 # scriptwriter/tests/; THIS suite tests the SPINE: ordering, validation, gates.)
+# Build step #8 wired Sage's REAL engine into the research stage (it hits the web +
+# the LLM). To keep this suite offline + deterministic, pin the research producer back
+# to the offline stub here — its coherent placeholder facts are what the downstream
+# stub script + real fact-check gate depend on. (Sage's research engine is unit-tested
+# in topic-researcher/tests/ and the producer seam in test_research_producer.py; THIS
+# suite tests the SPINE: ordering, validation, gates.)
+@pytest.fixture(autouse=True)
+def _offline_research(monkeypatch):
+    research_stage = next(s for s in pipeline.STAGES if s.key == "research")
+    monkeypatch.setattr(research_stage, "producer", stubs.produce_research)
+
+
 @pytest.fixture(autouse=True)
 def _offline_script(monkeypatch):
     sw_stage = next(s for s in pipeline.STAGES if s.key == "script")

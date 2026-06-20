@@ -49,6 +49,7 @@ def _offline(monkeypatch, tmp_path):
     """Redirect the pipeline at tmp_path and pin every real producer to its stub."""
     monkeypatch.setattr(pipeline, "PROJECTS_DIR", tmp_path)
     pins = {
+        "research": stubs.produce_research,
         "script": stubs.produce_script,
         "factcheck": stubs.produce_factcheck,
         "style": stubs.produce_style,

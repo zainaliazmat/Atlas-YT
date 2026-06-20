@@ -33,7 +33,7 @@ import chat_state
 import contracts
 import registry
 from adapters import (art_director, asset_sourcer, audio, composition_engineer, sage,
-                      scriptwriter, stubs)
+                      scriptwriter)
 from progress import Progress
 
 HERE = pathlib.Path(__file__).parent
@@ -56,7 +56,11 @@ class Stage:
 
 
 STAGES: list[Stage] = [
-    Stage("research", "sage", "researching", stubs.produce_research, "research_brief"),
+    # REAL pass-1 (build step #1): Sage's engine researches the topic into the brief.
+    # The offline placeholder stays in the tree (stubs.produce_research) reachable only
+    # via ATLAS_RESEARCH_STUB=1 — the real engine is the default. (The other stages stay
+    # offline stubs until their specialist lands.)
+    Stage("research", "sage", "researching", sage.produce_research, "research_brief"),
     # REAL script stage: Marlow's engine drafts script.json from the brief. (The
     # other stages stay offline stubs until their specialist lands.)
     Stage("script", "scriptwriter", "drafting the script", scriptwriter.produce_script,

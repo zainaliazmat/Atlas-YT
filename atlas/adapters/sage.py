@@ -13,11 +13,24 @@ PERSONA `ask` is inherited from base.
 """
 from __future__ import annotations
 
+import logging
+import os
 import pathlib
 
 import chat_state
 from adapters.base import Adapter
 from adapters.loader import load_engine
+
+log = logging.getLogger(__name__)
+
+# Opt-in switch back to the OFFLINE placeholder research (dev / no-network). The real
+# Sage engine is the DEFAULT; set this truthy to force the stub, which is logged loudly
+# so a stub run is never silently mistaken for real research.
+RESEARCH_STUB_ENV = "ATLAS_RESEARCH_STUB"
+
+
+def _truthy(value: str) -> bool:
+    return (value or "").strip().lower() in ("1", "yes", "true", "on")
 
 
 # ----------------------------------------------------------------------
@@ -28,6 +41,16 @@ def _factcheck_engine():
     import registry  # lazy: registry imports this module, so avoid a top-level cycle
     sage_dir = registry.get_entry("sage").project_dir
     return load_engine(sage_dir, "factcheck")
+
+
+# ----------------------------------------------------------------------
+# The shared research engine seam (one place; tests monkeypatch this)
+# ----------------------------------------------------------------------
+def _research_engine():
+    """Load Sage's `researcher` engine module (isolated, cached by the loader)."""
+    import registry  # lazy: registry imports this module, so avoid a top-level cycle
+    sage_dir = registry.get_entry("sage").project_dir
+    return load_engine(sage_dir, "researcher")
 
 
 def run_factcheck(pdir: pathlib.Path) -> dict:
@@ -82,6 +105,89 @@ def produce_factcheck(pdir: pathlib.Path, topic: str):
     return Artifact("factcheck_report.json", "factcheck_report", report,
                     f"{s.get('verified', 0)} verified, {s.get('flagged', 0)} flagged, "
                     f"{s.get('unverifiable', 0)} unverifiable")
+
+
+# ----------------------------------------------------------------------
+# Research: run Sage's engine and write the brief (the REAL pass-1 path)
+# ----------------------------------------------------------------------
+def run_research(pdir: pathlib.Path, topic: str, angle: str | None = None) -> dict:
+    """Run Sage's research engine for `topic`/`angle`, stamp + write the brief.
+
+    Mirrors `run_factcheck`: calls the sibling engine in-process (the whole pipeline
+    runs OFF the SDK loop via asyncio.to_thread in tools.py, so the engine's own
+    `asyncio.run` inside `llm.chat` is safe), stamps `schema_version` at the boundary,
+    writes research_brief.json, and returns the stamped brief. The caller validates it
+    against the frozen contract. Sage never imports atlas — Atlas owns the envelope.
+    """
+    from contracts import CONTRACT_VERSION
+    pdir = pathlib.Path(pdir)
+    pack, _json_path, _md_path = _research_engine().run(topic, angle, quiet=True)
+    brief = {"schema_version": CONTRACT_VERSION, **pack}
+    chat_state.atomic_write_json(pdir / "research_brief.json", brief)
+    return brief
+
+
+def _read_angle(pdir: pathlib.Path) -> str:
+    """Optional research angle, read from the project's project.json (default '')."""
+    proj = chat_state.load_json(pathlib.Path(pdir) / "project.json", {})
+    return (proj.get("angle") or "").strip()
+
+
+def _thin_brief_reasons(brief: dict) -> list[str]:
+    """Visibility check: reasons a brief looks like placeholder / failed research.
+
+    Empty list = looks real. This is NOT a hard block (that would diverge from the
+    existing fact-check-gate convention); the producer records the warning LOUDLY so a
+    thin run is visible instead of silently flowing downstream to be rubber-stamped.
+    """
+    reasons = []
+    sources = brief.get("sources") or []
+    if not (brief.get("verified_facts") or []):
+        reasons.append("zero verified facts")
+    if not sources:
+        reasons.append("no sources")
+    elif all("example.org" in (s.get("url") or "") for s in sources):
+        reasons.append("all sources are example.org placeholders")
+    return reasons
+
+
+# ----------------------------------------------------------------------
+# Pipeline producer (the real research stage worker; signature (pdir, topic))
+# ----------------------------------------------------------------------
+def produce_research(pdir: pathlib.Path, topic: str):
+    """REAL pass-1 producer: Sage's engine researches `topic` into research_brief.json.
+
+    The DEFAULT for the pipeline's `research` stage (replaces the offline stub, mirroring
+    how `produce_factcheck` replaced the factcheck stub). Set ATLAS_RESEARCH_STUB truthy
+    to force the offline placeholder instead (dev / no-network) — that path is logged
+    loudly so a stub run is never silently mistaken for real research.
+    """
+    from adapters.stubs import Artifact
+    from adapters.stubs import produce_research as _stub_research
+
+    if _truthy(os.environ.get(RESEARCH_STUB_ENV, "")):
+        log.warning("%s is set — using the OFFLINE placeholder research brief, NOT "
+                    "Sage's real engine.", RESEARCH_STUB_ENV)
+        art = _stub_research(pdir, topic)
+        return Artifact(art.rel_path, art.contract, art.data,
+                        f"⚠️ STUB research ({RESEARCH_STUB_ENV}) — {art.summary}")
+
+    brief = run_research(pdir, topic, _read_angle(pdir))
+    n_facts = len(brief.get("verified_facts") or [])
+    n_src = len(brief.get("sources") or [])
+    summary = f"{n_facts} verified facts, {n_src} sources"
+
+    thin = _thin_brief_reasons(brief)
+    if thin:
+        joined = "; ".join(thin)
+        log.warning("Research brief for %r looks thin: %s", topic, joined)
+        # Persist a flag on the artifact (additive; the contract allows it) so the
+        # thin run is inspectable downstream, and surface it in the narrated summary.
+        brief["research_quality"] = {"thin": True, "reasons": thin}
+        chat_state.atomic_write_json(pathlib.Path(pdir) / "research_brief.json", brief)
+        summary = f"⚠️ thin research ({joined}) — {summary}"
+
+    return Artifact("research_brief.json", "research_brief", brief, summary)
 
 
 # ----------------------------------------------------------------------
