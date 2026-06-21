@@ -642,6 +642,81 @@ def test_qualitative_guard_flags_a_miscited_claim_directly():
     assert engine.find_qualitative_citation_problems(off, BRIEF_QUAL) == []
 
 
+# ----------------------------------------------------------------------
+# Magnitude/ratio comparatives are quantitative — "an order of magnitude", "10x",
+# "twice as fast", "half the price" assert a MAGNITUDE the brief must establish, not
+# just a direction. The deterministic guard flags a magnitude no brief fact carries;
+# directional language is never flagged. All offline. (The rule is prompt-driven; this
+# is the advisory safety net, a sibling of the citation guards.)
+# ----------------------------------------------------------------------
+def test_magnitude_values_detects_ratio_phrases():
+    assert engine._magnitude_values("an order of magnitude cheaper") == {10}
+    assert engine._magnitude_values("10× faster") == {10}
+    assert engine._magnitude_values("10x cheaper") == {10}
+    assert engine._magnitude_values("twice as fast") == {2}
+    assert engine._magnitude_values("half the price") == {2}
+    assert engine._magnitude_values("a 5-fold increase") == {5}
+    # purely directional / no ratio -> no magnitude
+    assert engine._magnitude_values("dramatically cheaper") == set()
+    assert engine._magnitude_values("far more capable") == set()
+    assert engine._magnitude_values("") == set()
+
+
+# A brief whose cheapness fact carries only the DIRECTION (no magnitude) — the live
+# s5c2 case. The magnitude must NOT be asserted from this brief.
+BRIEF_DIRECTIONAL = {
+    "topic": "frontier model economics",
+    "angle": "why open models undercut the closed frontier",
+    "target_audience": "developers",
+    "overview": "DeepSeek is cheaper per token; the exact multiple varies by source.",
+    "verified_facts": [
+        {"claim": "DeepSeek is dramatically cheaper per token than the US frontier "
+         "models.", "sources": ["https://a.example/cost"], "confidence": "high"},  # F0
+    ],
+    "sources": [
+        {"url": "https://a.example/cost", "title": "Cost comparison"},               # 0
+    ],
+}
+
+
+def _mag_script(claim_text):
+    """A script with one point scene asserting `claim_text`, cited to F0's source (0)."""
+    return {"scenes": [
+        {"scene_no": 1, "beat": "point", "point": "cost", "narration": "n",
+         "on_screen_text": "", "visual_note": "v", "duration_est_sec": 6,
+         "claims": [{"claim_id": "s1c1", "text": claim_text, "source_ref": 0}]}]}
+
+
+def test_magnitude_guard_flags_unsupported_multiple():
+    # The brief carries only "dramatically cheaper" (direction). A claim that adds
+    # "roughly an order of magnitude" asserts a ~10× the brief doesn't establish.
+    script = _mag_script("DeepSeek is dramatically cheaper than the US frontier models, "
+                         "roughly an order of magnitude.")
+    probs = engine.find_magnitude_comparative_problems(script, BRIEF_DIRECTIONAL)
+    assert len(probs) == 1
+    assert probs[0]["claim_id"] == "s1c1"
+    assert probs[0]["unsupported_magnitudes"] == [10]
+
+
+def test_magnitude_guard_passes_directional_language():
+    # Purely directional — no magnitude asserted -> never flagged.
+    script = _mag_script("DeepSeek is dramatically cheaper than the US frontier models.")
+    assert engine.find_magnitude_comparative_problems(script, BRIEF_DIRECTIONAL) == []
+
+
+def test_magnitude_guard_passes_when_brief_carries_the_magnitude():
+    # If THIS brief's fact establishes the magnitude, the multiple is supported.
+    brief = {
+        "topic": "t", "overview": "o",
+        "verified_facts": [
+            {"claim": "DeepSeek is roughly an order of magnitude cheaper per token.",
+             "sources": ["https://a.example/cost"], "confidence": "high"}],
+        "sources": [{"url": "https://a.example/cost", "title": "Cost"}],
+    }
+    script = _mag_script("DeepSeek is about an order of magnitude cheaper.")
+    assert engine.find_magnitude_comparative_problems(script, brief) == []
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

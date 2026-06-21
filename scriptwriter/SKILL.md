@@ -148,10 +148,22 @@ which the brief tells you directly: `verified_facts` carry a *list* of sources +
   number is uncorroborated and **attribution will not save it** — the fact-checker's own
   search won't corroborate a lone tracker's figure, so it blocks even when softened and
   cited. Drop the figure entirely and lead with the **multi-source qualitative** point
-  from `verified_facts` instead — e.g. say "DeepSeek is *roughly an order of magnitude
-  cheaper*" (a multi-source verified fact) rather than "one tracker lists it at $0.27 in
-  / $1.10 out" (a single, conflicting figure). The qualitative claim is the one that
-  passes; the exact decimals are the part that blocks.
+  from `verified_facts` instead — e.g. say "DeepSeek is *far cheaper per token*" (a
+  multi-source verified fact, stated directionally) rather than "one tracker lists it at
+  $0.27 in / $1.10 out" (a single, conflicting figure). The qualitative claim is the one
+  that passes; the exact decimals are the part that blocks.
+- **Magnitude/ratio comparatives are quantitative — they need the brief to carry the
+  magnitude, not just the direction.** "An order of magnitude", "10x", "10× cheaper",
+  "twice as fast", "half the price", "N-fold" all assert a *magnitude*, exactly like an
+  explicit number does. Use one **only when a `verified_fact` (or corroborated stat) in
+  *this run's* brief establishes that magnitude.** If the brief supports only the
+  *direction* — e.g. its cheapness fact says "dramatically cheaper per token" with no
+  multiple — then say it **directionally**: "far/dramatically cheaper", "much faster",
+  "far more capable", with no implied multiple. Never introduce a magnitude the brief
+  doesn't carry, and remember the brief is **re-researched every run** — a magnitude word
+  that was safe last time ("order of magnitude") is unsupported this time if this brief's
+  fact only carries the qualitative direction. On screen, "FAR CHEAPER" — not "≈10×" —
+  unless the magnitude is brief-established.
 - **Never cross-combine.** Don't attach a figure from one `key_statistics` entry to a
   model or benchmark named in another. If two entries share a number, they are *not*
   interchangeable — use the one entry's exact model + benchmark, or drop it.

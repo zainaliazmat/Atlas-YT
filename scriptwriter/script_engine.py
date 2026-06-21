@@ -564,6 +564,84 @@ def find_qualitative_citation_problems(script: dict, brief: dict) -> list[dict]:
 
 
 # ----------------------------------------------------------------------
+# Magnitude/ratio comparatives are QUANTITATIVE. "an order of magnitude", "10x",
+# "10× cheaper", "twice as fast", "half the price", "N-fold" each assert a MAGNITUDE,
+# not just a direction — so they need the brief to establish that magnitude, exactly
+# like an explicit number does. This cheap guard flags a claim that asserts a magnitude
+# no verified_fact / stat text in THIS run's brief carries, so it's caught before the
+# gate. (The rule itself is prompt-driven; this is the advisory safety net.)
+# ----------------------------------------------------------------------
+_OOM_RE = re.compile(r"orders?\s+of\s+magnitude")
+_MAG_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:x\b|×|-?\s*fold\b)")
+# Word multipliers that carry a magnitude on their own (ratio sense).
+_MAG_WORDS = {"twice": 2, "double": 2, "doubled": 2, "doubles": 2, "triple": 3,
+              "tripled": 3, "treble": 3, "quadruple": 4, "tenfold": 10, "half": 2}
+
+
+def _magnitude_values(text: str) -> set[int]:
+    """Magnitudes a phrase asserts as a ratio (rounded ints). Empty -> no magnitude.
+
+    "an order of magnitude cheaper" -> {10}; "10× faster" -> {10}; "twice as fast" ->
+    {2}; "half the price" -> {2}. "dramatically cheaper" -> set() (directional only, no
+    magnitude). Used to test a claim's asserted magnitude against the brief's facts.
+    """
+    low = (text or "").lower()
+    vals: set[int] = set()
+    if _OOM_RE.search(low):
+        vals.add(10)
+    for m in _MAG_NUM_RE.finditer(low):
+        try:
+            vals.add(int(round(float(m.group(1)))))
+        except ValueError:
+            continue
+    for w, v in _MAG_WORDS.items():
+        if re.search(rf"\b{w}\b", low):
+            vals.add(v)
+    return vals
+
+
+def _brief_magnitudes(brief: dict) -> set[int]:
+    """Every magnitude any verified_fact / key_statistic text in the brief establishes."""
+    mags: set[int] = set()
+    for f in (brief.get("verified_facts") or []):
+        if isinstance(f, dict):
+            mags |= _magnitude_values(str(f.get("claim", "")))
+    for s in (brief.get("key_statistics") or []):
+        if isinstance(s, dict):
+            mags |= _magnitude_values(f"{s.get('stat','')} {s.get('value','')}")
+    return mags
+
+
+def find_magnitude_comparative_problems(script: dict, brief: dict) -> list[dict]:
+    """Deterministic guard: a claim asserting a magnitude the brief doesn't establish.
+
+    A claim that uses a magnitude/ratio comparative ("order of magnitude", "10x",
+    "twice as fast", "half the price") is flagged when that magnitude appears in NO
+    verified_fact / key_statistic text in this run's brief — i.e. the brief carries the
+    DIRECTION but not the MULTIPLE. Purely directional claims ("dramatically cheaper")
+    carry no magnitude and are never flagged. Pure + offline; sibling of the citation
+    guards, surfaced before the gate. The fix is to soften to directional language.
+    """
+    brief_mags = _brief_magnitudes(brief)
+    problems: list[dict] = []
+    for scene in script.get("scenes", []):
+        for c in scene.get("claims", []):
+            claim_mags = _magnitude_values(c.get("text", ""))
+            if not claim_mags:
+                continue  # no magnitude asserted -> directional, nothing to check
+            unsupported = sorted(claim_mags - brief_mags)
+            if unsupported:
+                problems.append({
+                    "claim_id": c.get("claim_id"),
+                    "scene_no": scene.get("scene_no"),
+                    "magnitudes": sorted(claim_mags),
+                    "unsupported_magnitudes": unsupported,
+                    "text": c.get("text", ""),
+                })
+    return problems
+
+
+# ----------------------------------------------------------------------
 # Render the brief for the brain — facts TAGGED so the brain can point at them
 # ----------------------------------------------------------------------
 def _facts_block(brief: dict) -> str:
@@ -598,8 +676,10 @@ def _supporting_block(brief: dict) -> str:
             "pricing comparability across providers/versions, benchmark numbers that mix "
             "harnesses/versions), the number is uncorroborated — attribution will NOT "
             "satisfy the fact-checker, so drop the figure entirely and make the "
-            "multi-source qualitative point from VERIFIED FACTS instead (e.g. 'roughly an "
-            "order of magnitude cheaper' rather than a single tracker's exact $/token). "
+            "multi-source qualitative point from VERIFIED FACTS instead — stated "
+            "DIRECTIONALLY ('far cheaper per token') rather than a single tracker's exact "
+            "$/token. Use a MULTIPLE ('≈10×', 'an order of magnitude') ONLY if a verified "
+            "fact carries that magnitude; otherwise keep it directional (see below). "
             "Two hard rules also apply: keep any date (a dated stat is a snapshot, never "
             "the current standing); and NEVER combine a figure from one entry with a "
             "model/benchmark from another — if you state a figure, use that ONE entry's "
@@ -673,12 +753,22 @@ def _build_prompt(brief: dict) -> str:
         "as conflicting/uncertain in OPEN QUESTIONS or CONTESTED (e.g. pricing "
         "comparability, benchmark version/harness mixing). Attribution does NOT satisfy "
         "the fact-checker for an uncorroborated number — lead instead with the "
-        "multi-source qualitative VERIFIED FACT (e.g. '≈ an order of magnitude cheaper').\n"
+        "multi-source qualitative VERIFIED FACT, stated directionally ('far cheaper per "
+        "token').\n"
+        "- MAGNITUDE/RATIO COMPARATIVES ARE QUANTITATIVE. 'An order of magnitude', "
+        "'10x', '10× cheaper', 'twice as fast', 'half the price', 'N-fold' each assert a "
+        "MAGNITUDE, not just a direction — so use one ONLY when a VERIFIED FACT (or a "
+        "corroborated stat) in THIS brief establishes that magnitude. If the brief "
+        "supports only the DIRECTION (e.g. 'cheaper per token' with no multiple), say it "
+        "directionally — 'far/dramatically cheaper', 'much faster', 'far more capable' — "
+        "with NO implied multiple. The brief is re-researched every run; never carry a "
+        "magnitude word ('order of magnitude', '10×') over from a past run or memory.\n"
         "- Never cite a figure to a different model/benchmark than the entry it came "
         "from; if two entries share a number, they are NOT interchangeable.\n"
         "- on_screen_text must never display an unhedged shaky number (a single-source "
-        "stat). Put the qualitative point on screen ('code that ships', '≈10× cheaper'), "
-        "not a bare decimal.\n"
+        "stat) — and never a MULTIPLE the brief doesn't establish. Put the qualitative "
+        "point on screen ('code that ships', 'FAR CHEAPER'), not a bare decimal and not "
+        "an unsupported '≈10×'.\n"
         "- PRESERVE dates/qualifiers — never present a snapshot as the present standing.\n"
         "- Stay internally consistent: if the video says rankings change every version / "
         "models are a generation behind, do NOT also assert a specific 'current leader' "
