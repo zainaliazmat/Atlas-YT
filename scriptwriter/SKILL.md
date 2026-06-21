@@ -24,8 +24,10 @@ back to a source already in the brief.**
   - `key_statistics[]` — `{stat, value, date, source}`. Specific numbers, each with
     its OWN source and (often) a date. Cite a stat-claim with its `[S#]` so it's
     grounded to *that* source. A `date` means the figure is a **snapshot** — keep the
-    qualifier, never restate it as the current standing. A single-sourced stat (or one
-    echoed in `contested_or_uncertain` / `open_questions`) is shaky: hedge or omit it.
+    qualifier, never restate it as the current standing. A single-sourced stat is shaky:
+    hedge or omit it — and if its *category* is flagged in `contested_or_uncertain` /
+    `open_questions` (e.g. pricing comparability), **omit the figure, don't just attribute
+    it** (attribution won't satisfy the fact-checker for an uncorroborated number).
   - `timeline[]`, `notable_quotes[]` — supporting material you may weave in, each
     carrying its own source.
   - `myths_and_corrections[]` — gold for hooks and tension; assert the *correction*,
@@ -139,6 +141,17 @@ which the brief tells you directly: `verified_facts` carry a *list* of sources +
   only when it genuinely adds value, or **omit** it. For **volatile benchmark
   percentages, prefer omit** — they're exactly what gets superseded and contradicted
   across sources.
+- **Omit — don't attribute — a single-source figure whose category the brief flags as
+  conflicting/uncertain.** If `open_questions` or `contested_or_uncertain` calls the
+  figure's *category* unsettled (e.g. "are the pricing figures even comparable across
+  providers/versions?", or benchmark numbers that mix harnesses/versions), then the
+  number is uncorroborated and **attribution will not save it** — the fact-checker's own
+  search won't corroborate a lone tracker's figure, so it blocks even when softened and
+  cited. Drop the figure entirely and lead with the **multi-source qualitative** point
+  from `verified_facts` instead — e.g. say "DeepSeek is *roughly an order of magnitude
+  cheaper*" (a multi-source verified fact) rather than "one tracker lists it at $0.27 in
+  / $1.10 out" (a single, conflicting figure). The qualitative claim is the one that
+  passes; the exact decimals are the part that blocks.
 - **Never cross-combine.** Don't attach a figure from one `key_statistics` entry to a
   model or benchmark named in another. If two entries share a number, they are *not*
   interchangeable — use the one entry's exact model + benchmark, or drop it.

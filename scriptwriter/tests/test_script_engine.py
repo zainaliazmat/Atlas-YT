@@ -480,6 +480,168 @@ def test_number_only_match_with_wrong_label_is_flagged():
                for s in script["scenes"] for c in s["claims"])
 
 
+# ----------------------------------------------------------------------
+# Qualitative citation auto-repair — the qualitative analog of the numeric
+# reconciler. A TRUE claim must not hard-block at the fact-check gate because the
+# brain mis-tagged it to the WRONG fact's source. The engine measures content-token
+# overlap between the claim and each verified_fact, repairs a clearly-better unique
+# match, and FLAGS (never silently re-points) weak/ambiguous ones. All offline.
+# ----------------------------------------------------------------------
+# Modeled on the live failure: a legacy-GPT-4o claim (matches fact F0) was mis-tagged
+# to the DeepSeek-pricing fact's source (F1). Each fact carries its OWN sources.
+BRIEF_QUAL = {
+    "topic": "the 2026 model landscape",
+    "angle": "what's legacy and what's cheap",
+    "target_audience": "developers",
+    "overview": "Some models are legacy; some are far cheaper.",
+    "verified_facts": [
+        {"claim": "GPT-4o is now a legacy model, superseded at the frontier by newer "
+         "GPT-5.x releases.",
+         "sources": ["https://cutoffs.example/gpt", "https://council.example/bench"],
+         "confidence": "high"},                                          # F0 -> {1,2}
+        {"claim": "DeepSeek's API pricing is dramatically lower than Western frontier "
+         "models — roughly an order of magnitude cheaper.",
+         "sources": ["https://pricing.example/deepseek", "https://tracker.example/api"],
+         "confidence": "high"},                                          # F1 -> {3,4}
+    ],
+    # A price stat whose figure (5) collides with the version digit in "GPT-5.x": it
+    # would mis-route the legacy claim to the numeric path if model-version digits were
+    # treated as figures. The glue-fix in _figures keeps the qualitative repair firing.
+    "key_statistics": [
+        {"stat": "API input price — GPT-4o", "value": "$5 / 1M tokens", "date": "",
+         "source": "https://tracker.example/api"},                       # S0 -> idx 4
+    ],
+    "sources": [
+        {"url": "https://ai.example/intro", "title": "Intro"},               # 0
+        {"url": "https://cutoffs.example/gpt", "title": "Cutoffs"},          # 1
+        {"url": "https://council.example/bench", "title": "Bench council"},  # 2
+        {"url": "https://pricing.example/deepseek", "title": "DeepSeek price"},  # 3
+        {"url": "https://tracker.example/api", "title": "API tracker"},      # 4
+    ],
+}
+
+_LEGACY = "GPT-4o is now a legacy model, superseded by GPT-5.x releases."
+_PRICING = "DeepSeek's API pricing is roughly an order of magnitude cheaper."
+_OFFTOPIC = "Espresso crema is mostly carbon dioxide and emulsified oils."
+
+
+def _qual_script(point_claims):
+    """A well-formed brain reply: claimless hook, one point scene, claimless cta."""
+    return {
+        "working_title": "Legacy and Cheap",
+        "hook": "One of these models is already a generation behind.",
+        "cta": "Which one are you still paying for?",
+        "scenes": [
+            {"beat": "hook", "point": "behind", "narration": "One is already behind.",
+             "on_screen_text": "behind", "visual_note": "a", "duration_est_sec": 5,
+             "claims": []},
+            {"beat": "point", "point": "the point", "narration": "Here's the point.",
+             "on_screen_text": "x", "visual_note": "b", "duration_est_sec": 8,
+             "claims": point_claims},
+            {"beat": "cta", "point": "out", "narration": "Which one?",
+             "on_screen_text": "", "visual_note": "c", "duration_est_sec": 4,
+             "claims": []},
+        ],
+    }
+
+
+def test_content_tokens_drops_prose_connectors():
+    toks = engine._content_tokens("GPT-4o is now a legacy model, superseded by GPT-5.x")
+    assert {"gpt", "4o", "legacy", "model", "superseded", "5.x"} <= toks
+    assert "is" not in toks and "now" not in toks and "by" not in toks
+    assert engine._content_tokens("") == set()
+
+
+def test_is_stat_tag_distinguishes_families():
+    assert engine._is_stat_tag("S3") and engine._is_stat_tag("s0")
+    assert not engine._is_stat_tag("F3")
+    assert not engine._is_stat_tag("3")
+    assert not engine._is_stat_tag(None)
+
+
+def test_model_version_digits_are_not_read_as_statistics():
+    # "GPT-4o" / "GPT-5.x" / "V3" are identities, not figures — so a version claim is
+    # never misrouted to the numeric path (which would starve the qualitative repair).
+    assert engine._figures("GPT-4o is superseded by GPT-5.x") == set()
+    assert engine._figures("DeepSeek V3 and V4") == set()
+    # genuine statistics are still captured ("1M" is an identity-glued digit, dropped)
+    assert engine._figures("priced at $5 per 1M tokens") == {"5"}
+    assert engine._figures("scored 76.8% on SWE-bench") == {"76.8"}
+
+
+def test_qualitative_repair_fires_despite_a_colliding_version_digit():
+    # BRIEF_QUAL carries a "$5" price stat; the legacy claim mentions "GPT-5.x". Without
+    # the glue-fix the stray "5" would route the claim to the numeric path. It must
+    # still take the qualitative path and be repaired to F0's source.
+    obj = _qual_script([{"text": _LEGACY, "support": "F1"}])
+    script = engine.write_script(BRIEF_QUAL, chat_fn=_chat_returning(obj))
+    claim = next(c for s in script["scenes"] for c in s["claims"])
+    assert claim["source_ref"] == 1            # repaired qualitatively, not dropped
+    assert engine.find_numeric_citation_problems(script, BRIEF_QUAL) == []
+    assert engine.find_qualitative_citation_problems(script, BRIEF_QUAL) == []
+
+
+def test_qualitative_claim_is_repointed_to_best_matching_fact():
+    # (i) The brain mis-tags the legacy claim to F1 (DeepSeek pricing -> source 3),
+    # but its TEXT matches F0. The engine re-points it to F0's first source (1).
+    obj = _qual_script([{"text": _LEGACY, "support": "F1"}])
+    script = engine.write_script(BRIEF_QUAL, chat_fn=_chat_returning(obj))
+    claim = next(c for s in script["scenes"] for c in s["claims"])
+    assert claim["source_ref"] == 1            # repaired to F0's first source, not 3
+    assert engine.find_qualitative_citation_problems(script, BRIEF_QUAL) == []
+    stamped = {"schema_version": contracts.CONTRACT_VERSION, **script}
+    ok, errors = contracts.validate("script", stamped)
+    assert ok, errors
+
+
+def test_qualitative_claim_with_no_fact_match_is_flagged_not_repointed():
+    # (ii) A claim matching NO fact above threshold is left where it is and FLAGGED —
+    # never silently re-pointed (we don't guess a fact for an off-topic line).
+    obj = _qual_script([{"text": _OFFTOPIC, "support": "F0"}])  # tagged F0 -> source 1
+    script = engine.write_script(BRIEF_QUAL, chat_fn=_chat_returning(obj))
+    claim = next(c for s in script["scenes"] for c in s["claims"])
+    assert claim["source_ref"] == 1            # untouched, NOT re-pointed
+    probs = engine.find_qualitative_citation_problems(script, BRIEF_QUAL)
+    assert len(probs) == 1
+    assert probs[0]["reason"] == "low_confidence"
+    assert probs[0]["expected_source_idx"] == []
+
+
+def test_correctly_cited_qualitative_claim_is_left_untouched():
+    # (iii) Both claims tagged correctly -> neither ref moves, nothing flagged.
+    obj = _qual_script([{"text": _LEGACY, "support": "F0"},
+                        {"text": _PRICING, "support": "F1"}])
+    script = engine.write_script(BRIEF_QUAL, chat_fn=_chat_returning(obj))
+    legacy_ref = next(c["source_ref"] for s in script["scenes"] for c in s["claims"]
+                      if "legacy" in c["text"].lower())
+    pricing_ref = next(c["source_ref"] for s in script["scenes"] for c in s["claims"]
+                       if "pricing" in c["text"].lower())
+    assert legacy_ref == 1                      # F0's source, unchanged
+    assert pricing_ref == 3                     # F1's source, unchanged
+    assert engine.find_qualitative_citation_problems(script, BRIEF_QUAL) == []
+
+
+def test_qualitative_guard_flags_a_miscited_claim_directly():
+    # The guard (run on a raw script, before auto-repair) flags a legacy claim cited
+    # to F1's source as a `mismatch`, naming F0's sources; the same claim cited to F0
+    # is clean; a claim cited to a non-fact source is out of scope (skipped).
+    bad = {"scenes": [{"scene_no": 1, "point": "p", "narration": "n", "claims": [
+        {"claim_id": "s1c1", "text": _LEGACY, "source_ref": 3}]}]}
+    probs = engine.find_qualitative_citation_problems(bad, BRIEF_QUAL)
+    assert len(probs) == 1
+    assert probs[0]["claim_id"] == "s1c1"
+    assert probs[0]["reason"] == "mismatch"
+    assert probs[0]["expected_source_idx"] == [1, 2]
+
+    good = {"scenes": [{"scene_no": 1, "point": "p", "narration": "n", "claims": [
+        {"claim_id": "s1c1", "text": _LEGACY, "source_ref": 1}]}]}
+    assert engine.find_qualitative_citation_problems(good, BRIEF_QUAL) == []
+
+    off = {"scenes": [{"scene_no": 1, "point": "p", "narration": "n", "claims": [
+        {"claim_id": "s1c1", "text": _LEGACY, "source_ref": 0}]}]}  # non-fact source
+    assert engine.find_qualitative_citation_problems(off, BRIEF_QUAL) == []
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

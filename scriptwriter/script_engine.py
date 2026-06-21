@@ -258,9 +258,22 @@ def _figures(text: str) -> set[str]:
 
     "$1,200" -> {"1200"}; "76.8%" -> {"76.8"}; "2,000,000" -> {"2000000"}. Used to
     match a claim's figures against the brief's key_statistics values.
+
+    Digits GLUED to letters are model/version identifiers, not statistics, and are
+    excluded: "GPT-4o" / "GPT-5.x" / "V3" carry no figure to match — so a qualitative
+    claim about model versions isn't misread as asserting a key-statistic number
+    (which would route it to the numeric path and starve the qualitative repair).
     """
+    s = (text or "").replace(",", "")
     out: set[str] = set()
-    for m in _NUM_RE.finditer((text or "").replace(",", "")):
+    for m in _NUM_RE.finditer(s):
+        a, b = m.start(), m.end()
+        if a > 0 and s[a - 1].isalpha():            # "o4", "gpt4" — identity, not figure
+            continue
+        if b < len(s) and s[b].isalpha():           # "4o" — identity, not figure
+            continue
+        if b + 1 < len(s) and s[b] == "." and s[b + 1].isalpha():  # "5.x" — version
+            continue
         try:
             out.add(_norm_num(m.group(0)))
         except ValueError:
@@ -293,6 +306,53 @@ def _label_tokens(text: str) -> set[str]:
         if len(t) >= 2 and t not in _LABEL_STOPWORDS:
             out.add(t)
     return out
+
+
+# Content-word matching — the qualitative analog of label matching. Where labels
+# isolate model/benchmark identity for a NUMBER's citation, content tokens capture a
+# qualitative CLAIM's subject so it can be matched to the verified_fact it actually
+# rests on. The stopword set is _LABEL_STOPWORDS widened with common prose
+# connectors/auxiliaries, so overlap means a real topical agreement (gpt/legacy/
+# superseded) and not a shared "now/more/which/has".
+_CONTENT_STOPWORDS = _LABEL_STOPWORDS | frozenset({
+    "now", "new", "newer", "newest", "old", "older", "more", "most", "less", "least",
+    "very", "much", "many", "few", "some", "all", "any", "no", "not", "but", "so",
+    "then", "also", "just", "only", "like", "such", "into", "onto", "between",
+    "across", "their", "them", "they", "these", "those", "what", "which", "where",
+    "when", "why", "how", "who", "whom", "whose", "has", "have", "had", "having",
+    "are", "be", "been", "being", "am", "will", "would", "shall", "can", "could",
+    "should", "may", "might", "must", "do", "does", "did", "doing", "done", "you",
+    "your", "yours", "we", "us", "our", "ours", "i", "me", "my", "he", "she", "his",
+    "her", "him", "there", "here", "still", "yet", "every", "each", "both", "either",
+    "neither", "while", "because", "since", "though", "although", "however", "thus",
+    "hence", "now", "today", "currently", "become", "becomes", "became", "make",
+    "makes", "made", "get", "gets", "got", "use", "uses", "used", "using", "lot",
+    "lots", "thing", "things", "real", "really", "actual", "actually", "now",
+})
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Topical content tokens in `text` (lowercased), prose connectors dropped.
+
+    "GPT-4o is now a legacy model, superseded by GPT-5.x" -> {gpt, 4o, legacy, model,
+    superseded, 5.x}. Used to measure how strongly a qualitative claim overlaps a
+    verified_fact's text, so a claim can be re-pointed to the fact it really rests on.
+    """
+    out: set[str] = set()
+    for t in _TOKEN_RE.findall((text or "").lower()):
+        t = t.strip(".")
+        if len(t) >= 2 and t not in _CONTENT_STOPWORDS:
+            out.add(t)
+    return out
+
+
+def _is_stat_tag(support) -> bool:
+    """True if the brain's `support` tag is an S# (key_statistics) tag.
+
+    Qualitative citation repair applies only to verified_fact (F#) claims; a number's
+    citation is the numeric reconciler's job, so an S#-tagged claim is left alone here.
+    """
+    return bool(re.match(r"^\s*[Ss]\d+\s*$", str(support or "")))
 
 
 def _stat_records(brief: dict, url_to_idx: dict[str, int]) -> list[dict]:
@@ -390,6 +450,120 @@ def find_numeric_citation_problems(script: dict, brief: dict) -> list[dict]:
 
 
 # ----------------------------------------------------------------------
+# Qualitative-citation correctness — the qualitative analog of the numeric
+# reconciler. A TRUE claim must not hard-block at the gate just because the brain
+# mis-tagged it to the wrong fact's source. For each verified_fact claim we measure
+# content-token overlap between the claim text and every verified_fact; on a clearly
+# better, unique match the source_ref is repaired to that fact's source. Ambiguous or
+# weak matches are left alone and FLAGGED (never silently re-pointed) — the
+# conservative dual of the numeric guard's "drop a number cited to the wrong thing".
+# ----------------------------------------------------------------------
+MIN_QUALITATIVE_OVERLAP = 2  # shared content tokens needed to trust a fact match
+
+
+def _fact_records(brief: dict, url_to_idx: dict[str, int]) -> list[dict]:
+    """Citable verified_facts as match records: {idx, src_idxs, first_src, content}.
+
+    Only facts whose `sources` resolve to a real brief source are included (others
+    can't back anything). `first_src` mirrors resolve_support's "first resolvable
+    source URL wins" so a repair lands on the same index an honest F# tag would have;
+    `content` = the fact's topical tokens, used to score a claim's overlap.
+    """
+    recs: list[dict] = []
+    for i, f in enumerate(brief.get("verified_facts") or []):
+        if not isinstance(f, dict):
+            continue
+        ordered = [url_to_idx[u] for u in (f.get("sources") or []) if u in url_to_idx]
+        if not ordered:
+            continue
+        recs.append({"idx": i, "src_idxs": set(ordered), "first_src": ordered[0],
+                     "content": _content_tokens(str(f.get("claim", "")))})
+    return recs
+
+
+def _rank_fact_matches(text: str, fact_recs: list[dict]) -> tuple[int, list[dict]]:
+    """(top_score, records tied at top_score) by content-token overlap with `text`.
+
+    (0, []) when the claim has no content tokens or there are no citable facts.
+    """
+    ctoks = _content_tokens(text)
+    if not ctoks or not fact_recs:
+        return 0, []
+    scored = [(len(r["content"] & ctoks), r) for r in fact_recs]
+    top = max(score for score, _ in scored)
+    return top, [r for score, r in scored if score == top]
+
+
+def _reconcile_qualitative_ref(text: str, ref: int, fact_recs: list[dict]) -> int:
+    """Repair a qualitative claim's source_ref to the fact it actually rests on.
+
+    - top overlap below threshold -> ref kept (weak match; flagged separately, never
+      silently re-pointed).
+    - ref already in a best-matching fact's sources -> ref kept (correctly cited).
+    - the top score is a tie across facts -> ref kept (ambiguous; flagged separately).
+    - a single fact wins clearly and ref isn't one of its sources -> re-point to that
+      fact's first resolvable source (the qualitative analog of the numeric repair).
+    """
+    top, tops = _rank_fact_matches(text, fact_recs)
+    if top < MIN_QUALITATIVE_OVERLAP:
+        return ref
+    if any(ref in r["src_idxs"] for r in tops):
+        return ref
+    if len(tops) > 1:
+        return ref
+    return tops[0]["first_src"]
+
+
+def find_qualitative_citation_problems(script: dict, brief: dict) -> list[dict]:
+    """Deterministic guard: qualitative claims cited to a source no fact supports.
+
+    The sibling of find_numeric_citation_problems for non-numeric claims. For every
+    claim that asserts NO key_statistic figure but IS grounded on a verified_fact
+    source, the cited source must belong to a best-content-matching fact. Reports:
+    - `reason: mismatch`  — a single fact wins clearly but the claim is cited elsewhere
+      (`expected_source_idx` names that fact's sources);
+    - `reason: ambiguous` — the top match is tied across facts (can't re-point safely);
+    - `reason: low_confidence` — no fact clears the overlap threshold.
+    Pure + offline: inspectable before the gate (auto-repaired mismatches won't appear).
+    """
+    sources = brief.get("sources") or []
+    url_to_idx = _source_url_index(brief)
+    fact_recs = _fact_records(brief, url_to_idx)
+    stat_recs = _stat_records(brief, url_to_idx)
+    fact_src_space: set[int] = set().union(*[r["src_idxs"] for r in fact_recs]) \
+        if fact_recs else set()
+    problems: list[dict] = []
+    for scene in script.get("scenes", []):
+        for c in scene.get("claims", []):
+            text = c.get("text", "")
+            _, figure_seen = _correct_stat_sources(text, stat_recs)
+            if figure_seen:
+                continue  # a key-statistic number -> the numeric guard's domain
+            resolved, src = resolve_source_ref(c.get("source_ref"), sources)
+            idx = sources.index(src) if (resolved and src in sources) else None
+            if idx is None or idx not in fact_src_space:
+                continue  # not a verified-fact-grounded claim -> nothing to check
+            top, tops = _rank_fact_matches(text, fact_recs)
+            if top >= MIN_QUALITATIVE_OVERLAP and any(idx in r["src_idxs"] for r in tops):
+                continue  # cited to a best-matching fact -> fine
+            if top < MIN_QUALITATIVE_OVERLAP:
+                reason, expected = "low_confidence", []
+            elif len(tops) > 1:
+                reason, expected = "ambiguous", []
+            else:
+                reason, expected = "mismatch", sorted(tops[0]["src_idxs"])
+            problems.append({
+                "claim_id": c.get("claim_id"),
+                "scene_no": scene.get("scene_no"),
+                "source_ref": c.get("source_ref"),
+                "expected_source_idx": expected,
+                "reason": reason,
+                "text": text,
+            })
+    return problems
+
+
+# ----------------------------------------------------------------------
 # Render the brief for the brain — facts TAGGED so the brain can point at them
 # ----------------------------------------------------------------------
 def _facts_block(brief: dict) -> str:
@@ -415,14 +589,21 @@ def _supporting_block(brief: dict) -> str:
         out.append(
             "KEY STATISTICS — these are SINGLE-SOURCED by construction (one `source` "
             "each), so they are NOT consensus. Never state one as a bare fact. For each "
-            "you use, either (a) ATTRIBUTE-AND-SOFTEN to its one source explicitly ('one "
-            "June-2026 pricing tracker lists…') — and only when it adds real value — or "
-            "(b) OMIT it. For volatile benchmark percentages, prefer OMIT; lead with the "
-            "multi-source VERIFIED FACTS instead. Two hard rules: keep any date (a dated "
-            "stat is a snapshot, never the current standing); and NEVER combine a figure "
-            "from one entry with a model/benchmark from another — if you state a figure, "
-            "use that ONE entry's exact model + benchmark, and tag it [S#] so the engine "
-            "cites that entry's own source:")
+            "you use, choose: (a) ATTRIBUTE-AND-SOFTEN to its one source explicitly ('one "
+            "June-2026 pricing tracker lists…') — only when it adds real value AND its "
+            "category isn't flagged below — or (b) OMIT it. For volatile benchmark "
+            "percentages, prefer OMIT; lead with the multi-source VERIFIED FACTS instead. "
+            "STRONGEST RULE — OMIT, do not attribute: if a figure's CATEGORY is called "
+            "out as conflicting/uncertain in OPEN QUESTIONS or CONTESTED below (e.g. "
+            "pricing comparability across providers/versions, benchmark numbers that mix "
+            "harnesses/versions), the number is uncorroborated — attribution will NOT "
+            "satisfy the fact-checker, so drop the figure entirely and make the "
+            "multi-source qualitative point from VERIFIED FACTS instead (e.g. 'roughly an "
+            "order of magnitude cheaper' rather than a single tracker's exact $/token). "
+            "Two hard rules also apply: keep any date (a dated stat is a snapshot, never "
+            "the current standing); and NEVER combine a figure from one entry with a "
+            "model/benchmark from another — if you state a figure, use that ONE entry's "
+            "exact model + benchmark, and tag it [S#] so the engine cites its own source:")
         for i, s in enumerate(stats):
             flag = "  ⟨dated snapshot — keep the qualifier⟩" if _stat_is_dated(s) else ""
             out.append(f"  [S{i}] {s.get('stat','')}: {s.get('value','')} "
@@ -488,6 +669,11 @@ def _build_prompt(brief: dict) -> str:
         "fact (e.g. a ~1M-token context window) is consensus — state it confidently.\n"
         "- KEY STATISTICS are single-sourced: attribute-and-soften to their one source, "
         "or omit. Prefer OMIT for volatile benchmark percentages. Never a bare fact.\n"
+        "- OMIT (don't attribute) a single-source figure whose CATEGORY the brief flags "
+        "as conflicting/uncertain in OPEN QUESTIONS or CONTESTED (e.g. pricing "
+        "comparability, benchmark version/harness mixing). Attribution does NOT satisfy "
+        "the fact-checker for an uncorroborated number — lead instead with the "
+        "multi-source qualitative VERIFIED FACT (e.g. '≈ an order of magnitude cheaper').\n"
         "- Never cite a figure to a different model/benchmark than the entry it came "
         "from; if two entries share a number, they are NOT interchangeable.\n"
         "- on_screen_text must never display an unhedged shaky number (a single-source "
@@ -541,6 +727,7 @@ def assemble_script(brief: dict, llm_out: dict) -> dict:
     stats = brief.get("key_statistics") or []
     url_to_idx = _source_url_index(brief)
     recs = _stat_records(brief, url_to_idx)
+    fact_recs = _fact_records(brief, url_to_idx)
 
     assembled: list[dict] = []
     for raw in (llm_out.get("scenes") or []):
@@ -558,12 +745,21 @@ def assemble_script(brief: dict, llm_out: dict) -> dict:
             ref = resolve_support(c.get("support"), facts, url_to_idx, stats)
             if ref is None:
                 continue  # can't tag it to a brief source -> it does not ship
-            # Deterministic safety net: cite a numeric claim to the key_statistic that
-            # matches on figure AND model/benchmark, repairing a colliding ref. A number
-            # that matches a stat value but no entry's label (None) must not ship.
-            ref = _reconcile_numeric_ref(text, ref, recs)
-            if ref is None:
-                continue
+            # Deterministic safety nets, mirroring each other:
+            #  - a claim that asserts a key_statistic figure is cited to the entry that
+            #    matches on figure AND model/benchmark (numeric); a number matching a
+            #    stat value but no entry's label (None) must not ship.
+            #  - a qualitative claim (no key-stat figure) tagged to a verified_fact is
+            #    re-pointed to the fact its TEXT actually rests on, so a true claim
+            #    can't block on a mis-tagged source. S#-tagged claims are left to the
+            #    numeric path; weak/ambiguous matches are left alone (and flagged).
+            _, figure_seen = _correct_stat_sources(text, recs)
+            if figure_seen:
+                ref = _reconcile_numeric_ref(text, ref, recs)
+                if ref is None:
+                    continue
+            elif not _is_stat_tag(c.get("support")):
+                ref = _reconcile_qualitative_ref(text, ref, fact_recs)
             kept_claims.append({"text": text, "source_ref": ref})
 
         # A point/detour scene whose only claims were dropped is asserting an
