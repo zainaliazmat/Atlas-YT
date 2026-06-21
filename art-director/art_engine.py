@@ -115,6 +115,34 @@ TEXTURES = (
 # ----------------------------------------------------------------------
 # Bounds (enforced in code; documented in SKILL)
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# BRAND auto-tagging (issue #2, Direction A) — model/brand shots are rendered as
+# HTML/SVG brand-chips by the Composition Engineer (the logos are trademarked and
+# un-sourceable from the CC0/PD/CC allowlist). A shot whose content/asset_ref names a
+# registry model is retagged kind:'brand' so Magpie SKIPS it and Mason renders a chip.
+# The canonical registry (display name, color, optional inline SVG) lives in the
+# Composition Engineer (composition-engineer/composition_engine.py BRAND_CHIPS); a
+# cross-engine test guards that these aliases stay a subset of what Mason can render.
+# ----------------------------------------------------------------------
+BRAND_ALIASES = frozenset({
+    "gpt-4o", "gpt4o", "gpt-4", "gpt", "chatgpt", "openai",   # -> OpenAI / GPT-4o
+    "claude", "anthropic",                                    # -> Anthropic / Claude
+    "gemini", "google gemini",                                # -> Google / Gemini
+    "deepseek", "deep seek",                                  # -> DeepSeek
+})
+# Pure-typography kinds are never retagged (a title that merely mentions a model is text,
+# not a logo). Mirrors the Asset Sourcer's _TYPOGRAPHY_KINDS.
+_TEXT_KINDS = {"title", "text", "quote", "headline", "caption", "label",
+               "lower-third", "subtitle", "kicker"}
+
+
+def _names_a_brand(text: str) -> bool:
+    """True if `text` mentions any registry model as a delimited unit (not inside a word)."""
+    low = (text or "").lower()
+    return any(re.search(rf"(?<![a-z0-9]){re.escape(a)}(?![a-z0-9])", low)
+               for a in BRAND_ALIASES)
+
+
 DEFAULT_FPS = 30
 FPS_MIN, FPS_MAX = 12, 60
 DEFAULT_MAX_PER_SCENE = 2          # Iris's restrained motion budget
@@ -346,11 +374,14 @@ def ensure_shots(raw_shots, scene_no: int, on_screen_text: str) -> list[dict]:
         ref = sh.get("asset_ref")
         if not (isinstance(ref, str) and ref.strip()):
             ref = f"s{scene_no}-{i}"
-        shots.append({
-            "kind": str(sh.get("kind", "image")).strip() or "image",
-            "content": str(sh.get("content", "")).strip(),
-            "asset_ref": ref,
-        })
+        kind = str(sh.get("kind", "image")).strip() or "image"
+        content = str(sh.get("content", "")).strip()
+        # Auto-tag model/brand shots so Magpie skips them and Mason renders a brand-chip.
+        # Pure-typography shots are left alone (a title mentioning a model is still text).
+        if kind not in _TEXT_KINDS and kind not in ("brand", "chip") \
+                and _names_a_brand(f"{content} {ref}"):
+            kind = "brand"
+        shots.append({"kind": kind, "content": content, "asset_ref": ref})
     return shots
 
 
@@ -422,7 +453,11 @@ def _build_storyboard_prompt(script: dict, style_guide: dict) -> str:
         "order. For each scene choose ONE layout (from LAYOUTS) using the visual_note "
         "/ on_screen_text density / claims, define its shots (each a `kind` + a "
         "content description — you reference assets, you do NOT resolve URLs or "
-        "licenses), choose ONE transition within budget, and assign a small effects "
+        "licenses). For any shot that shows a product/model LOGO or BRAND (e.g. a named "
+        "AI model, a company logo), set kind:'brand' and NAME the model(s) in `content` "
+        "— these are rendered as typographic brand-chips in HTML, never sourced as "
+        "photos (logos are trademarked and not in the license-free archives). Choose "
+        "ONE transition within budget, and assign a small effects "
         "array within budget. Flag EXACTLY ONE scene as the signature beat — the one "
         f"moment that earns the animated '{SIGNATURE_EFFECT}' flourish; every other "
         "scene leaves that effect alone. Stay ruthless: most scenes want a plain "

@@ -100,6 +100,34 @@ EFFECTS = (
 )
 TEXTURES = ("paper", "grain", "halftone", "vignette", "scanlines")
 
+# ----------------------------------------------------------------------
+# BRAND CHIPS (issue #2, Direction A) — model/logo shots are rendered here as
+# typographic HTML/SVG chips, NEVER sourced (the logos are trademarked and absent
+# from the Asset Sourcer's CC0/PD/CC allowlist, where a keyword fallback ships
+# irrelevant stock). This registry is the canonical home; the Art Director mirrors the
+# alias list for its auto-tagger (guarded by a cross-engine test). Each entry:
+#   aliases  — lowercased names matched (as delimited units) in shot content/asset_ref
+#   display  — the chip's typographic label
+#   color    — the brand accent (border + text)
+#   logo_svg — OPTIONAL inline SVG; when present Mason renders it INSTEAD of the label.
+#              v1 ships chips only (no curated SVGs); add real logos as data, no code change.
+BRAND_CHIPS = {
+    "openai":    {"aliases": ("gpt-4o", "gpt4o", "gpt-4", "gpt", "chatgpt", "openai"),
+                  "display": "GPT-4o", "color": "#10A37F", "logo_svg": ""},
+    "anthropic": {"aliases": ("claude", "anthropic"),
+                  "display": "Claude", "color": "#D97757", "logo_svg": ""},
+    "google":    {"aliases": ("gemini", "google gemini"),
+                  "display": "Gemini", "color": "#4285F4", "logo_svg": ""},
+    "deepseek":  {"aliases": ("deepseek", "deep seek"),
+                  "display": "DeepSeek", "color": "#4D6BFE", "logo_svg": ""},
+}
+
+# Layouts whose partial embeds a media slot (call _media_html). Brand chips land in that
+# slot for these; for the text-only layouts they are injected as a centered focal layer.
+MEDIA_SLOT_LAYOUTS = frozenset({
+    "split-screen", "full-bleed-image", "lower-third", "data-chart", "map-focus",
+})
+
 
 # ======================================================================
 # Memory — a log of past composition runs (provider-agnostic, on our disk)
@@ -367,8 +395,58 @@ def _esc(text) -> str:
     return _html.escape(str(text or ""), quote=True)
 
 
+def detect_brands(text: str) -> list[str]:
+    """Return the registry brand keys named in `text`, ordered by first appearance, deduped.
+
+    Each alias is matched as a delimited unit (not inside a word), so 'gpt' fires on
+    'gpt-4o' and 'gpt_reasoning' but not on a larger token. Pure + deterministic.
+    """
+    low = (text or "").lower()
+    pos: dict[str, int] = {}
+    for key, spec in BRAND_CHIPS.items():
+        best = None
+        for a in spec["aliases"]:
+            m = re.search(rf"(?<![a-z0-9]){re.escape(a)}(?![a-z0-9])", low)
+            if m and (best is None or m.start() < best):
+                best = m.start()
+        if best is not None:
+            pos[key] = best
+    return [k for k, _ in sorted(pos.items(), key=lambda kv: kv[1])]
+
+
+def scene_brand_keys(shots) -> list[str]:
+    """Brand keys named across a scene's storyboard shots (content + asset_ref), ordered.
+
+    Detection is by model NAME, independent of shot.kind, so the existing storyboards
+    (kind:'graphic'/'panel'/…) render chips too, alongside Iris's newer kind:'brand'.
+    """
+    text = " ".join(f"{s.get('content', '')} {s.get('asset_ref', '')}"
+                    for s in (shots or []) if isinstance(s, dict))
+    return detect_brands(text)
+
+
+def render_brand_chips(keys, *, cls: str = "brand-chips") -> str:
+    """Render one styled chip per brand key (inline SVG logo if the entry has one, else
+    the typographic display name in the brand color). Several keys -> a 'matchup' row."""
+    chips = []
+    for k in keys or []:
+        b = BRAND_CHIPS.get(k)
+        if not b:
+            continue
+        inner = b.get("logo_svg") or f'<span class="brand-chip-name">{_esc(b["display"])}</span>'
+        chips.append(f'<div class="brand-chip" style="--brand:{b["color"]}">{inner}</div>')
+    return f'<div class="{cls}">' + "".join(chips) + "</div>"
+
+
 def _media_html(ctx: dict, cls: str = "media") -> str:
-    """An <img> for a present local asset, else a deterministic placeholder panel."""
+    """Brand chips (if this is a brand scene) take the media slot; else an <img> for a
+    present local asset, else a deterministic placeholder panel.
+
+    Brand chips take PRECEDENCE over any sourced asset: for a brand scene the sourced
+    image is irrelevant by construction (the logos are un-sourceable), so the chip wins.
+    """
+    if ctx.get("brand_keys"):
+        return f'<div class="{cls} brand-media">{render_brand_chips(ctx["brand_keys"])}</div>'
     asset = next((a for a in ctx["assets"] if a["type"] in ("image", "video", "data-viz")),
                  None)
     if asset and asset.get("src_rel"):
@@ -585,6 +663,18 @@ _BASE_CSS = (
     ".cmp{position:absolute;top:0;bottom:0;width:50%;display:flex;align-items:center;"
     "justify-content:center;}.cmp.myth{left:0;background:#1a1a1a;color:#777;}"
     ".cmp.fact{right:0;}"
+    # Brand chips (issue #2, Direction A): typographic badge in the brand color; a row
+    # of them when several models appear (the matchup). Static — deterministic under
+    # frame-seek; the only motion is a build-time GSAP entrance on the paused timeline.
+    ".brand-chips{display:flex;flex-wrap:wrap;gap:40px;align-items:center;"
+    "justify-content:center;max-width:92%;}"
+    ".brand-chip{display:flex;align-items:center;justify-content:center;gap:18px;"
+    "padding:28px 56px;border-radius:28px;border:4px solid var(--brand);color:var(--brand);"
+    "background:#ffffff0d;font-size:64px;font-weight:800;letter-spacing:-1px;line-height:1;"
+    "white-space:nowrap;}"
+    ".brand-chip svg{height:84px;width:auto;display:block;}"
+    ".brand-media{display:flex;align-items:center;justify-content:center;width:100%;height:100%;}"
+    ".layout.has-brand{flex-direction:column;gap:64px;}"
 )
 
 
@@ -608,6 +698,22 @@ def compose_scene_html(ctx: dict) -> str:
     css_parts.append(lb["css"])
     layout_html = lb["html"]
     tl_lines += lb["tl"]
+
+    # --- BRAND CHIPS (issue #2, Direction A) ---
+    # Media-slot layouts already received the chips via _media_html (brand precedence).
+    # For text-only layouts, inject a centered focal row so the brand shows there too —
+    # this is what finally puts the logos on screen in title-card / list-stack /
+    # centered-statement / quote-card / comparison scenes.
+    brand_keys = ctx.get("brand_keys") or []
+    if brand_keys and layout not in MEDIA_SLOT_LAYOUTS:
+        chips = render_brand_chips(brand_keys)
+        marker = 'class="layout '
+        idx = layout_html.find(marker)
+        if idx != -1:
+            layout_html = layout_html.replace(marker, 'class="layout has-brand ', 1)
+            gt = layout_html.find(">", idx)
+            if gt != -1:
+                layout_html = layout_html[:gt + 1] + chips + layout_html[gt + 1:]
 
     # --- TEXTURES (global overlays, absolute children INSIDE the root) ---
     overlay_html: list[str] = []
@@ -640,6 +746,11 @@ def compose_scene_html(ctx: dict) -> str:
             if gt != -1:
                 layout_html = (layout_html[:gt + 1] + '<span class="hl-sweep"></span>'
                                + layout_html[gt + 1:])
+
+    # Brand-chip entrance (build-time, deterministic; a gentle staggered fade-in).
+    if brand_keys:
+        tl_lines.append('tl.from(".brand-chip",{opacity:0,y:24,duration:0.5,'
+                        'ease:"power2.out",stagger:0.08},0.1);')
 
     # Title entrance (core motion, gentle ease; stepped effects own their own motion)
     tl_lines.insert(0, 'tl.from(".scene-title",{opacity:0,y:24,duration:0.6,'
@@ -714,6 +825,7 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
         resolved.append(a)
 
     highlight = palette.get("signature_highlight", SIGNATURE_HIGHLIGHT)
+    shots = board_scene.get("shots") or []
     return {
         "scene_no": n, "comp_id": f"scene-{n:02d}", "duration": duration,
         "fps": clamp_fps((style_guide or {}).get("fps", DEFAULT_FPS)),
@@ -723,6 +835,7 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
         "signature": signature, "palette": {**palette, "font": font},
         "highlight": highlight,
         "captions": scene_captions(segments, n), "assets": resolved,
+        "shots": shots, "brand_keys": scene_brand_keys(shots),
     }
 
 

@@ -219,6 +219,11 @@ def is_acceptable(license_raw: str) -> bool:
 # Pure typography rendered by the Composition Engineer from script text -> not an asset.
 _TYPOGRAPHY_KINDS = {"title", "text", "quote", "headline", "caption", "label",
                      "lower-third", "subtitle", "kicker"}
+# Brand/model shots are rendered as HTML/SVG brand-chips by the Composition Engineer
+# (Mason). The logos are trademarked and absent from the CC0/PD/CC allowlist, so Magpie
+# must NOT source them (a keyword fallback would ship irrelevant stock). Like typography,
+# these are SKIPPED here and emit no asset_manifest row.
+_RENDER_KINDS = {"brand", "chip"}
 _VIDEO_KINDS = {"footage", "video", "clip", "broll-video", "motion", "b-roll-video"}
 _ICON_KINDS = {"icon", "logo", "symbol", "glyph", "pictogram", "mark"}
 _DATAVIZ_KINDS = {"chart", "graph", "plot", "data", "dataviz", "data-viz", "diagram",
@@ -263,6 +268,9 @@ def classify_shot(shot: dict) -> ShotPlan:
 
     if kind in _TYPOGRAPHY_KINDS:
         return ShotPlan("image", "skip", "typography — rendered from script text")
+
+    if kind in _RENDER_KINDS:
+        return ShotPlan("image", "skip", "brand/model shot — rendered in HTML by Mason")
 
     if kind in _SPLIT_KINDS:
         # The map/diagram split routes on CONTENT, scavenger bias wins ties.

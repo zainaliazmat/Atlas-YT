@@ -235,6 +235,55 @@ def test_ensure_shots_synthesizes_a_default_when_empty():
 
 
 # ----------------------------------------------------------------------
+# Brand auto-tagging — a shot naming a registry model becomes kind:'brand' so
+# Magpie skips it and Mason renders an HTML/SVG brand-chip (issue #2, Direction A).
+# ----------------------------------------------------------------------
+def test_ensure_shots_autotags_brand_when_content_names_a_model():
+    shots = engine.ensure_shots(
+        [{"kind": "graphic", "content": "the Claude logo glowing", "asset_ref": "r1"},
+         {"kind": "photo", "content": "a city skyline at dusk", "asset_ref": "r2"},
+         {"kind": "statement", "content": "fast and cheap, DeepSeek beneath", "asset_ref": "r3"}],
+        5, "")
+    assert shots[0]["kind"] == "brand"      # names Claude -> brand
+    assert shots[1]["kind"] == "photo"      # no model -> unchanged
+    assert shots[2]["kind"] == "brand"      # 'statement' is not pure-typography -> brand
+
+
+def test_ensure_shots_autotags_brand_from_asset_ref():
+    shots = engine.ensure_shots(
+        [{"kind": "graphic", "content": "four logos lined up", "asset_ref": "gpt_reasoning_web"}],
+        9, "")
+    assert shots[0]["kind"] == "brand"      # asset_ref names gpt -> brand
+
+
+def test_ensure_shots_does_not_override_pure_typography():
+    shots = engine.ensure_shots(
+        [{"kind": "title", "content": "GPT-4o wins", "asset_ref": "r1"}], 1, "")
+    assert shots[0]["kind"] == "title"      # a title that mentions a model stays text
+
+
+def test_brand_aliases_are_a_subset_of_the_composition_engineer_registry():
+    """Drift guard: every alias Iris auto-tags on must be one Mason can render, else a
+    brand shot would skip sourcing yet render no chip. Mirrors the cross-engine vocab test."""
+    import ast
+    src = (pathlib.Path(__file__).resolve().parents[2] / "composition-engineer"
+           / "composition_engine.py")
+    if not src.exists():
+        return
+    tree = ast.parse(src.read_text())
+    mason_strings: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id == "BRAND_CHIPS":
+            for s in ast.walk(node.value):
+                if isinstance(s, ast.Constant) and isinstance(s.value, str):
+                    mason_strings.add(s.value.lower())
+    assert mason_strings, "could not find BRAND_CHIPS in composition_engine.py"
+    assert {a.lower() for a in engine.BRAND_ALIASES} <= mason_strings
+
+
+# ----------------------------------------------------------------------
 # design_style — end to end (mocked brain) + contract validity
 # ----------------------------------------------------------------------
 def test_design_style_enforces_invariants_and_validates():

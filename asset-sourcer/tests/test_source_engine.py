@@ -202,6 +202,29 @@ def test_classify_shot():
     assert data_map.action == "generate" and data_map.asset_type == "data-viz"
 
 
+def test_classify_shot_brand_kinds_skip():
+    # Brand/chip shots are rendered in HTML by the Composition Engineer (Mason) — the
+    # logos are trademarked and un-sourceable from the CC0/PD/CC allowlist, so Magpie
+    # must NOT source them (and emits no asset_manifest row), like typography.
+    for kind in ("brand", "chip"):
+        plan = engine.classify_shot(_shot(kind, "GPT-4o vs Claude vs Gemini", "x"))
+        assert plan.action == "skip", f"{kind!r} should skip"
+
+
+def test_brand_shot_emits_no_asset_row():
+    sb = {"scenes": [{"scene_no": 1, "shots": [
+        _shot("brand", "the four logos GPT-4o Claude Gemini DeepSeek", "logos"),
+        _shot("photo", "a cotton plant", "plant")]}]}
+    client = FakeClient(by_source={"openverse": [cand("openverse", "cotton plant", "CC0")]},
+                        downloads={"https://example.test/openverse/cotton-plant.jpg": b"\x89PNG"})
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        manifest = engine.source_assets(sb, {}, client=client, pdir=d)
+    ids = [a["asset_id"] for a in manifest["assets"]]
+    assert "logos" not in ids          # brand shot skipped
+    assert "plant" in ids              # ordinary shot still sourced
+
+
 # ======================================================================
 # 4. Query derivation — era, monochrome bias, filler trim (deterministic)
 # ======================================================================

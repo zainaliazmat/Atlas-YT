@@ -291,6 +291,86 @@ def test_missing_local_asset_becomes_a_placeholder_panel():
 
 
 # ----------------------------------------------------------------------
+# Brand chips (issue #2, Direction A) — model/logo shots rendered as HTML/SVG,
+# never sourced. Detection is by model name so the EXISTING storyboard (kind:'graphic')
+# works too; chips show in BOTH media-slot and text-only layouts.
+# ----------------------------------------------------------------------
+def test_detect_brands_orders_and_dedupes():
+    assert engine.detect_brands("GPT-4o Claude Gemini DeepSeek") == \
+        ["openai", "anthropic", "google", "deepseek"]
+    assert engine.detect_brands("Claude, and claude again") == ["anthropic"]
+    assert engine.detect_brands("a quiet city skyline at dusk") == []
+
+
+def test_scene_brand_keys_scans_shots_regardless_of_kind():
+    shots = [{"kind": "graphic", "content": "four logos GPT-4o Claude Gemini DeepSeek",
+              "asset_ref": "x"}]
+    assert engine.scene_brand_keys(shots) == ["openai", "anthropic", "google", "deepseek"]
+    # asset_ref alone names a model
+    assert engine.scene_brand_keys([{"kind": "graphic", "content": "web",
+                                     "asset_ref": "gpt_reasoning"}]) == ["openai"]
+
+
+def test_render_brand_chips_single_uses_display_and_brand_color():
+    one = engine.render_brand_chips(["anthropic"])
+    assert one.count('class="brand-chip"') == 1
+    assert "Claude" in one and "#D97757" in one
+
+
+def test_render_brand_chips_matchup_renders_all_four():
+    four = engine.render_brand_chips(["openai", "anthropic", "google", "deepseek"])
+    assert four.count('class="brand-chip"') == 4
+    for name in ("GPT-4o", "Claude", "Gemini", "DeepSeek"):
+        assert name in four
+
+
+def test_render_brand_chips_prefers_inline_logo_svg_when_present(monkeypatch):
+    entry = dict(engine.BRAND_CHIPS["anthropic"], logo_svg='<svg id="anthropic-logo"></svg>')
+    monkeypatch.setitem(engine.BRAND_CHIPS, "anthropic", entry)
+    html = engine.render_brand_chips(["anthropic"])
+    assert '<svg id="anthropic-logo">' in html
+    assert "Claude" not in html          # the SVG replaces the typographic name
+
+
+def test_brand_chips_injected_into_text_only_layout():
+    ctx = _ctx(layout="title-card", signature=False, effects=[], assets=[],
+               brand_keys=["deepseek"])
+    html = engine.compose_scene_html(ctx)
+    assert "brand-chip" in html and "DeepSeek" in html
+    assert "title-card" in html          # the layout is preserved
+    assert engine.scan_determinism(html) == []
+
+
+def test_brand_chips_take_the_media_slot_in_media_layouts():
+    ctx = _ctx(layout="split-screen", signature=False, effects=[],
+               brand_keys=["openai", "anthropic"],
+               assets=[{"type": "image", "label": "junk", "src_rel": "assets/junk.jpg",
+                        "placeholder": False}])
+    html = engine.compose_scene_html(ctx)
+    assert "brand-media" in html
+    assert "GPT-4o" in html and "Claude" in html
+    assert "<img" not in html            # brand chips take precedence over a sourced asset
+    assert engine.scan_determinism(html) == []
+
+
+def test_no_brand_keys_leaves_layouts_unchanged():
+    ctx = _ctx(layout="title-card", signature=False, effects=[], assets=[])
+    html = engine.compose_scene_html(ctx)
+    assert 'class="brand-chip"' not in html      # no chip element rendered
+    assert "layout has-brand" not in html        # layout container class untouched
+
+
+def test_scene_ctx_wires_brand_keys_from_storyboard_shots(tmp_path):
+    board = {"scene_no": 1, "layout": "title-card", "transition": "cut", "effects": [],
+             "signature_beat": False,
+             "shots": [{"kind": "graphic", "content": "GPT-4o Claude Gemini DeepSeek",
+                        "asset_ref": "logos"}]}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Wrong question."},
+                            {"palette": {}}, board, [], [], tmp_path, tmp_path)
+    assert ctx["brand_keys"] == ["openai", "anthropic", "google", "deepseek"]
+
+
+# ----------------------------------------------------------------------
 # Asset resolution — placeholder vs integrity flag
 # ----------------------------------------------------------------------
 def test_resolve_assets_flags_missing_sourced_file_as_integrity_not_placeholder(tmp_path):
