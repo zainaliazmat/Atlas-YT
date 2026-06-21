@@ -9,7 +9,9 @@
 ## 1. Project Overview
 
 **YT-AGENTS is a multi-agent "video agency" that turns a topic brief into a finished,
-narrated, fact-checked explainer video — autonomously.** You (the "CEO") talk to a single
+narrated, fact-checked explainer video — autonomously.** Every pipeline stage now runs a real
+specialist engine (the last placeholder, the `research` stage, was wired to Sage — see §12).
+You (the "CEO") talk to a single
 manager agent called **Atlas (the Showrunner)** in a chat "meeting room." Atlas delegates
 to a fleet of specialist agents — each a self-contained Python project with its own
 personality, brain, and memory — and runs them through a deterministic production
@@ -47,7 +49,7 @@ and dropped into their registered slots. (See §12 for the one stage that is sti
 | **External data APIs** | YouTube Data API v3 (Scout), Google Trends via `pytrends` (Scout), web search (DuckDuckGo `ddgs` default; Tavily/Brave optional), Wikipedia REST, GDELT news, plus PD/CC asset & audio archives (see §9) |
 | **Package manager** | `pip` + per-project `requirements.txt` |
 | **Tests** | `pytest` (≈40 test files across the repo; pure unit tests, no network) |
-| **Version control** | **Not a git repo** (no `.git`). There are `.gitignore` files, but the tree is not initialized. |
+| **Version control** | **Git** (`main` is the upstream default; active work is on `master`). History is a series of `checkpoint before …` commits — see §12 for the current in-flight work. |
 
 There is no web frontend in the tree today, though `atlas/session.py` is explicitly built as
 a UI-neutral core "both the terminal REPL and a future web operator UI" would share.
@@ -87,7 +89,7 @@ one registry entry + one adapter, with **no orchestrator changes**.
               pipeline.py  ◄── validates each stage ──►  contracts/*.schema.json
               (deterministic spine)                      (frozen artifact shapes)
                     │
-   research(stub) → script → factcheck ★GATE → style → storyboard
+   research → script → factcheck ★GATE → style → storyboard
         → assets ∥ narration → compose ▲auto-gate → audiomix → render ★GATE → video.mp4
                     │  each stage's producer calls a specialist engine in-process
                     ▼
@@ -267,6 +269,11 @@ LLM-injectable), `run.py` (CLI), `chat.py` (co-worker REPL), `llm.py` (provider 
   key that hard-ducks the licensed music bed; one signature SFX lands on the cut into Iris's signature
   beat. Everything is pre-mixed into `master.wav`, and the narration track's `uri` points at the
   master — so the renderer muxes the full mix with **zero Composition Engineer edits**.
+- **Mason's brand chips (issue #2, Direction A):** when a scene names AI models whose logos are
+  un-sourceable, Mason renders a deterministic **brand card** instead of placeholder footage — the
+  real inline SVG logo (Lobe Icons, MIT) over the model name, framed in the brand color. Several
+  models in a scene become a "matchup" row; a model framed as de-emphasized gets a `dim` chip.
+  Inlined as data (no render-time fetch), so it stays frame-seek deterministic.
 - **Mason's auto-gate:** before spending a render, each scene passes a self-scan (no network/fetch,
   no SMIL filters, no late `gsap.set`) + HyperFrames `lint` + `validate` (headless Chrome) + `inspect`
   (layout/overflow + motion assertions). A scene that fails the gate blocks the stage.
@@ -441,17 +448,26 @@ cd atlas && python -m pytest tests/ -q
   has `status: "done"`, all 10 stages `done`, both gates `approved`, and a real `video.mp4`
   (11 scenes, ~72s audio).
 
-**Known gaps / in-progress / tech debt:**
-- **The pipeline's `research` stage is still a STUB.** In `pipeline.py`, the first stage uses
-  `stubs.produce_research` (offline placeholder brief), NOT Sage's real research engine — even though
-  Sage's `sage_research` *conversational* tool is real. So a `produce_video` run currently scripts from
-  placeholder research unless the brief itself carries the facts. **This is the most important thing to
-  know before changing the pipeline.** (`stubs.produce_factcheck` is also retained but no longer wired —
-  the pipeline uses Sage's real `produce_factcheck`.)
+**In-flight work (uncommitted, on `master`):**
+- **Issue #2 — "irrelevant footage" (Direction A):** the recent `checkpoint before …` commits plus the
+  uncommitted diff harden the LLM-comparison case. Mason (`composition_engine.py`) now renders **real
+  inline brand logos** (Lobe Icons, MIT — OpenAI/Claude/Gemini/DeepSeek SVG marks inlined as data, no
+  render-time fetch) for un-sourceable model logos, via `scene_brand_specs()` / `render_brand_chips()`;
+  a shot whose content reads as de-emphasized ("dimmed into the background") gets a `dim` chip so named
+  winners stand out. In parallel, the scriptwriter side gained citation/reliability hardening
+  (label-aware citation fix, qualitative-citation auto-repair, magnitude-comparative reliability rule).
+  See the `issue-2-irrelevant-footage` memory for the root-cause + A/B fix plan.
+
+**Known gaps / tech debt:**
+- **The `research` stage now runs Sage's REAL engine** (was a stub when this doc was first written).
+  `pipeline.py` wires `sage.produce_research` as the default `research` producer (mirroring how
+  `sage.produce_factcheck` replaced the factcheck stub). The offline placeholder
+  (`stubs.produce_research`) is retained only as an **opt-in fallback**: set `ATLAS_RESEARCH_STUB` truthy
+  to force it (dev / no-network), and that path logs loudly so a stub run is never mistaken for real
+  research. So a `produce_video` run now researches the topic for real before scripting.
 - **Docs lag the code:** `atlas/README.md` and `atlas/PLAN.md` describe the early "Scout + Sage only"
   phase; `CHANGELOG.md` 0.2.0 still calls five specialists "stubs." The registry/adapters are the
   ground truth — trust them over the prose docs.
-- **Not a git repository** — there's no version history; consider `git init` before large changes.
 - **Per-scene TTS is sequential** (~11s/scene overhead); a 10+ scene script can run minutes
   (narration job timeout is raised to 900s). Parallelizing per-scene TTS is a documented follow-up.
 - **No web UI yet** — `session.py` is built for one, but only the terminal frontend exists.

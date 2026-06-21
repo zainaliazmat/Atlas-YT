@@ -311,25 +311,56 @@ def test_scene_brand_keys_scans_shots_regardless_of_kind():
                                      "asset_ref": "gpt_reasoning"}]) == ["openai"]
 
 
-def test_render_brand_chips_single_uses_display_and_brand_color():
+def test_registry_ships_inline_logos_with_no_external_refs():
+    # Real brand logos are inlined; no runtime dep, no render-time fetch (HyperFrames-safe).
+    for key, b in engine.BRAND_CHIPS.items():
+        svg = b["logo_svg"]
+        assert svg.startswith("<svg") and svg.rstrip().endswith("</svg>"), key
+        assert "url(http" not in svg, key          # gradients are local fragment refs only
+        assert "href" not in svg, key              # no external/xlink references
+        assert "<image" not in svg.lower(), key    # no embedded raster fetch
+
+
+def test_render_brand_chips_renders_logo_and_label():
+    # With a logo, the chip shows the INLINE <svg> as the mark AND the name as a label.
     one = engine.render_brand_chips(["anthropic"])
     assert one.count('class="brand-chip"') == 1
-    assert "Claude" in one and "#D97757" in one
+    assert "<svg" in one                     # the real logo mark
+    assert "Claude" in one and "#D97757" in one   # name label + brand color
 
 
-def test_render_brand_chips_matchup_renders_all_four():
+def test_render_brand_chips_falls_back_to_text_when_logo_empty(monkeypatch):
+    entry = dict(engine.BRAND_CHIPS["anthropic"], logo_svg="")
+    monkeypatch.setitem(engine.BRAND_CHIPS, "anthropic", entry)
+    html = engine.render_brand_chips(["anthropic"])
+    assert "<svg" not in html and "Claude" in html   # typographic fallback
+
+
+def test_render_brand_chips_matchup_renders_all_four_logos():
     four = engine.render_brand_chips(["openai", "anthropic", "google", "deepseek"])
     assert four.count('class="brand-chip"') == 4
+    assert four.count("<svg") == 4           # four real logos
     for name in ("GPT-4o", "Claude", "Gemini", "DeepSeek"):
         assert name in four
 
 
-def test_render_brand_chips_prefers_inline_logo_svg_when_present(monkeypatch):
-    entry = dict(engine.BRAND_CHIPS["anthropic"], logo_svg='<svg id="anthropic-logo"></svg>')
-    monkeypatch.setitem(engine.BRAND_CHIPS, "anthropic", entry)
-    html = engine.render_brand_chips(["anthropic"])
-    assert '<svg id="anthropic-logo">' in html
-    assert "Claude" not in html          # the SVG replaces the typographic name
+def test_scene_brand_specs_deemphasizes_dimmed_shots():
+    shots = [
+        {"kind": "panel", "content": "Claude and DeepSeek logos glowing, foregrounded",
+         "asset_ref": "a"},
+        {"kind": "panel", "content": "GPT-4o and Gemini logos dimmed into the background",
+         "asset_ref": "b"},
+    ]
+    by = {s["key"]: s["dim"] for s in engine.scene_brand_specs(shots)}
+    assert by["anthropic"] is False and by["deepseek"] is False   # named winners
+    assert by["openai"] is True and by["google"] is True          # de-emphasized
+
+
+def test_render_brand_chips_dim_adds_class():
+    html = engine.render_brand_chips([{"key": "openai", "dim": True},
+                                      {"key": "anthropic", "dim": False}])
+    assert 'class="brand-chip dim"' in html      # de-emphasized
+    assert 'class="brand-chip"' in html          # the emphasized one
 
 
 def test_brand_chips_injected_into_text_only_layout():
