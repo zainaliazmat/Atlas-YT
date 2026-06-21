@@ -18,3 +18,4 @@ chat_state.json.corrupt-*
 # Local virtual environment.
 venv/
 .venv/
+

@@ -268,64 +268,117 @@ def _figures(text: str) -> set[str]:
     return out
 
 
-def _stat_figure_citable(brief: dict, url_to_idx: dict[str, int]) -> dict[str, set[int]]:
-    """Map each key_statistic FIGURE -> the brief.sources indices that back it.
+# Generic connector / measurement words that carry no model/benchmark identity. Kept
+# out of label matching so two stats can't "agree" just by sharing "score"/"on"/"the".
+_LABEL_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "on", "in", "to", "and", "or", "is", "was", "were", "at",
+    "by", "for", "with", "it", "its", "that", "this", "as", "than", "from", "per",
+    "about", "around", "near", "over", "under", "up", "out", "one", "two", "scored",
+    "score", "scores", "scoring", "hit", "hits", "reached", "reaches", "reportedly",
+    "roughly", "approximately", "approx", "circa", "value", "values", "number",
+})
+_TOKEN_RE = re.compile(r"[a-z0-9.]+")
 
-    A figure is keyed only when the stat carrying it has a `source` that resolves to a
-    real brief source (i.e. it is citable). So `correct = union of these` is the set of
-    source indices a claim asserting that figure is allowed to cite.
+
+def _label_tokens(text: str) -> set[str]:
+    """Distinctive model/benchmark/identity tokens in `text` (lowercased).
+
+    "Claude Sonnet 4.6 — SWE-bench Verified" -> {claude, sonnet, 4.6, swe, bench,
+    verified}. Generic connectors and measurement verbs are dropped so a label match
+    means a real model/benchmark agreement, not a shared "score on the".
     """
-    out: dict[str, set[int]] = {}
+    out: set[str] = set()
+    for t in _TOKEN_RE.findall((text or "").lower()):
+        t = t.strip(".")
+        if len(t) >= 2 and t not in _LABEL_STOPWORDS:
+            out.add(t)
+    return out
+
+
+def _stat_records(brief: dict, url_to_idx: dict[str, int]) -> list[dict]:
+    """Citable key_statistics as match records: {idx, figs, label}.
+
+    Only stats whose `source` resolves to a real brief source are included (others
+    can't be cited). `figs` = the value's normalized figures; `label` = the identity
+    tokens from the stat's descriptor (its model/benchmark), used to disambiguate two
+    stats that happen to share a figure (the 72.7% collision).
+    """
+    recs: list[dict] = []
     for stat in (brief.get("key_statistics") or []):
         if not isinstance(stat, dict):
             continue
         idx = url_to_idx.get(stat.get("source"))
         if idx is None:
             continue
-        for fig in _figures(str(stat.get("value", ""))):
-            out.setdefault(fig, set()).add(idx)
-    return out
+        figs = _figures(str(stat.get("value", "")))
+        if not figs:
+            continue
+        recs.append({"idx": idx, "figs": figs,
+                     "label": _label_tokens(str(stat.get("stat", "")))})
+    return recs
 
 
-def _reconcile_numeric_ref(text: str, ref: int,
-                           fig_citable: dict[str, set[int]]) -> int:
-    """Repair a numeric claim's source_ref to the source that carries its figure.
+def _correct_stat_sources(text: str, recs: list[dict]) -> tuple[set[int], bool]:
+    """Resolve which source indices may back a claim's STATISTIC figure.
 
-    If the claim asserts a figure that is a citable key_statistic value and the current
-    `ref` isn't one of that figure's real sources, re-point it to the correct one. Only
-    ever IMPROVES a citation — never drops a claim (richness is preserved); a figure
-    with no citable stat source is left untouched.
+    Returns (correct_idxs, figure_seen). `figure_seen` is True when the claim asserts a
+    figure that is some citable key_statistic's value (i.e. it IS a key-stat number).
+    Among the stats sharing that figure, the ones whose identity tokens best overlap the
+    claim win — so a 72.7% claim about Sonnet/SWE-bench resolves to that entry, not the
+    Opus/OSWorld entry that shares the number. If a figure matches but NO entry shares
+    any identity token (a number-only match), `correct` is empty -> the citation can't
+    be trusted (caller flags/drops it rather than silently number-matching).
     """
-    correct: set[int] = set()
-    for fig in _figures(text):
-        correct |= fig_citable.get(fig, set())
-    if not correct or ref in correct:
+    figs = _figures(text)
+    cands = [r for r in recs if r["figs"] & figs]
+    if not cands:
+        return set(), False
+    ctoks = _label_tokens(text)
+    scored = [(len(r["label"] & ctoks), r["idx"]) for r in cands]
+    best = max(score for score, _ in scored)
+    if best == 0:
+        return set(), True  # figure matches a stat value but no model/benchmark agrees
+    return {idx for score, idx in scored if score == best}, True
+
+
+def _reconcile_numeric_ref(text: str, ref: int, recs: list[dict]) -> int | None:
+    """Resolve a numeric claim's source_ref by figure AND label. None == DROP it.
+
+    - figure isn't a key-stat value (e.g. it lives inside a verified_fact) -> ref kept.
+    - figure matches stat(s) and a label agrees -> the label-correct source (repairing
+      a borrowed/colliding ref).
+    - figure matches a stat value but NO entry agrees on the model/benchmark -> None: a
+      number cited to the wrong thing must not ship (also surfaced by the guard).
+    """
+    correct, figure_seen = _correct_stat_sources(text, recs)
+    if not figure_seen:
         return ref
-    return min(correct)
+    if not correct:
+        return None
+    return ref if ref in correct else min(correct)
 
 
 def find_numeric_citation_problems(script: dict, brief: dict) -> list[dict]:
-    """Deterministic guard: numeric claims whose source_ref doesn't carry their figure.
+    """Deterministic guard: numeric claims cited to a source that doesn't carry them.
 
-    For every claim asserting a figure that exists in the brief's key_statistics, the
-    claim's `source_ref` must resolve to a brief source that is that statistic's own
-    source. Returns one record per offending claim (empty = all numeric citations are
-    sound). Pure + offline — the engine self-checks before the fact-check gate does.
+    For every claim asserting a figure that is a key_statistics value, the claim's
+    `source_ref` must resolve to the entry that matches on BOTH figure AND
+    model/benchmark label. A bare-number match to the wrong entry — or a number that
+    matches a stat value but no entry's label — is a problem (empty `expected_source_idx`
+    marks the number-only case). Pure + offline: the engine self-checks before the gate.
     """
     sources = brief.get("sources") or []
     url_to_idx = _source_url_index(brief)
-    fig_citable = _stat_figure_citable(brief, url_to_idx)
+    recs = _stat_records(brief, url_to_idx)
     problems: list[dict] = []
     for scene in script.get("scenes", []):
         for c in scene.get("claims", []):
-            correct: set[int] = set()
-            for fig in _figures(c.get("text", "")):
-                correct |= fig_citable.get(fig, set())
-            if not correct:
-                continue  # no citable statistic figure in this claim -> nothing to check
+            correct, figure_seen = _correct_stat_sources(c.get("text", ""), recs)
+            if not figure_seen:
+                continue  # no key-statistic figure in this claim -> nothing to check
             resolved, src = resolve_source_ref(c.get("source_ref"), sources)
             idx = sources.index(src) if (resolved and src in sources) else None
-            if idx not in correct:
+            if (not correct) or (idx not in correct):
                 problems.append({
                     "claim_id": c.get("claim_id"),
                     "scene_no": scene.get("scene_no"),
@@ -360,11 +413,16 @@ def _supporting_block(brief: dict) -> str:
     stats = (brief.get("key_statistics") or [])[:MAX_STATS]
     if stats:
         out.append(
-            "KEY STATISTICS — tag a claim asserting one of these with its [S#] (NOT an "
-            "[F#]); the engine cites it to the stat's OWN source. A stat carrying a date "
-            "is a SNAPSHOT: keep the date in the line, never state it as the current "
-            "standing. A stat that is single-sourced or echoes a CONTESTED/OPEN item "
-            "below must be hedged with its qualifier or omitted — never a flat fact:")
+            "KEY STATISTICS — these are SINGLE-SOURCED by construction (one `source` "
+            "each), so they are NOT consensus. Never state one as a bare fact. For each "
+            "you use, either (a) ATTRIBUTE-AND-SOFTEN to its one source explicitly ('one "
+            "June-2026 pricing tracker lists…') — and only when it adds real value — or "
+            "(b) OMIT it. For volatile benchmark percentages, prefer OMIT; lead with the "
+            "multi-source VERIFIED FACTS instead. Two hard rules: keep any date (a dated "
+            "stat is a snapshot, never the current standing); and NEVER combine a figure "
+            "from one entry with a model/benchmark from another — if you state a figure, "
+            "use that ONE entry's exact model + benchmark, and tag it [S#] so the engine "
+            "cites that entry's own source:")
         for i, s in enumerate(stats):
             flag = "  ⟨dated snapshot — keep the qualifier⟩" if _stat_is_dated(s) else ""
             out.append(f"  [S{i}] {s.get('stat','')}: {s.get('value','')} "
@@ -422,15 +480,20 @@ def _build_prompt(brief: dict) -> str:
         "not a borrowed one). Never reuse one blanket tag for every claim.\n"
         "- Do NOT write a URL or a raw index; the engine resolves your tag. A line you "
         "can't tag must be cut.\n\n"
-        "HONOR RELIABILITY — trustworthy specifics, not fewer specifics:\n"
-        "- Prefer HIGH-confidence facts for the hook and any on_screen_text.\n"
-        "- A figure that is single-sourced, dated/a snapshot, or echoes a CONTESTED or "
-        "OPEN-QUESTION item must NOT be asserted as a flat current fact. Hedge it with "
-        "its qualifier ('by one early-2026 snapshot…', 'a single benchmark put it near "
-        "90…') or omit it. Well-corroborated, stable figures may stay as confident "
-        "claims. PRESERVE the brief's dates/qualifiers — never present a snapshot as the "
-        "present standing.\n"
-        "- on_screen_text must never display an unhedged shaky number.\n"
+        "HONOR THE RELIABILITY BOUNDARY — consensus-forward, keep solid specifics, drop "
+        "fragile decimals:\n"
+        "- LEAD with the multi-source VERIFIED FACTS — the load-bearing claims and ALL "
+        "on_screen_text come from there (they carry several sources + a confidence and "
+        "pass fact-check every time). A specific number that lives INSIDE a verified "
+        "fact (e.g. a ~1M-token context window) is consensus — state it confidently.\n"
+        "- KEY STATISTICS are single-sourced: attribute-and-soften to their one source, "
+        "or omit. Prefer OMIT for volatile benchmark percentages. Never a bare fact.\n"
+        "- Never cite a figure to a different model/benchmark than the entry it came "
+        "from; if two entries share a number, they are NOT interchangeable.\n"
+        "- on_screen_text must never display an unhedged shaky number (a single-source "
+        "stat). Put the qualitative point on screen ('code that ships', '≈10× cheaper'), "
+        "not a bare decimal.\n"
+        "- PRESERVE dates/qualifiers — never present a snapshot as the present standing.\n"
         "- Stay internally consistent: if the video says rankings change every version / "
         "models are a generation behind, do NOT also assert a specific 'current leader' "
         "number that contradicts it.\n\n"
@@ -477,7 +540,7 @@ def assemble_script(brief: dict, llm_out: dict) -> dict:
     facts = brief.get("verified_facts") or []
     stats = brief.get("key_statistics") or []
     url_to_idx = _source_url_index(brief)
-    fig_citable = _stat_figure_citable(brief, url_to_idx)
+    recs = _stat_records(brief, url_to_idx)
 
     assembled: list[dict] = []
     for raw in (llm_out.get("scenes") or []):
@@ -495,9 +558,12 @@ def assemble_script(brief: dict, llm_out: dict) -> dict:
             ref = resolve_support(c.get("support"), facts, url_to_idx, stats)
             if ref is None:
                 continue  # can't tag it to a brief source -> it does not ship
-            # Deterministic safety net: a numeric claim is cited to the source that
-            # actually carries its figure, repairing a borrowed/constant ref.
-            ref = _reconcile_numeric_ref(text, ref, fig_citable)
+            # Deterministic safety net: cite a numeric claim to the key_statistic that
+            # matches on figure AND model/benchmark, repairing a colliding ref. A number
+            # that matches a stat value but no entry's label (None) must not ship.
+            ref = _reconcile_numeric_ref(text, ref, recs)
+            if ref is None:
+                continue
             kept_claims.append({"text": text, "source_ref": ref})
 
         # A point/detour scene whose only claims were dropped is asserting an

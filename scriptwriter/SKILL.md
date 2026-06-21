@@ -96,7 +96,11 @@ supports it** — there are two tag families, and using the right one is the rul
   `source` to its index. **A claim that asserts a specific number must use the `[S#]`
   of the statistic carrying that figure** — so the number is cited to the evidence that
   actually backs it, not to a borrowed fact's source. Never paste one blanket tag onto
-  every claim; the citation must point at the real support.
+  every claim; the citation must point at the real support. **Use the entry's EXACT
+  model + benchmark + figure together** — never the figure from one entry with the
+  model/benchmark of another. (When you state a stat number, the engine confirms the
+  cited entry agrees on the model/benchmark, not just the bare digits — a number-only
+  match to the wrong entry is dropped, not smuggled.)
 
 3. **If the tag is unknown, or its source URL doesn't resolve to a brief source, the
    claim cannot be grounded — and it does not ship.** The line is dropped. If dropping
@@ -120,15 +124,27 @@ Rules for claims:
 - Don't invent a statistic, quote, date, or source. If the brief doesn't carry it,
   you don't have it.
 
-### Step 4b — Honor the reliability metadata (trustworthy specifics, not fewer)
-Richness is wanted — keep the specific numbers. The discipline is about *which* get
-asserted flat and *which* get hedged:
-- **Prefer high-confidence facts** for the hook and for any `on_screen_text`.
-- **A shaky figure is never a flat current fact.** A figure is shaky if it is
-  single-sourced, carries a date/snapshot, or echoes a `contested_or_uncertain` /
-  `open_questions` item. Either hedge it with its qualifier ("by one early-2026
-  snapshot…", "a single benchmark put it near 90…") or omit it. Well-corroborated,
-  stable figures (multi-source, no volatility flag) may stay as confident claims.
+### Step 4b — The reliability boundary: consensus-forward, keep solid specifics, drop fragile decimals
+The line between what to assert flat and what to soften is **how many sources back it** —
+which the brief tells you directly: `verified_facts` carry a *list* of sources + a
+`confidence`; `key_statistics` carry a *single* `source`.
+- **Lead with the consensus.** Load-bearing claims and ALL `on_screen_text` come from
+  `verified_facts` (multi-source, confidence-rated — they pass fact-check every time). A
+  specific number that lives *inside* a verified fact (e.g. a ~1M-token context window,
+  a multi-source GPU-hours figure) is consensus — **state it confidently.** Keeping
+  these solid specifics is the point; consensus-forward is not vague.
+- **`key_statistics` are single-sourced by construction → never a bare fact.** For each
+  one you're tempted to use: either **attribute-and-soften** to its one source
+  explicitly ("one June-2026 pricing tracker lists DeepSeek R1 around $0.70/$2.50") and
+  only when it genuinely adds value, or **omit** it. For **volatile benchmark
+  percentages, prefer omit** — they're exactly what gets superseded and contradicted
+  across sources.
+- **Never cross-combine.** Don't attach a figure from one `key_statistics` entry to a
+  model or benchmark named in another. If two entries share a number, they are *not*
+  interchangeable — use the one entry's exact model + benchmark, or drop it.
+- **A shaky figure is never a flat current fact** even beyond stats: anything that
+  echoes a `contested_or_uncertain` / `open_questions` item gets softened/attributed or
+  cut. Well-corroborated, stable figures may stay as confident claims.
 - **Preserve temporal qualifiers.** If the brief dates a figure, keep the date in the
   line. Never present a snapshot as the present standing.
 - **`on_screen_text` must never show an unhedged shaky number** (e.g. no bare

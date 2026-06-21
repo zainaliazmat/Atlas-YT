@@ -385,6 +385,101 @@ def test_guard_flags_a_deliberately_miscited_numeric_claim():
     assert engine.find_numeric_citation_problems(nonnum, BRIEF_STATS) == []
 
 
+# ----------------------------------------------------------------------
+# Label-aware numeric citation — the collision fix. When two key_statistics
+# entries share a figure (e.g. 72.7% for different model+benchmark), a claim must
+# be cited by figure AND model/benchmark label, not the bare number.
+# ----------------------------------------------------------------------
+BRIEF_COLLIDE = {
+    "topic": "frontier model coding scores",
+    "angle": "what the benchmarks really say",
+    "target_audience": "developers",
+    "overview": "Two different results share 72.7% — different model, different test.",
+    "verified_facts": [
+        {"claim": "Frontier coding models now cluster tightly at the top.",
+         "sources": ["https://ai.example/cluster"], "confidence": "high"},
+    ],
+    "key_statistics": [
+        {"stat": "Claude Opus 4.6 — OSWorld", "value": "72.7%", "date": "June 2026",
+         "source": "https://osworld.example/opus"},                              # idx 1
+        {"stat": "Claude Sonnet 4.6 — SWE-bench Verified", "value": "72.7%",
+         "date": "June 2026", "source": "https://swebench.example/sonnet"},      # idx 2
+    ],
+    "sources": [
+        {"url": "https://ai.example/cluster", "title": "Cluster"},          # 0
+        {"url": "https://osworld.example/opus", "title": "OSWorld board"},   # 1
+        {"url": "https://swebench.example/sonnet", "title": "SWE board"},    # 2
+    ],
+}
+
+
+def _collide_script(support):
+    """Brain output asserting the Sonnet/SWE 72.7% — tagged however the test wants."""
+    return {
+        "working_title": "Reading the Benchmarks",
+        "hook": "Two headlines, the same 72.7% — and it's not the same result.",
+        "cta": "Which benchmark matters for your work?",
+        "scenes": [
+            {"beat": "hook", "point": "same number, different test",
+             "narration": "Two headlines cite 72.7% for different models on different "
+                          "tests.", "on_screen_text": "same number?",
+             "visual_note": "split", "duration_est_sec": 5, "claims": []},
+            {"beat": "point", "point": "sonnet on swe-bench",
+             "narration": "By a June 2026 board, Claude Sonnet 4.6 hit 72.7% on "
+                          "SWE-bench Verified.",
+             "on_screen_text": "SWE-bench result", "visual_note": "a",
+             "duration_est_sec": 8,
+             "claims": [{"text": "By a June 2026 board, Claude Sonnet 4.6 scored 72.7% "
+                         "on SWE-bench Verified.", "support": support}]},
+            {"beat": "cta", "point": "turn outward", "narration": "Which one?",
+             "on_screen_text": "", "visual_note": "host", "duration_est_sec": 4,
+             "claims": []},
+        ],
+    }
+
+
+def test_colliding_figure_is_cited_by_label_not_bare_number():
+    # The brain mis-tags the Sonnet/SWE-bench claim to the Opus/OSWorld entry (S0);
+    # both stats carry 72.7%. The reconciler must re-point it to the SWE-bench source
+    # (idx 2) using the model/benchmark label, not leave it on the bare-number match.
+    script = engine.write_script(BRIEF_COLLIDE,
+                                 chat_fn=_chat_returning(_collide_script("S0")))
+    stamped = {"schema_version": contracts.CONTRACT_VERSION, **script}
+    ok, errors = contracts.validate("script", stamped)
+    assert ok, errors
+    claim = next(c for s in script["scenes"] for c in s["claims"]
+                 if "72.7" in engine._figures(c["text"]))
+    assert claim["source_ref"] == 2          # Sonnet/SWE-bench, NOT Opus/OSWorld (1)
+    assert engine.find_numeric_citation_problems(script, BRIEF_COLLIDE) == []
+
+    # And tagging it correctly (S1) keeps it on the same correct source.
+    script2 = engine.write_script(BRIEF_COLLIDE,
+                                  chat_fn=_chat_returning(_collide_script("S1")))
+    claim2 = next(c for s in script2["scenes"] for c in s["claims"]
+                  if "72.7" in engine._figures(c["text"]))
+    assert claim2["source_ref"] == 2
+
+
+def test_number_only_match_with_wrong_label_is_flagged():
+    # A claim whose figure (72.7%) matches a stat value but whose model/benchmark
+    # matches NEITHER entry's label must be flagged — not silently number-matched.
+    bad = {"scenes": [{"scene_no": 1, "point": "p", "narration": "n", "claims": [
+        {"claim_id": "s1c1", "text": "GPT-5 scored 72.7% on MMLU.",
+         "source_ref": 1}]}]}
+    probs = engine.find_numeric_citation_problems(bad, BRIEF_COLLIDE)
+    assert len(probs) == 1
+    assert probs[0]["claim_id"] == "s1c1"
+    assert probs[0]["expected_source_idx"] == []   # no entry agreed on the label
+
+    # such a claim is also DROPPED by assemble (it can't be correctly cited)
+    obj = _collide_script("S1")
+    obj["scenes"][1]["claims"] = [{"text": "GPT-5 scored 72.7% on MMLU.",
+                                   "support": "S1"}]
+    script = engine.write_script(BRIEF_COLLIDE, chat_fn=_chat_returning(obj))
+    assert all("72.7" not in engine._figures(c["text"])
+               for s in script["scenes"] for c in s["claims"])
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
