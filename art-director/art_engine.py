@@ -87,6 +87,8 @@ LAYOUTS = (
     "list-stack",           # a short stacked list, one item revealed at a time
     "comparison-2up",       # myth vs. fact, then vs. now
     "title-card",           # the cold-open / chapter card
+    "big-number",           # a single dominant statistic, hero scale (the Vox big number)
+    "timeline",             # a horizontal SVG baseline of chronological / process nodes
 )
 TRANSITIONS = (
     "cut",            # the default — zero motion
@@ -103,6 +105,7 @@ EFFECTS = (
     "chromatic-aberration", # a restrained RGB-split accent
     "push-in",              # a slow scale-in on a still
     "parallax",             # layered depth on a still
+    "count-up",             # the hero number tweens 0->target on the paused timeline
 )
 TEXTURES = (
     "paper",
@@ -386,6 +389,48 @@ def ensure_shots(raw_shots, scene_no: int, on_screen_text: str) -> list[dict]:
 
 
 # ======================================================================
+# Layout selection heuristics — Iris's deterministic fallback when the brain omits or
+# botches a layout. The brain still chooses freely (within LAYOUTS) from the prompt; this
+# guarantees the high-value data layouts fire on the obvious signals even offline.
+#   single dominant statistic        -> big-number
+#   chronological / ordered process  -> timeline
+#   else                             -> centered-statement (the restrained default)
+# ======================================================================
+_YEAR_HINT = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\b")
+_CHRONO_HINT = re.compile(
+    r"\b(timeline|history|chronolog|over the years|step\s*\d|phase\s*\d|stage\s*\d|"
+    r"first.*then|evolution|decade|century|era)\b", re.IGNORECASE)
+_STAT_HINT = re.compile(
+    r"(\$?\s*\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?\s*(?:%|×|x|mg|m|k|b|bn|million|billion|"
+    r"percent|fps|x\b))", re.IGNORECASE)
+_BARE_NUM = re.compile(r"\d")
+
+
+def _scene_blob(scene: dict) -> str:
+    """The text Iris reads to pick a layout: the line, the point, the visual note."""
+    return " ".join(str(scene.get(k) or "") for k in
+                    ("on_screen_text", "point", "visual_note"))
+
+
+def _layout_hint_for_scene(scene: dict) -> str:
+    """Pick a layout from a script scene's signals (deterministic). big-number for a
+    single dominant stat; timeline for a chronological/process scene; else the default."""
+    blob = _scene_blob(scene)
+    # two or more year markers, or an explicit chronology/process cue -> timeline
+    years = _YEAR_HINT.findall(blob)
+    if len(years) >= 2 or _CHRONO_HINT.search(blob):
+        return "timeline"
+    # a short line dominated by a single magnitude stat -> big-number. Require a stat and
+    # a SHORT line (the Vox big-number is one number, not a sentence full of figures).
+    ost = str(scene.get("on_screen_text") or "")
+    if _STAT_HINT.search(blob) and len(ost.split()) <= 6 and _BARE_NUM.search(ost):
+        # not a multi-number comparison (that's data-chart) — at most one number on screen
+        if len(re.findall(r"\d+(?:\.\d+)?", ost)) <= 1:
+            return "big-number"
+    return "centered-statement"
+
+
+# ======================================================================
 # Prompt builders — surface the script's signals to the brain
 # ======================================================================
 def _scene_signals(script: dict, limit: int = 40) -> str:
@@ -451,7 +496,10 @@ def _build_storyboard_prompt(script: dict, style_guide: dict) -> str:
         f"=== THE VOCABULARY (use ONLY these names) ===\n{_vocab_block()}\n\n"
         "Build the storyboard: EXACTLY one storyboard scene per script scene, in "
         "order. For each scene choose ONE layout (from LAYOUTS) using the visual_note "
-        "/ on_screen_text density / claims, define its shots (each a `kind` + a "
+        "/ on_screen_text density / claims. Layout heuristics: a single dominant "
+        "statistic -> 'big-number'; a chronological history or an ordered process "
+        "-> 'timeline'; a magnitude comparison of several numbers -> 'data-chart'; a "
+        "head-to-head -> 'comparison-2up'. Define its shots (each a `kind` + a "
         "content description — you reference assets, you do NOT resolve URLs or "
         "licenses). For any shot that shows a product/model LOGO or BRAND (e.g. a named "
         "AI model, a company logo), set kind:'brand' and NAME the model(s) in `content` "
@@ -473,8 +521,12 @@ def assemble_style(script: dict, llm_out: dict) -> dict:
     """Shape the brain's taste into a contract-valid style_guide dict (envelope-free)."""
     out = llm_out if isinstance(llm_out, dict) else {}
 
+    # Bundled OFL pairing (replaces the proprietary GT Sectra): Fraunces (the wonky
+    # editorial display serif) + Inter (neutral body/caption). Both are SIL OFL 1.1 and
+    # bundled locally by Mason as @font-face — never a proprietary or render-time-fetched
+    # face. (Mason snaps any unbundled family to a guaranteed Noto fallback.)
     typography = out.get("typography") if isinstance(out.get("typography"), dict) else {}
-    typography.setdefault("display", {"family": "Inter", "weight": 700})
+    typography.setdefault("display", {"family": "Fraunces", "weight": 700})
     typography.setdefault("body", {"family": "Inter", "weight": 400})
     typography.setdefault("caption", {"family": "Inter", "weight": 500})
     typography.setdefault("scale", 1.25)
@@ -547,7 +599,9 @@ def assemble_storyboard(script: dict, style_guide: dict, llm_out: dict) -> dict:
 
         layout = str(raw.get("layout", "")).strip()
         if layout not in LAYOUTS:
-            layout = "centered-statement"
+            # the brain omitted/botched it -> deterministic signal-based fallback
+            # (single dominant stat -> big-number; chronological -> timeline; else default)
+            layout = _layout_hint_for_scene(ss)
         transition = str(raw.get("transition", "")).strip()
         if transition not in TRANSITIONS:
             transition = "cut"

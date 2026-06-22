@@ -1,0 +1,18 @@
+# Secrets
+.env
+
+# Vera's per-user chat memory (distilled summary + recovery backlog). Local only.
+chat_state.json
+chat_state.json.corrupt-*
+
+# Durable, merging rubrics per named "standard" + the frames the judged seam reads
+# (regenerable output). Drop this line if you want them committed.
+standards/
+
+# Atomic-write temp files (temp + rename); should never linger, but just in case.
+*.tmp
+*.tmp.*
+
+# Python bytecode / caches
+__pycache__/
+*.pyc

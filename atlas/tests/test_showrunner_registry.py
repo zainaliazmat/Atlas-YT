@@ -1,6 +1,11 @@
 """The registry holds all seven production roles, with the right tools + statuses.
 Every specialist is now built — no stubs remain — though the StubAdapter dispatch path
-itself stays exercised (a slot CAN still be a stub; today none are)."""
+itself stays exercised (a slot CAN still be a stub; today none are).
+
+Vera (reference_analyst) was added later as a PURELY ADDITIVE delegable job + persona —
+she DEFINES the standard, she is NOT one of the seven production-pipeline roles and is
+NOT a stage in pipeline.py. So the seven pipeline roles are asserted as a subset here,
+and the only non-pipeline registry addition is called out explicitly."""
 import registry
 import tools
 from progress import list_progress
@@ -12,19 +17,22 @@ SEVEN = {"scout", "sage", "scriptwriter", "art_director", "asset_sourcer",
 # are now ready; no slot is a stub.
 NO_STUBS: set[str] = set()
 READY = set(SEVEN)
+# Additive (non-pipeline) agents that live in the registry alongside the seven roles.
+ADDITIVE = {"reference_analyst"}
 
 
 def test_all_seven_roles_registered():
     names = {e.name for e in registry.REGISTRY}
-    assert names == SEVEN
-    assert len(registry.REGISTRY) == 7
+    assert SEVEN <= names                       # every pipeline role is present
+    assert names - SEVEN == ADDITIVE            # the only extras are additive agents (Vera)
 
 
 def test_no_stubs_remain_all_seven_ready():
     stubs = {e.name for e in registry.REGISTRY if e.stub}
     ready = {e.name for e in registry.REGISTRY if not e.stub}
     assert stubs == NO_STUBS
-    assert ready == READY
+    assert READY <= ready                        # all seven pipeline roles are ready
+    assert ADDITIVE <= ready                     # Vera is a real, built specialist too
 
 
 def test_sage_keeps_research_and_gains_factcheck():

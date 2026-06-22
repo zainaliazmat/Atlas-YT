@@ -63,11 +63,14 @@ Produces `master.wav` + `audio_manifest.json`, reading the narration stage's out
    the master, and record it as a spec track (`scene_no`, `at_sec`) so #6 can re-time
    to the exact shot beat later. No signature beat → **omit** it. Silence beats a
    mis-placed hit.
-9. **Pre-mix `master.wav` (the documentary mix).** VO at reference gain, used
-   un-attenuated as the sidechain key; the bed hard-ducked under it
-   (`sidechaincompress`) + tail-faded; the accent delayed to `at_sec`, sitting under
-   the VO. Trim the master to **exactly** `total_duration_sec` so it aligns to the
-   concatenated video, with a final limiter against summed clipping.
+9. **Pre-mix `master.wav` (the documentary mix).** VO at reference gain (0 dB), used
+   un-attenuated as the sidechain key; the bed mood-matched to the topic and hard-ducked
+   under the VO (`sidechaincompress`) + tail-faded; the accent delayed to `at_sec`,
+   sitting under the VO. Let a beat of **near-silence precede the turn** — pull the bed
+   toward the duck floor for a breath right before the signature beat so the cut and its
+   accent land into space, not into a busy bed. Trim the master to **exactly**
+   `total_duration_sec` so it aligns to the concatenated video, with a final limiter
+   against summed clipping.
 10. **Emit the manifest (the master-bridge).** See below.
 
 ## The master-bridge (why the mix actually lands)

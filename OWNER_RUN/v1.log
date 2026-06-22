@@ -1,0 +1,12 @@
+[18:41:07] PRODUCE: How noise-cancelling headphones actually work — a tight 5-scene explainer with a clear before/after and one big number
+    Resume after sign-off:
+      python run.py produce --resume how-noise-cancelling-headphones-actually-work-a-ti-20260622-184113-7b39 --approve factcheck
+    Project: /home/zain-ali/Documents/YT-AGENTS/atlas/projects/how-noise-cancelling-headphones-actually-work-a-ti-20260622-184113-7b39
+[18:48:03] slug=how-noise-cancelling-headphones-actually-work-a-ti-20260622-184113-7b39
+[18:48:03] status=blocked_at_factcheck
+
+❌ failed at stage compose: ['auto-gate FAIL — 0/6 scenes lint+validate+inspect clean; 0 draft(s); 60 WCAG warning(s)']
+[19:06:47] status=failed
+[19:06:47] unexpected status 'failed' — stopping
+[19:06:47] NO video.mp4 (status=failed)
+[19:06:47] END how-noise-cancelling-headphones-actually-work-a-ti-20260622-184113-7b39

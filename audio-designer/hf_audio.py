@@ -28,7 +28,9 @@ import tempfile
 
 # Verified tts output format (Phase 0). Per-scene tts has fixed npx + model-load
 # overhead (~11s for a one-sentence scene), so timeouts are generous and scale.
-TTS_TIMEOUT = 240
+# Bumped 240->600: when several scenes synthesize concurrently (see audio_engine
+# _tts_workers) each CPU-bound call runs slower, so the per-call budget needs headroom.
+TTS_TIMEOUT = 600
 TRANSCRIBE_TIMEOUT = 300
 FFMPEG_TIMEOUT = 600
 PROBE_TIMEOUT = 60

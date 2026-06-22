@@ -331,6 +331,49 @@ def test_build_storyboard_respects_the_budget_and_vocab():
         assert budget_used <= 2, (s["scene_no"], budget_used)
 
 
+def test_default_typography_is_the_bundled_ofl_pairing():
+    # Iris's default display face is the bundled OFL Fraunces (replacing GT Sectra);
+    # body/caption stay Inter. The brain may still override.
+    style = engine.assemble_style(SCRIPT, {"palette": {}, "typography": {}})
+    assert style["typography"]["display"]["family"] == "Fraunces"
+    assert style["typography"]["body"]["family"] == "Inter"
+    assert style["typography"]["caption"]["family"] == "Inter"
+
+
+def test_layout_hint_picks_big_number_for_a_single_dominant_stat():
+    scene = {"on_screen_text": "40% fewer", "point": "Costs dropped sharply",
+             "visual_note": "one giant number"}
+    assert engine._layout_hint_for_scene(scene) == "big-number"
+
+
+def test_layout_hint_picks_timeline_for_a_chronological_scene():
+    scene = {"on_screen_text": "From 1969 to 2007", "point": "A short history",
+             "visual_note": "milestones over the years"}
+    assert engine._layout_hint_for_scene(scene) == "timeline"
+
+
+def test_layout_hint_defaults_to_centered_statement():
+    scene = {"on_screen_text": "Wrong question.", "point": "Reframe the premise",
+             "visual_note": "just a line"}
+    assert engine._layout_hint_for_scene(scene) == "centered-statement"
+
+
+def test_storyboard_fallback_uses_the_layout_hint_when_brain_botches_layout():
+    # The brain returns an unknown layout; the script scene cues a chronology -> timeline.
+    script = {"working_title": "T", "scenes": [
+        {"scene_no": 1, "on_screen_text": "1969 then 2007",
+         "point": "history", "visual_note": "timeline of milestones"}]}
+    botched = {"scenes": [{"scene_no": 1, "layout": "bogus", "transition": "cut",
+                           "effects": [], "shots": [{"kind": "graphic", "content": "x"}]}]}
+    board = engine.build_storyboard(script, None, chat_fn=_chat_returning(botched))
+    assert board["scenes"][0]["layout"] == "timeline"
+
+
+def test_new_layout_and_effect_tokens_are_in_the_vocabulary():
+    assert "big-number" in engine.LAYOUTS and "timeline" in engine.LAYOUTS
+    assert "count-up" in engine.EFFECTS
+
+
 def test_build_storyboard_every_shot_has_an_asset_ref():
     board = engine.build_storyboard(SCRIPT, None, chat_fn=_chat_returning(_board_out()))
     for s in board["scenes"]:
