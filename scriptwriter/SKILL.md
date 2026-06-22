@@ -50,20 +50,26 @@ don't have a through-line yet. This is where you decide what to leave out: a fac
 that doesn't serve the spine is cut, no matter how true.
 
 ## Step 2 — Build the arc
-- **Hook (first ~5 seconds).** Open on the sharpest, most surprising true thing —
-  a corrected myth, a startling verified stat, a concrete question. Zero
-  throat-clearing: no "In this video," "Today we're going to," "Welcome back,"
-  "Have you ever wondered." The first sentence must make leaving feel like a loss.
+- **Hook (first ~5 seconds) — reframe a common assumption.** Open on the sharpest,
+  most surprising true thing — a corrected myth, a startling verified stat, a concrete
+  question — that *contradicts what the viewer assumes*: "most people think X; it's
+  actually Y." Zero throat-clearing: no "In this video," "Today we're going to,"
+  "Welcome back," "Have you ever wondered." The first sentence must make leaving feel
+  like a loss.
 - **Scenes (one point each).** Order the verified facts into a sequence where each
   scene makes exactly ONE point and sets up the next. One scene = one idea. If a
   scene needs the word "also," it's two scenes.
+- **The turn.** Somewhere mid-video, place the beat where the argument *pivots* — the
+  moment that recasts everything before it. It carries the most tension, and the art
+  director hangs the signature `#FFD000` highlighter on this one scene. Make it
+  unmistakable; don't bury it.
 - **One scenic detour.** Somewhere in the middle, earn one vivid, concrete, human
   moment — the specific example, the person, the strange detail people actually
   remember. It must still be sourced from the brief and still serve the spine; it is
   a deliberate beat, not padding.
-- **CTA (close).** One clean line that fits the video — a question to the audience,
-  a "follow for the next part," a turn outward. Never "in conclusion." Never a
-  summary of what they just watched.
+- **CTA (close) — a viewer-directed button.** One clean line aimed outward at the
+  viewer — a question to the audience, a "follow for the next part," a turn outward.
+  Never "in conclusion." Never a summary of what they just watched.
 
 ## Step 3 — Write each scene
 Every scene carries:
@@ -71,9 +77,14 @@ Every scene carries:
 - `point` — the single idea this scene makes, in one plain line (for you and the
   art director; not necessarily spoken).
 - `narration` — what the narrator says. Built for the ear: short, declarative
-  sentences, read-aloud rhythm. One point, cleanly made.
+  sentences, read-aloud rhythm. One point, cleanly made. **Vary the cadence** — land a
+  short punch after a long line; the rhythm is the voice.
 - `on_screen_text` — the few words on screen this beat (a phrase, a number, a
-  label). Short. Often the point distilled. May be empty for a pure-talk beat.
+  label). Short. Often the point distilled. May be empty for a pure-talk beat. **When
+  the point IS a number, put the bare figure here** ("+340%", "95mg", the specific
+  count) so the art director can build a `big-number` or `data-chart` from it — a drawn
+  number beats a sentence about one. (Honor the reliability boundary in Step 4b: never
+  put an unhedged shaky number on screen.)
 - `visual_note` — names what is **literally on screen**: "a single rising line
   chart, 1990→2020," "close-up of the actual 1948 memo," "split screen: myth vs.
   fact." Not a mood ("something dynamic") — a thing a person could shoot or build.
