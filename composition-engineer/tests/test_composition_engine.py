@@ -630,6 +630,57 @@ def test_captions_have_a_legibility_scrim():
 
 
 # ----------------------------------------------------------------------
+# Contrast over imagery: titles rendered OVER a photo (full-bleed-image,
+# lower-third) must sit on a SOLID, sufficiently-opaque dark scrim plate so
+# they reach WCAG 4.5:1 regardless of the underlying image luminance — a thin
+# bottom-only gradient (opaque only at the very bottom) leaves the TOP of the
+# title over the raw photo and fails. Mirror the working .caption-scrim plate.
+# ----------------------------------------------------------------------
+def test_full_bleed_title_sits_on_a_solid_contrast_scrim():
+    html = engine.compose_scene_html(
+        _ctx(layout="full-bleed-image", signature=False, effects=[],
+             assets=[{"type": "image", "label": "a1", "src_rel": "assets/x.jpg",
+                      "placeholder": False}]))
+    # the title text is wrapped in a dedicated scrim plate element
+    assert "bleed-scrim" in html
+    # the plate is a SOLID dark fill (not a fade-to-transparent gradient) and is
+    # opaque enough (>= 0.8) to guarantee contrast over any photo
+    assert "background:rgba(0,0,0,0.82)" in html
+    # and the over-image title band no longer relies on the leaky bottom gradient
+    assert "linear-gradient(0deg,#000c,#0000)" not in html
+
+
+def test_lower_third_name_strip_sits_on_a_solid_contrast_scrim():
+    html = engine.compose_scene_html(
+        _ctx(layout="lower-third", signature=False, effects=[],
+             title="Dr. Jane Doe",
+             assets=[{"type": "image", "label": "a1", "src_rel": "assets/x.jpg",
+                      "placeholder": False}]))
+    assert "bleed-scrim" in html
+    assert "background:rgba(0,0,0,0.82)" in html
+
+
+# ----------------------------------------------------------------------
+# Brand-chip contrast over imagery: chips land in the full-bleed media slot,
+# i.e. OVER a photo. The WCAG checker composites a DARK label against the page
+# background (it does not credit a light chip card), so dark-on-light chip
+# names fail ~1.04:1 over a dark frame. The chip card must therefore be a SOLID
+# dark plate with a near-WHITE label (white-on-dark is the pattern the checker
+# reliably resolves) — guaranteeing >=4.5:1 regardless of the underlying frame.
+# ----------------------------------------------------------------------
+def test_brand_chip_label_is_white_on_a_dark_plate_for_contrast():
+    css = engine.compose_scene_html(_ctx())   # the global stylesheet is always emitted
+    assert ".brand-chip{" in css
+    # the chip card is a solid dark plate (not a near-white #fffffff2 card)
+    assert "#fffffff2" not in css
+    assert "background:#141414" in css
+    # and the label text is white (so it reads on the dark plate AND passes WCAG)
+    assert ".brand-chip-name{" in css
+    name_rule = css.split(".brand-chip-name{", 1)[1].split("}", 1)[0]
+    assert "color:#ffffff" in name_rule
+
+
+# ----------------------------------------------------------------------
 # H1 — generic "four AI logos lined up" naming no model -> full roster of chips
 # ----------------------------------------------------------------------
 def test_generic_logo_lineup_shot_falls_back_to_full_roster():

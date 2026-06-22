@@ -823,16 +823,22 @@ def _layout_split(ctx):
 
 
 def _layout_full_bleed(ctx):
+    # Title sits OVER a photo: wrap the text in a solid dark scrim plate
+    # (.bleed-scrim) so it reaches WCAG contrast regardless of the image's
+    # luminance — the old fade-to-transparent gradient was opaque only at the
+    # very bottom, so the top of the title failed over light imagery.
     return {"css": "", "html":
             f'<div class="layout full-bleed-image">{_media_html(ctx, "media bleed")}'
-            f'<div class="lower-strip"><h1 class="scene-title">{_esc(ctx["title"])}'
+            f'<div class="lower-strip"><h1 class="scene-title">'
+            f'<span class="bleed-scrim">{_esc(ctx["title"])}</span>'
             f'</h1></div></div>', "tl": []}
 
 
 def _layout_lower_third(ctx):
     return {"css": "", "html":
             f'<div class="layout lower-third">{_media_html(ctx, "media bleed")}'
-            f'<div class="name-strip"><h2 class="scene-title">{_esc(ctx["title"])}'
+            f'<div class="name-strip"><h2 class="scene-title">'
+            f'<span class="bleed-scrim">{_esc(ctx["title"])}</span>'
             f'</h2></div></div>', "tl": []}
 
 
@@ -1093,8 +1099,16 @@ _BASE_CSS = (
     "display:flex;align-items:center;justify-content:center;padding:5%;}"
     ".split-pane.left{left:0;}.split-pane.right{right:0;}"
     ".full-bleed-image .lower-strip,.lower-third .name-strip{position:absolute;left:0;"
-    "right:0;bottom:140px;padding:32px 8%;background:linear-gradient(0deg,#000c,#0000);}"
+    "right:0;bottom:140px;padding:32px 8%;}"
     ".full-bleed-image .scene-title,.lower-third .scene-title{text-align:left;font-size:64px;}"
+    # Text-over-image legibility: a SOLID dark scrim plate behind the title (a
+    # banded Vox-style lower-third), opaque enough (0.82) to guarantee >=4.5:1
+    # contrast over ANY underlying photo — replaces the old bottom-only gradient
+    # that left the top of the title over the raw image. White text + shadow.
+    ".bleed-scrim{display:inline-block;max-width:100%;padding:14px 28px;"
+    "border-radius:12px;color:#ffffff;background:rgba(0,0,0,0.82);"
+    "box-shadow:0 6px 28px rgba(0,0,0,0.45);"
+    "text-shadow:0 2px 10px #000d,0 0 2px #000d;}"
     # Captions (C4): burned-in narration must stay legible over dark imagery — a
     # readable scrim panel behind the text + a text-shadow + adequate size/weight.
     ".caption{position:absolute;left:6%;right:6%;bottom:40px;text-align:center;"
@@ -1122,14 +1136,20 @@ _BASE_CSS = (
     # deterministic under frame-seek; the only motion is a build-time GSAP entrance.
     ".brand-chips{display:flex;flex-wrap:wrap;gap:36px;align-items:stretch;"
     "justify-content:center;max-width:94%;}"
+    # Brand chips sit in a full-bleed media slot OVER imagery. The chip card is a
+    # SOLID dark plate with a brand-colored border + brand-tinted logo + a
+    # near-white label. Dark card + light label is the one pattern the WCAG
+    # contrast checker reliably resolves over arbitrary frames (it composites a
+    # dark label against the page bg even when the card is light, so dark-on-light
+    # chips fail 1.04:1 over a dark frame); white-on-dark guarantees >=4.5:1.
     ".brand-chip{display:flex;flex-direction:column;align-items:center;justify-content:center;"
     "gap:22px;padding:40px 52px;border-radius:28px;border:3px solid var(--brand);"
-    "background:#fffffff2;box-shadow:0 10px 34px #00000018;min-width:240px;}"
+    "background:#141414;box-shadow:0 10px 34px #00000040;min-width:240px;}"
     ".brand-chip.dim{opacity:.34;filter:grayscale(.4);transform:scale(.86);}"
     ".brand-chip-logo{display:flex;align-items:center;justify-content:center;"
     "color:var(--brand);}"
     ".brand-chip-logo svg{height:132px;width:132px;display:block;}"
-    ".brand-chip-name{font-size:44px;font-weight:700;color:#141414;letter-spacing:-.5px;"
+    ".brand-chip-name{font-size:44px;font-weight:700;color:#ffffff;letter-spacing:-.5px;"
     "line-height:1;white-space:nowrap;}"
     ".brand-media{display:flex;align-items:center;justify-content:center;width:100%;"
     "height:100%;padding:6%;}"

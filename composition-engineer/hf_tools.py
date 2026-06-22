@@ -59,6 +59,10 @@ def _run(cmd: str, scene_dir: pathlib.Path, *extra: str, timeout: int) -> dict:
     if npx is None:
         return {"ran": False, "returncode": None, "json": None, "stderr": "",
                 "error": "npx not found — install Node.js >= 22 to run the HyperFrames gate."}
+    # Resolve to an absolute path: we set cwd=scene_dir below, so a RELATIVE path arg
+    # would be re-resolved against that cwd and double up ("Not a directory"). Absolute
+    # is invariant to cwd.
+    scene_dir = pathlib.Path(scene_dir).resolve()
     args = [npx, "hyperframes", cmd, str(scene_dir), "--json", *extra]
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
