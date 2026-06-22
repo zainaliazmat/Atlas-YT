@@ -916,6 +916,34 @@ def _layout_big_number(ctx):
             f'<div class="big-number-stat">{num_html}{unit_html}</div></div>', "tl": []}
 
 
+def _tl_label_tspans(label: str, x: float, *, max_line: int = 16,
+                     max_lines: int = 2, line_h: float = 34.0) -> str:
+    """Wrap a node label into <=max_lines centered <tspan> lines (SVG text doesn't wrap
+    natively) and truncate the rest with an ellipsis, so a long process label can never
+    overflow the frame edge (inspect 'text_box_overflow'). Deterministic."""
+    words = str(label).split()
+    lines: list[str] = []
+    cur = ""
+    for w in words:
+        cand = (cur + " " + w).strip()
+        if cur and len(cand) > max_line:
+            lines.append(cur)
+            cur = w
+            if len(lines) >= max_lines:
+                break
+        else:
+            cur = cand
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+    used = sum(len(ln.split()) for ln in lines)
+    if used < len(words) and lines:                       # ran out of room -> ellipsis
+        lines[-1] = (lines[-1][:max_line - 1].rstrip() + "…")
+    lines = [ln[:max_line + 2] for ln in lines] or [""]
+    return "".join(
+        f'<tspan x="{x:.1f}" dy="{0 if i == 0 else line_h:.1f}">{_esc(ln)}</tspan>'
+        for i, ln in enumerate(lines))
+
+
 def _layout_timeline(ctx):
     # A horizontal SVG baseline with N evenly-spaced nodes; each node carries a date/label
     # parsed from on_screen_text/shot content. Deterministic inline SVG, no animation.
@@ -923,20 +951,21 @@ def _layout_timeline(ctx):
     if not entries:
         # nothing parsed -> a single node so the layout is still a real timeline visual
         entries = [{"date": "", "label": str(ctx["title"] or "now")}]
-    vw, vh = 1600.0, 360.0
+    entries = entries[:5]                                  # cap so nodes/labels stay roomy
+    vw, vh = 1600.0, 380.0
     y = vh / 2.0
     n = len(entries)
-    x0, x1 = 80.0, vw - 80.0
+    x0, x1 = 190.0, vw - 190.0                             # inset edge nodes so labels fit
     step = (x1 - x0) / (n - 1) if n > 1 else 0.0
     nodes = []
     for i, e in enumerate(entries):
         x = x0 + i * step
         date = _esc(e.get("date") or "")
-        label = _esc(e.get("label") or "")
         nodes.append(
             f'<circle class="tl-node" cx="{x:.1f}" cy="{y:.1f}" r="14" />'
             f'<text class="tl-date" x="{x:.1f}" y="{y - 44:.1f}" text-anchor="middle">{date}</text>'
-            f'<text class="tl-label" x="{x:.1f}" y="{y + 66:.1f}" text-anchor="middle">{label}</text>')
+            f'<text class="tl-label" y="{y + 60:.1f}" text-anchor="middle">'
+            f'{_tl_label_tspans(e.get("label") or "", x)}</text>')
     svg = (f'<svg class="timeline-svg" viewBox="0 0 {vw:.0f} {vh:.0f}" '
            f'preserveAspectRatio="xMidYMid meet" role="img">'
            f'<line class="tl-base" x1="{x0:.1f}" y1="{y:.1f}" x2="{x1:.1f}" y2="{y:.1f}" />'
