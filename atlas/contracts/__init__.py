@@ -18,10 +18,13 @@ CONTRACTS (artifact name -> schema file):
 - audio_manifest       audio_manifest.json
 - composition_manifest composition_manifest.json (the Composition Engineer's per-scene
                        build + auto-gate record; additive, additionalProperties:true)
+- reference_rubric     reference_rubric.json   (the Reference Analyst's banded quality
+                       targets + style profile — a STANDARD, not a pipeline artifact;
+                       additive, additionalProperties:true)
 
 Frozen-but-extensible: every schema sets additionalProperties:true, and the
-current contract version each stub emits is in CONTRACT_VERSION. When the real
-Art Director / Composition Engineer arrive they ADD fields under a bumped
+current contract version each real producer emits is in CONTRACT_VERSION. The
+Art Director and Composition Engineer (both built) ADD fields under a bumped
 schema_version (render fps, texture/overlay set, per-scene effects array); older
 readers keep working because unknown keys are allowed.
 """
@@ -78,6 +81,7 @@ SCHEMA_FILES: dict[str, str] = {
     "narration_transcript": "narration_transcript.schema.json",
     "audio_manifest": "audio_manifest.schema.json",
     "composition_manifest": "composition_manifest.schema.json",
+    "reference_rubric": "reference_rubric.schema.json",
 }
 
 

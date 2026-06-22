@@ -1,13 +1,26 @@
-# Atlas — the YT Manager
+# Atlas — the Showrunner
 
 Atlas is the **head of your agent fleet**: a single "meeting room" chat where you (the
-CEO) talk to a calm chief-of-staff that coordinates your other agents — **Viral Scout**
-(finds viral topic ideas) and **Sage** (fact-checks a topic into a research pack) —
-and is built to absorb **future** agents with near-zero changes.
+CEO) talk to a calm showrunner that coordinates an 8-agent video studio and runs it
+through a deterministic production pipeline that turns a topic brief into a finished,
+narrated, fact-checked explainer video.
+
+The fleet (all 8 built, all with real engines):
+
+| Agent | Persona | Role |
+|---|---|---|
+| `youtube-topic-agent` | Viral Scout 🔎 | finds ranked viral topic ideas |
+| `topic-researcher` | Sage 📚 | research pack + script fact-check |
+| `scriptwriter` | Marlow 📝 | brief → one-point-per-scene script |
+| `art-director` | Iris 🎨 | style guide + storyboard |
+| `asset-sourcer` | Magpie 🗂️ | license-cleared asset manifest |
+| `audio-designer` | Cadence 🎙️ | narration (TTS) + documentary mix |
+| `composition-engineer` | Mason 🛠️ | artifacts → HyperFrames render → `video.mp4` |
+| `reference-analyst` | Vera 🔬 | builds a `reference_rubric` from reference videos (a standalone job, **not** a pipeline stage) |
 
 You talk to Atlas. Atlas decides who to send in, runs them, and brings the answer back
-as a clear call. The existing per-agent chats still work for debugging; Atlas's room is
-the main interface now.
+as a clear call. The existing per-agent chats still work for debugging; Atlas's room
+(terminal REPL or the Chainlit **web operator UI**) is the main interface now.
 
 ```
 You: find me research on a viral topic in home espresso
@@ -44,21 +57,29 @@ Atlas is a **supervisor with a registry**, not a hardcoded router. Three pieces:
 
 3. **Orchestrator** (`orchestrator.py`) — Atlas runs on the Claude Agent SDK. The
    registry's capabilities are exposed as **tools generated FROM the registry**
-   (`scout_find_topics`, `sage_research`, `ask_scout`, `ask_sage`). Atlas's LLM decides
-   which to call and in what order, streaming its reasoning as it goes.
+   (`scout_find_topics`, `sage_research`, `scriptwriter_write_script`, …,
+   `reference_analyst_build_rubric`, `ask_<agent>` for each), plus the single
+   `produce_video` tool that runs the whole pipeline. Atlas's LLM decides which to call
+   and in what order, streaming its reasoning as it goes.
 
 ```
-                 ┌──────────── you (CEO) ────────────┐
-                 │            chat.py (REPL)          │
-                 └───────────────┬───────────────────┘
-                          orchestrator.py
-                      (Claude Agent SDK query loop)
-                                 │  tools generated from…
-                            registry.py
-                  ┌──────────────┼───────────────┐
-              adapters/scout   adapters/sage   (future…)
-                  │   in-process │  in-process
-        youtube-topic-agent   topic-researcher     (untouched siblings)
+              ┌──────────── you (CEO) ────────────┐
+              │   chat.py (REPL)  /  web/app.py    │
+              └───────────────┬───────────────────┘
+                       orchestrator.py
+                   (Claude Agent SDK query loop)
+                              │  tools generated from…
+                         registry.py ──── adapters/ (in-process, isolated)
+                              │
+                 ┌────────────┴─────────────┐
+            ask_<agent> / <agent>_<job>   produce_video
+                                              │
+                                         pipeline.py
+                              (deterministic spine: order + contract
+                               validation + auto-gate + two human gates)
+                                              │
+        Scout · Sage · Marlow · Iris · Magpie · Cadence · Mason  (+ Vera, off-pipeline)
+                                  → video.mp4
 ```
 
 ### Why in-process (and how it's safe)
@@ -69,6 +90,38 @@ Both siblings ship modules with the **same names** (`llm`, `chat_state`, `search
 engines run in one process, each bound to its own `llm` — verified by tests. The
 synchronous engines spin their own event loop, so jobs are dispatched via
 `asyncio.to_thread` to avoid nesting with the SDK's loop.
+
+---
+
+## The production pipeline (make me a video)
+
+`produce_video` runs `pipeline.py` — a **deterministic state machine**, deliberately
+separate from Atlas's LLM judgment. The conversational plane picks topics and talks to
+you; the spine GUARANTEES stage order, validates every artifact against a frozen
+JSON-Schema contract (`contracts/`) before advancing, and halts on a failed gate.
+
+Ten stages, one fixed order, two human gates (★) and one automatic gate (▲):
+
+```
+research → script → factcheck ★GATE → style → storyboard
+   → assets ∥ narration → compose ▲auto-gate → audiomix → render ★GATE → video.mp4
+```
+
+- **All 10 stages bind real engines.** Only `research` keeps an opt-in offline stub
+  fallback, behind the `ATLAS_RESEARCH_STUB` env flag (dev / no-network); by default it
+  runs Sage's real engine like every other stage.
+- **Two human gates as pause-and-resume:** at the **fact-check gate** and the
+  **final-render gate** the runner persists `status: blocked_at_<gate>` to
+  `project.json` and returns — it never blocks mid-tool. You sign off, Atlas re-invokes
+  `produce_video` with `approve=<gate>`, and the pipeline resumes where it left off
+  (done stages are skipped). A fact-check `block` verdict **can't be approved away** —
+  it routes back upstream until the script is fixed.
+- **The compose auto-gate (▲):** before spending a render, Mason self-scans each scene
+  and runs HyperFrames `lint` + `validate` + `inspect`; a scene that fails blocks the
+  stage.
+
+Run it: `python run.py produce "<brief>"`. In the **web operator UI** the two gates
+render as **Approve / Revise** buttons with inline artifact/media previews.
 
 ---
 
@@ -146,8 +199,23 @@ deterministic, emitted from inside the tools; decisions and synthesis are Atlas'
 ```
 python run.py "AI tools & productivity for professionals and business"
 ```
-Runs the full canonical flow once and prints it: Scout finds topics → Atlas decides &
-says why → Sage researches → Atlas reports.
+Runs the canonical research flow once and prints it: Scout finds topics → Atlas decides
+& says why → Sage researches → Atlas reports.
+
+### Produce a video (the full pipeline)
+```
+python run.py produce "<brief>" [--unattended]
+python run.py produce "" --resume <slug> --approve factcheck   # resume after sign-off
+```
+
+### Web operator UI (the second frontend)
+```
+pip install -r requirements-web.txt     # chainlit (terminal needs none of it)
+chainlit run web/app.py -w               # → http://localhost:8000
+```
+The same meeting room as a web app: streaming chat, the two gates as Approve / Revise
+buttons, inline artifact/media previews, a roster sidebar, and per-agent persona chat.
+It drives the same `session.py` core — no orchestrator or pipeline changes.
 
 ---
 
@@ -196,8 +264,16 @@ cd YT-AGENTS
 python -m venv venv && source venv/bin/activate
 pip install -r youtube-topic-agent/requirements.txt
 pip install -r topic-researcher/requirements.txt
+pip install -r scriptwriter/requirements.txt
+pip install -r art-director/requirements.txt
+pip install -r asset-sourcer/requirements.txt
+pip install -r audio-designer/requirements.txt
+pip install -r composition-engineer/requirements.txt
 pip install -r atlas/requirements.txt
 ```
+
+Actual rendering also needs Node ≥ 22 + the HyperFrames CLI (`npx hyperframes`),
+FFmpeg/FFprobe on PATH, and the Kokoro TTS packages (`kokoro-onnx`, `soundfile`).
 
 Keys live in the **shared root `.env`** (`atlas/.env.example` documents the rest):
 - `YOUTUBE_API_KEY` — for Scout's job (free YouTube Data API v3 quota).
@@ -206,9 +282,10 @@ Keys live in the **shared root `.env`** (`atlas/.env.example` documents the rest
 Then:
 ```
 cd atlas
-python run.py chat                  # the meeting room (primary)
-python run.py "your niche here"     # one-shot canonical flow
-python -m pytest tests/ -q          # 32 pure-unit tests, no network
+python run.py chat                       # the meeting room (primary)
+python run.py "your niche here"          # one-shot research flow
+python run.py produce "<brief>"          # the full video pipeline
+python -m pytest tests/ -q               # pure-unit tests, no network
 ```
 
 ---
@@ -217,23 +294,30 @@ python -m pytest tests/ -q          # 32 pure-unit tests, no network
 
 ```
 atlas/
-  registry.py          # one entry per agent → who Atlas can delegate to
+  registry.py          # one entry per agent → who Atlas can delegate to (8 agents)
   adapters/
     loader.py          # in-process sibling import: isolated, cached, thread-safe
     base.py            # uniform adapter: run_job + persona ask
-    scout.py sage.py   # the two managed agents (siblings, unmodified)
+    scout.py sage.py scriptwriter.py art_director.py
+    asset_sourcer.py audio.py composition_engineer.py reference_analyst.py
+    stubs.py           # offline placeholder producers (research-stage fallback only)
   tools.py             # generates SDK tools FROM the registry (+ containment, timeout)
+  pipeline.py          # the deterministic spine: stage order + contracts + gates + resume
+  contracts/           # frozen JSON-Schema artifact shapes + validator
   orchestrator.py      # Atlas's brain: SDK query loop, streamed reasoning, playbook
-  progress.py          # deterministic 🔎/📚/✅ status lines
+  progress.py          # deterministic 🔎/📝/✅ status lines
   llm.py               # Atlas's brain seam (ATLAS_LLM switch)
   validate.py          # niche/topic validation (Atlas-owned)
   chat_state.py        # atomic writes + tolerant loads (summary-only memory)
-  chat.py              # the meeting room REPL + memory + commands
-  run.py               # entry: `chat` (primary) or `"<niche>"` (one-shot)
+  session.py           # UI-neutral session core shared by both frontends
+  chat.py              # the terminal meeting room REPL + memory + commands
+  web/app.py           # the Chainlit web operator UI (optional, additive)
+  projects/            # per-video working dirs (project.json + artifacts + assets)
+  run.py               # entry: `chat` | `"<niche>"` | `produce "<brief>"`
   soul/                # Atlas persona: SOUL.md + STYLE.md + examples/
-  tests/               # 32 pure-unit tests (no network/API)
+  tests/               # pure-unit tests (no network/API)
   PLAN.md              # the plan + the pre-build review report
 ```
 
-The siblings (`youtube-topic-agent/`, `topic-researcher/`) are **never modified** and
-stay independently runnable.
+The siblings (`youtube-topic-agent/`, `topic-researcher/`, and the six specialist
+projects) are **never modified** and stay independently runnable.

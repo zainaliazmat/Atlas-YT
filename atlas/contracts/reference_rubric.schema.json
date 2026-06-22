@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/reference_rubric.schema.json",
+  "title": "reference_rubric.json — banded quality targets + style profile from reference video(s)",
+  "type": "object",
+  "required": ["schema_version", "targets"],
+  "additionalProperties": true,
+  "$defs": {
+    "target": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "value": {"type": ["number", "null"]},
+        "band": {
+          "type": ["array", "null"],
+          "items": {"type": "number"}
+        }
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"type": "string"},
+    "source_videos": {"type": "array", "items": {"type": "string"}},
+    "targets": {
+      "type": "object",
+      "required": ["pacing"],
+      "additionalProperties": true,
+      "properties": {
+        "pacing": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "avg_shot_sec": {"$ref": "#/$defs/target"},
+            "cuts_per_min": {"$ref": "#/$defs/target"},
+            "shot_count": {"$ref": "#/$defs/target"}
+          }
+        },
+        "motion": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "kinetic_score": {"$ref": "#/$defs/target"}
+          }
+        },
+        "color": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "saturation": {"$ref": "#/$defs/target"},
+            "brightness": {"$ref": "#/$defs/target"},
+            "palette_samples": {"type": "array"}
+          }
+        },
+        "audio": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "integrated_lufs": {"$ref": "#/$defs/target"},
+            "loudness_range": {"$ref": "#/$defs/target"},
+            "true_peak_db": {"$ref": "#/$defs/target"},
+            "speech_ratio": {"$ref": "#/$defs/target"},
+            "avg_pause_sec": {"$ref": "#/$defs/target"}
+          }
+        },
+        "structure": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "duration_sec": {"$ref": "#/$defs/target"},
+            "fps": {"$ref": "#/$defs/target"}
+          }
+        }
+      }
+    },
+    "judged": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {"type": "string", "enum": ["pending", "draft", "scored"]},
+        "needs": {"type": "array", "items": {"type": "string"}},
+        "frames": {"type": "array", "items": {"type": "string"}},
+        "assessment": {"type": "object", "additionalProperties": true},
+        "error": {"type": "string"}
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "sets", "plain"],
+        "additionalProperties": true,
+        "properties": {
+          "id": {"type": "string"},
+          "sets": {"type": "string"},
+          "plain": {"type": "string"}
+        }
+      }
+    },
+    "ceo_prefs": {"type": "object", "additionalProperties": true},
+    "raw": {"type": "array"}
+  }
+}

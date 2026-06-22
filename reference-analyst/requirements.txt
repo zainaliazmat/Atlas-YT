@@ -1,0 +1,18 @@
+# Vera, The Reference Analyst — dependencies.
+
+numpy                 # frame math for the OpenCV measurements
+opencv-python         # frame sampling, palette (k-means), motion score
+python-dotenv         # loads keys from your local .env
+claude-agent-sdk      # DEFAULT brain (chat + vision style-profile), via your subscription
+
+# Optional — only if you switch VERA_LLM to "gemini" (chat + vision):
+# google-generativeai
+
+# (VERA_LLM=deepseek needs no extra package — it uses raw `requests`; note DeepSeek
+#  is text-only here, so the judged style-profile degrades to a note under it.)
+
+# SYSTEM dependency (NOT pip): the objective half shells out to FFmpeg/ffprobe.
+#   Ubuntu/Debian:  sudo apt install ffmpeg
+#   macOS:          brew install ffmpeg
+# Without ffmpeg the objective metrics degrade to nulls (never a crash); CI does not
+# require ffmpeg because the tests stub analyze_video.

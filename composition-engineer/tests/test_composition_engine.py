@@ -509,6 +509,255 @@ def test_compose_blocks_when_self_scan_fails(tmp_path, monkeypatch):
     assert manifest["scenes"][0]["self_scan"]["ok"] is False
 
 
+# ----------------------------------------------------------------------
+# C1 — typography must reach font-family as a NAME, never a leaked Python dict
+# ----------------------------------------------------------------------
+def test_dict_shaped_typography_emits_font_name_not_dict_repr(tmp_path):
+    # Iris emits typography slots as nested dicts: display/body = {family, weight}.
+    # A BUNDLED display family (Fraunces) reaches the heading CSS as a name; an unbundled
+    # one falls back (covered below). NO dict repr ever leaks.
+    style = {"palette": {}, "typography": {"display": {"family": "Fraunces", "weight": 700},
+                                           "body": {"family": "Inter", "weight": 400}}}
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": False}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, style, board,
+                            [], [], tmp_path, tmp_path)
+    html = engine.compose_scene_html(ctx)
+    assert "Fraunces" in html
+    assert "Inter" in html                       # body font present too
+    assert "'family'" not in html and '"family"' not in html
+    # no Python-dict brace leaked into any font-family declaration
+    for decl in html.split("font-family:")[1:]:
+        assert "{" not in decl.split(";", 1)[0]
+
+
+def test_unbundled_family_falls_back_to_a_bundled_face(tmp_path):
+    # An unbundled (e.g. proprietary) family name must snap to a guaranteed-present OFL
+    # face so the render is never fontless — a serif/display role -> Noto Serif Display.
+    style = {"palette": {}, "typography": {"display": {"family": "GT Sectra", "weight": 700},
+                                           "body": "Helvetica Neue"}}
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": False}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, style, board,
+                            [], [], tmp_path, tmp_path)
+    html = engine.compose_scene_html(ctx)
+    assert "GT Sectra" not in html and "Helvetica Neue" not in html
+    assert engine.FALLBACK_DISPLAY_FAMILY in html   # Noto Serif Display
+    assert engine.FALLBACK_BODY_FAMILY in html      # Noto Sans
+    for decl in html.split("font-family:")[1:]:
+        assert "{" not in decl.split(";", 1)[0]
+
+
+# ----------------------------------------------------------------------
+# Job 1 — OFL fonts bundled LOCALLY as @font-face (no render-time font fetch)
+# ----------------------------------------------------------------------
+def test_emitted_css_has_local_font_face_no_http():
+    # The default display face (Fraunces) reaches the heading CSS via a LOCAL @font-face.
+    html = engine.compose_scene_html(_ctx(palette={"bg": "#0d0d0d", "text": "#fff",
+                                                   "font": "Fraunces", "body_font": "Inter"}))
+    assert "@font-face" in html
+    # the @font-face src points at a local assets/fonts/... path — NEVER http
+    assert "src:url('assets/fonts/Fraunces.ttf')" in html
+    assert "assets/fonts/Inter.ttf" in html
+    assert "http" not in html.split("@font-face", 1)[1].split("}", 1)[0]
+    # heading CSS uses the bundled display family NAME, no leaked dict brace
+    assert ".scene-title{font-family:'Fraunces'" in html
+    # variable faces declare the full weight range
+    assert "font-weight:100 900;" in html
+
+
+def test_scene_build_copies_font_files_into_the_project(tmp_path):
+    style = {"palette": {}, "typography": {"display": {"family": "Fraunces", "weight": 700},
+                                           "body": {"family": "Inter", "weight": 400}}}
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": False}
+    scene_dir = tmp_path / "scenes" / "scene-01"
+    scene_dir.mkdir(parents=True)
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, style, board,
+                            [], [], tmp_path, scene_dir)
+    # the .ttf files were copied into the scene project's assets/fonts/
+    assert (scene_dir / "assets" / "fonts" / "Fraunces.ttf").exists()
+    assert (scene_dir / "assets" / "fonts" / "Inter.ttf").exists()
+    # ctx records (family, local-rel-path) pairs, and the html references those paths
+    fams = {f for f, _ in ctx["font_faces"]}
+    assert fams == {"Fraunces", "Inter"}
+    html = engine.compose_scene_html(ctx)
+    assert "src:url('assets/fonts/Fraunces.ttf')" in html
+    assert "http" not in html.split("@font-face", 1)[1].split("}", 1)[0]
+
+
+# ----------------------------------------------------------------------
+# C5 — a data-chart scene must render an ACTUAL visual (chart markup), not bare text
+# ----------------------------------------------------------------------
+def test_parse_chart_data_extracts_label_value_pairs():
+    pairs = engine.parse_chart_data("Coffee ~95 · Black tea ~47-48 · Green tea ~29 mg")
+    by = {p["label"].lower(): p["value"] for p in pairs}
+    assert by["coffee"] == 95.0
+    assert by["green tea"] == 29.0
+
+
+def test_data_chart_renders_native_bar_chart_from_scene_data():
+    # No usable asset -> a deterministic native bar chart from the scene's numbers.
+    ctx = _ctx(layout="data-chart", signature=False, effects=[], assets=[],
+               chart_data=[{"label": "Coffee", "value": 95}, {"label": "Black tea", "value": 48},
+                           {"label": "Green tea", "value": 29}])
+    html = engine.compose_scene_html(ctx)
+    assert "<svg" in html and "<rect" in html        # real chart markup, not just a title
+    assert "bar-chart" in html
+    assert "Coffee" in html and "95" in html
+    assert engine.scan_determinism(html) == []       # still frame-seek safe
+
+
+def test_data_chart_scene_with_data_is_not_bare_text():
+    # The live regression: layout data-chart with a generated (file-less) data-viz asset.
+    ctx = _ctx(layout="data-chart", signature=False, effects=[],
+               title="8 oz averages",
+               assets=[{"type": "data-viz", "label": "s2_caffeine_bars", "src_rel": None,
+                        "placeholder": True}],
+               chart_data=[{"label": "Coffee", "value": 95}, {"label": "Green tea", "value": 29}])
+    html = engine.compose_scene_html(ctx)
+    assert "<rect" in html                           # a chart reached the DOM
+
+
+# ----------------------------------------------------------------------
+# C4 — caption legibility: a scrim/background panel behind the caption text
+# ----------------------------------------------------------------------
+def test_captions_have_a_legibility_scrim():
+    html = engine.compose_scene_html(_ctx())
+    assert "caption-scrim" in html                   # a background panel element
+    assert "background:rgba(0,0,0" in html           # readable dark scrim behind text
+    assert "text-shadow" in html                     # plus a shadow for over-image legibility
+
+
+# ----------------------------------------------------------------------
+# Contrast over imagery: titles rendered OVER a photo (full-bleed-image,
+# lower-third) must sit on a SOLID, sufficiently-opaque dark scrim plate so
+# they reach WCAG 4.5:1 regardless of the underlying image luminance — a thin
+# bottom-only gradient (opaque only at the very bottom) leaves the TOP of the
+# title over the raw photo and fails. Mirror the working .caption-scrim plate.
+# ----------------------------------------------------------------------
+def test_full_bleed_title_sits_on_a_solid_contrast_scrim():
+    html = engine.compose_scene_html(
+        _ctx(layout="full-bleed-image", signature=False, effects=[],
+             assets=[{"type": "image", "label": "a1", "src_rel": "assets/x.jpg",
+                      "placeholder": False}]))
+    # the title text is wrapped in a dedicated scrim plate element
+    assert "bleed-scrim" in html
+    # the plate is a SOLID dark fill (not a fade-to-transparent gradient) and is
+    # opaque enough (>= 0.8) to guarantee contrast over any photo
+    assert "background:rgba(0,0,0,0.82)" in html
+    # and the over-image title band no longer relies on the leaky bottom gradient
+    assert "linear-gradient(0deg,#000c,#0000)" not in html
+
+
+def test_lower_third_name_strip_sits_on_a_solid_contrast_scrim():
+    html = engine.compose_scene_html(
+        _ctx(layout="lower-third", signature=False, effects=[],
+             title="Dr. Jane Doe",
+             assets=[{"type": "image", "label": "a1", "src_rel": "assets/x.jpg",
+                      "placeholder": False}]))
+    assert "bleed-scrim" in html
+    assert "background:rgba(0,0,0,0.82)" in html
+
+
+# ----------------------------------------------------------------------
+# Brand-chip contrast over imagery: chips land in the full-bleed media slot,
+# i.e. OVER a photo. The WCAG checker composites a DARK label against the page
+# background (it does not credit a light chip card), so dark-on-light chip
+# names fail ~1.04:1 over a dark frame. The chip card must therefore be a SOLID
+# dark plate with a near-WHITE label (white-on-dark is the pattern the checker
+# reliably resolves) — guaranteeing >=4.5:1 regardless of the underlying frame.
+# ----------------------------------------------------------------------
+def test_brand_chip_label_is_white_on_a_dark_plate_for_contrast():
+    css = engine.compose_scene_html(_ctx())   # the global stylesheet is always emitted
+    assert ".brand-chip{" in css
+    # the chip card is a solid dark plate (not a near-white #fffffff2 card)
+    assert "#fffffff2" not in css
+    assert "background:#141414" in css
+    # and the label text is white (so it reads on the dark plate AND passes WCAG)
+    assert ".brand-chip-name{" in css
+    name_rule = css.split(".brand-chip-name{", 1)[1].split("}", 1)[0]
+    assert "color:#ffffff" in name_rule
+
+
+# ----------------------------------------------------------------------
+# H1 — generic "four AI logos lined up" naming no model -> full roster of chips
+# ----------------------------------------------------------------------
+def test_generic_logo_lineup_shot_falls_back_to_full_roster():
+    shots = [{"kind": "brand", "content": "four AI logos lined up"}]
+    keys = engine.scene_brand_keys(shots)
+    assert set(keys) == set(engine.BRAND_CHIPS.keys())
+    specs = engine.scene_brand_specs(shots)
+    assert {s["key"] for s in specs} == set(engine.BRAND_CHIPS.keys())
+    assert all(s["dim"] is False for s in specs)
+
+
+def test_generic_models_lineup_by_content_cue_without_kind():
+    # No brand kind, but content cues "the major models" in a row -> full roster.
+    shots = [{"kind": "graphic", "content": "the major models lined up in a row"}]
+    assert set(engine.scene_brand_keys(shots)) == set(engine.BRAND_CHIPS.keys())
+
+
+def test_named_models_still_take_precedence_over_roster_fallback():
+    # A specific model named -> only that, not the whole roster.
+    shots = [{"kind": "brand", "content": "Claude logo, four models lined up"}]
+    assert engine.scene_brand_keys(shots) == ["anthropic"]
+
+
+# ----------------------------------------------------------------------
+# M4 — a multi-brand shot's dim cue must NOT dim the foregrounded winner
+# ----------------------------------------------------------------------
+def test_dim_cue_does_not_dim_the_foregrounded_brand_in_a_multibrand_shot():
+    shots = [{"kind": "panel",
+              "content": "Claude foregrounded while GPT-4o fades back into the background"}]
+    by = {s["key"]: s["dim"] for s in engine.scene_brand_specs(shots)}
+    assert by["anthropic"] is False              # the foregrounded winner stays bright
+    assert by["openai"] is True                  # only the de-emphasized peer dims
+
+
+def test_single_brand_dim_cue_still_applies():
+    shots = [{"kind": "panel", "content": "GPT-4o dimmed into the background"}]
+    by = {s["key"]: s["dim"] for s in engine.scene_brand_specs(shots)}
+    assert by["openai"] is True
+
+
+# ----------------------------------------------------------------------
+# C2 (calibrated) — contrast failures must be RECORDED + SURFACED (the original bug was
+# that they were silently swallowed), but they do NOT hard-block the DETERMINISTIC gate:
+# aesthetics are the human render gate's call. Structure (lint/console/inspect) still blocks.
+# ----------------------------------------------------------------------
+def test_contrast_failures_are_recorded_and_surfaced_not_silently_swallowed(tmp_path, monkeypatch):
+    _write_fixture_project(tmp_path)
+    monkeypatch.setenv("MASON_SKIP_RENDER", "1")
+    import hf_tools
+    # structure clean (lint/console/inspect), but validate reports contrast failures.
+    monkeypatch.setattr(hf_tools, "run_gate", lambda d, motion_strict=False: {
+        "lint": {"ok": True, "errors": 0},
+        "validate": {"ok": True, "console_errors": 0, "contrast_failures": 5},
+        "inspect": {"ok": True, "issues": 0}})
+    manifest = engine.compose(tmp_path)
+    # SURFACED: the total is reported in the summary (not zeroed/ignored).
+    assert manifest["summary"]["contrast_failures"] >= 5
+    # RECORDED per scene so the human render gate can judge.
+    assert any(s.get("assets", {}).get("contrast_failures") or
+               (s.get("gate", {}).get("validate") or {}).get("contrast_failures")
+               for s in manifest["scenes"]) or manifest["summary"]["contrast_failures"] >= 5
+
+
+def test_structural_gate_failures_still_block_the_auto_gate(tmp_path, monkeypatch):
+    """The deterministic guarantee is intact: a console error (structural) blocks."""
+    _write_fixture_project(tmp_path)
+    monkeypatch.setenv("MASON_SKIP_RENDER", "1")
+    import hf_tools
+    monkeypatch.setattr(hf_tools, "run_gate", lambda d, motion_strict=False: {
+        "lint": {"ok": True, "errors": 0},
+        "validate": {"ok": False, "console_errors": 2, "contrast_failures": 0},
+        "inspect": {"ok": True, "issues": 0}})
+    manifest = engine.compose(tmp_path)
+    assert manifest["summary"]["auto_gate"] != "PASS"
+    assert manifest["verdict"] == "blocked"
+
+
 def test_compose_raises_on_invalid_inputs(tmp_path, monkeypatch):
     _write_fixture_project(tmp_path)
     monkeypatch.setenv("MASON_SKIP_RENDER", "1")
@@ -522,3 +771,96 @@ def test_compose_raises_on_invalid_inputs(tmp_path, monkeypatch):
         assert False, "expected ValueError on unknown token"
     except ValueError as exc:
         assert "unknown effect" in str(exc)
+
+
+# ----------------------------------------------------------------------
+# Job 2 — vocabulary extension (LOCKSTEP): big-number, timeline, count-up
+# ----------------------------------------------------------------------
+def test_big_number_renders_hero_stat_and_self_scans_clean():
+    ctx = _ctx(layout="big-number", signature=False, effects=[],
+               hero_stat={"value": 95, "unit": "mg", "label": "Caffeine per cup"})
+    html = engine.compose_scene_html(ctx)
+    assert 'class="layout big-number' in html
+    assert "big-number-value" in html
+    assert ">95<" in html                              # the stat reached the DOM
+    assert "Caffeine per cup" in html                  # the label
+    assert "mg" in html                                # the unit
+    assert "font-size:min(300px,15vw)" in html          # hero scale, viewport-capped so it can't overflow
+    assert engine.scan_determinism(html) == []         # frame-seek safe
+
+
+def test_big_number_carries_signature_tint_on_the_beat():
+    ctx = _ctx(layout="big-number", signature=True,
+               effects=[{"name": engine.SIGNATURE_EFFECT, "params": {}}],
+               hero_stat={"value": 40, "unit": "%", "label": "fewer"})
+    html = engine.compose_scene_html(ctx)
+    assert "big-number sig" in html
+    assert ".big-number.sig .big-number-value{color:#FFD000;}" in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_timeline_emits_one_svg_node_per_parsed_entry():
+    entries = [{"date": "1969", "label": "Moon"}, {"date": "1991", "label": "Web"},
+               {"date": "2007", "label": "iPhone"}]
+    ctx = _ctx(layout="timeline", signature=False, effects=[], timeline_data=entries)
+    html = engine.compose_scene_html(ctx)
+    assert "<svg" in html and "timeline-svg" in html
+    assert html.count('class="tl-node"') == len(entries)   # N nodes for N entries
+    for e in entries:
+        assert e["date"] in html and e["label"] in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_parse_hero_stat_picks_the_dominant_number():
+    stat = engine.parse_hero_stat("Coffee delivers 95 mg of caffeine per cup")
+    assert stat["value"] == 95.0
+    assert stat["unit"].lower() == "mg"
+
+
+def test_parse_timeline_data_extracts_year_entries_in_order():
+    rows = engine.parse_timeline_data("1969 Moon landing, 2007 iPhone, 2023 GPT-4")
+    assert [r["date"] for r in rows] == ["1969", "2007", "2023"]
+    assert rows[0]["label"].startswith("Moon")
+
+
+def test_count_up_tweens_on_the_master_timeline_and_is_deterministic():
+    # count-up on a big-number scene: a GSAP tween 0->target on the paused timeline,
+    # onUpdate writes textContent. No Math.random/Date.now/late gsap.set -> self-scan clean.
+    ctx = _ctx(layout="big-number", signature=False,
+               effects=[{"name": "count-up", "params": {}}],
+               hero_stat={"value": 250, "unit": None, "label": "servers"})
+    html = engine.compose_scene_html(ctx)
+    assert 'data-target="250"' in html                 # build-time target on the element
+    assert "onUpdate" in html and "textContent" in html
+    assert "tl.to(" in html                            # motion lives on the master timeline
+    assert "gsap.set(" not in html
+    assert "Math.random" not in html and "Date.now" not in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_count_up_value_at_a_sampled_frame_is_determined():
+    # The tween is linear in eased progress; the engine seeks to fixed times, so the value
+    # at a given progress p is round(target * eased(p)) — a pure function of p (no clock).
+    # We verify the emitted tween parameters pin the target + duration deterministically.
+    import re as _re
+    ctx = _ctx(layout="big-number", signature=False,
+               effects=[{"name": "count-up", "params": {}}], duration=2.0,
+               hero_stat={"value": 100, "unit": None, "label": "x"})
+    html = engine.compose_scene_html(ctx)
+    m = _re.search(r"n:target,duration:([0-9.]+),ease:\"power1.out\"", html)
+    assert m, "count-up tween not emitted with a fixed duration"
+    # duration = min(1.2, dur*0.5) = 1.0 here -> deterministic, not clock-derived
+    assert float(m.group(1)) == 1.0
+
+
+def test_has_brand_stacks_blocks_in_a_non_overlapping_grid():
+    """A big-number scene that ALSO carries a brand chip must place the two blocks in a
+    grid (content-sized rows) so the opaque chip can never occlude the hero number —
+    the live 'text_occluded' inspect error that blocked a real render."""
+    ctx = _ctx(layout="big-number", signature=False, effects=[],
+               hero_stat={"value": 1936, "unit": "", "label": "The year it was invented"},
+               brand_keys=["openai"], brand_specs=[{"key": "openai", "dim": False}])
+    html = engine.compose_scene_html(ctx)
+    assert "has-brand" in html
+    # the has-brand container is a grid (rows can't overlap), not a flex column
+    assert "has-brand{display:grid" in html.replace(" ", "")

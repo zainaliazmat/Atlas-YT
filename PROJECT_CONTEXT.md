@@ -12,8 +12,9 @@
 narrated, fact-checked explainer video — autonomously.** Every pipeline stage now runs a real
 specialist engine (the last placeholder, the `research` stage, was wired to Sage — see §12).
 You (the "CEO") talk to a single
-manager agent called **Atlas (the Showrunner)** in a chat "meeting room." Atlas delegates
-to a fleet of specialist agents — each a self-contained Python project with its own
+manager agent called **Atlas (the Showrunner)** in a chat "meeting room" — either the
+terminal REPL or the **web operator UI** (a Chainlit app; now fully built, see §12). Atlas
+delegates to a fleet of specialist agents — each a self-contained Python project with its own
 personality, brain, and memory — and runs them through a deterministic production
 pipeline, pausing at two human approval "gates," and produces a final `video.mp4`.
 
@@ -27,9 +28,13 @@ that can run end-to-end with no human in the loop except at two sign-off points.
 agents to do the production grind while they stay in the director's chair.
 
 **Status (high level):** It works end-to-end. There is a real, completed example project in
-`atlas/projects/` that ran all 10 stages and produced a real `video.mp4`. Two of the eight
-agents (Scout, Sage) predate the pipeline; the other five specialists have since been built
-and dropped into their registered slots. (See §12 for the one stage that is still a stub.)
+`atlas/projects/` that ran all 10 stages and produced a real `video.mp4`. **All 7 pipeline roles
+now run real engines** — Scout and Sage predate the pipeline; the other five specialists were built
+and dropped into their registered slots, and the former `research`-stage stub is now wired to
+Sage's real engine (the stub survives only as an opt-in offline fallback; see §12). An **8th agent,
+Vera 🔬 the Reference Analyst**, is also built and tested — a standalone delegable job/persona
+(builds a `reference_rubric` from reference videos), **not** a pipeline stage (§12). Beyond the
+terminal, a **Chainlit web operator UI is fully built** as a second frontend (§12).
 
 ---
 
@@ -48,11 +53,14 @@ and dropped into their registered slots. (See §12 for the one stage that is sti
 | **Optional transcription** | `whisper.cpp` (word-level caption timing; optional, never required) |
 | **External data APIs** | YouTube Data API v3 (Scout), Google Trends via `pytrends` (Scout), web search (DuckDuckGo `ddgs` default; Tavily/Brave optional), Wikipedia REST, GDELT news, plus PD/CC asset & audio archives (see §9) |
 | **Package manager** | `pip` + per-project `requirements.txt` |
-| **Tests** | `pytest` (≈40 test files across the repo; pure unit tests, no network) |
+| **Web UI (optional)** | **Chainlit** 2.11.1 (in-process, additive) — the web "meeting room" at `atlas/web/app.py`; deps in `atlas/requirements-web.txt`, runtime config in `.chainlit/`. The terminal REPL needs none of it. |
+| **Tests** | `pytest` (43 test files across the repo; pure unit tests, no network) |
 | **Version control** | **Git** (`main` is the upstream default; active work is on `master`). History is a series of `checkpoint before …` commits — see §12 for the current in-flight work. |
 
-There is no web frontend in the tree today, though `atlas/session.py` is explicitly built as
-a UI-neutral core "both the terminal REPL and a future web operator UI" would share.
+A **web frontend now exists**: `atlas/session.py` is the UI-neutral core shared by both the
+terminal REPL (`atlas/chat.py`) and the Chainlit web operator UI (`atlas/web/app.py`). Both
+drive the same session core and share one `chat_state.json` (last-writer-wins — don't run both
+at once). See §12 for the web UI's status (all phases A–D complete).
 
 ---
 
@@ -130,12 +138,19 @@ jobs are dispatched via `asyncio.to_thread` to avoid nesting with the SDK's loop
 YT-AGENTS/
 ├── .env                       # SHARED secrets for the whole fleet (root-level; gitignored)
 ├── skills-lock.json           # pinned HyperFrames doc-skills (from heygen-com/hyperframes)
+├── .chainlit/                 # Chainlit runtime config (config.toml + translations) for the web UI
 ├── venv/                      # the one shared virtualenv (noise — skip)
 │
 ├── atlas/                     # ★ THE SHOWRUNNER / ORCHESTRATOR (the brain of the system)
 │   ├── run.py                 # entry point: `chat` (meeting room) | "<niche>" | `produce …`
 │   ├── chat.py                # terminal REPL frontend (commands, memory, SIGINT handling)
-│   ├── session.py             # UI-neutral session core (shared by terminal + future web UI)
+│   ├── session.py             # ★ UI-neutral session core (AtlasSession + AgentSession + SessionRegistry)
+│   ├── project_view.py        # read-only artifact previews + find_latest_blocked (web gate cards)
+│   ├── web/                   # ★ the Chainlit web operator UI (optional, additive)
+│   │   ├── app.py             #   Chainlit app: streaming chat, gate buttons, roster, media previews
+│   │   └── README.md          #   how to run it (chainlit run web/app.py -w → :8000)
+│   ├── requirements-web.txt   # web-only deps (chainlit 2.11.1) — terminal needs none of it
+│   ├── web_sessions/          # per-agent web persona memory (created at runtime; separate from terminal state)
 │   ├── orchestrator.py        # Atlas's brain: SDK query() loop, system prompt, playbooks
 │   ├── registry.py            # ★ THE REGISTRY — one AgentEntry per agent; the source of truth
 │   ├── tools.py               # generates SDK tools FROM the registry (+ timeout/containment)
@@ -203,6 +218,12 @@ LLM-injectable), `run.py` (CLI), `chat.py` (co-worker REPL), `llm.py` (provider 
 | `python run.py "<niche>"` | One-shot: Scout finds topics → Atlas decides → Sage researches → reports. |
 | `python run.py produce "<brief>" [--unattended] [--resume <slug> --approve <gate>]` | Run/resume the full video pipeline from the CLI. |
 
+**Secondary entry point: the web operator UI.** From inside `atlas/`:
+`chainlit run web/app.py -w` → http://localhost:8000 — the same meeting room as a web app, with
+the two gates rendered as **Approve / Revise buttons**, inline artifact/media previews, a roster
+sidebar, and per-agent persona chat. It drives the same `session.py` core (no orchestrator/pipeline
+changes). See §12 and `atlas/web/README.md`.
+
 **Core code path for a meeting turn:**
 1. `chat.py` → `session.AtlasSession.send()` ([atlas/session.py:250](atlas/session.py#L250)) —
    builds bounded context (durable summary + fleet snapshot + recent window) and calls the orchestrator.
@@ -242,8 +263,14 @@ LLM-injectable), `run.py` (CLI), `chat.py` (co-worker REPL), `llm.py` (provider 
   [atlas/pipeline.py:341](atlas/pipeline.py#L341)).
 - **`contracts/`** — frozen JSON-Schema shapes for every artifact, `additionalProperties: true`
   (frozen-but-extensible). `validate(name, obj) -> (ok, errors)` never raises on bad data.
-- **`session.py`** — UI-neutral session: memory (summary-only distillation), context assembly,
-  status routing. The same object will back a future web UI.
+- **`session.py`** — UI-neutral session core shared by both frontends: `AtlasSession`
+  (send/ask_agent/summarize/new_thread + memory, context assembly, status routing, plus
+  `latest_blocked_project()` / `approve_gate(slug, gate)` for gate buttons), `AgentSession`
+  (per-agent persona chat via `adapter.ask`, own summary-only memory under `atlas/web_sessions/`),
+  and `SessionRegistry` (process-level cache that *resumes* a session on a web profile switch).
+  Streaming reuses the orchestrator's already-callback-parameterized seams (`on_text=`, `Progress(sink=)`),
+  so `orchestrator.py` is untouched by the web UI.
+- **`project_view.py`** — read-only artifact previews + `find_latest_blocked()`; feeds the web gate cards.
 
 ### The eight agents (each is an independent, runnable project)
 
@@ -256,6 +283,7 @@ LLM-injectable), `run.py` (CLI), `chat.py` (co-worker REPL), `llm.py` (provider 
 | `asset-sourcer` | **Magpie** 🗂️ | Asset Sourcer & Licensing | `source_engine.source_assets(storyboard, style_guide, client, pdir)` | `storyboard.json` → `asset_manifest.json` + downloaded files |
 | `audio-designer` | **Cadence** 🎙️ | Audio / Sound Designer | `audio_engine.record_narration(script, pdir)`; `audio_engine.mix_audio(...)` | `script.json` → `narration.wav` + `narration.transcript.json` + `master.wav` + `audio_manifest.json` |
 | `composition-engineer` | **Mason** 🛠️ | Composition Engineer | `composition_engine.compose(pdir)`; `composition_engine.run_render(pdir)` | all artifacts → scene HTML + `composition_manifest.json` → `video.mp4` |
+| `reference-analyst` | **Vera** 🔬 | Reference Analyst (off-pipeline job) | `reference_analyst` engine over reference videos (FFmpeg/OpenCV) | reference videos → `reference_rubric` (a STANDARD, not a pipeline artifact) |
 
 **A few critical domain mechanisms:**
 - **Iris's "one #FFD000 beat":** exactly one scene per video carries the `highlighter-FFD000`
@@ -314,8 +342,15 @@ The full transcript lives only in RAM and is distilled into the summary on every
 
 ## 8. APIs / Interfaces
 
-This project has **no HTTP API**. Its interfaces are CLIs, the in-process orchestrator tools, and
-each engine's public functions.
+This project has **no public HTTP API**. Its interfaces are CLIs, an optional Chainlit web app,
+the in-process orchestrator tools, and each engine's public functions.
+
+**Web operator UI** (`chainlit run web/app.py -w` → :8000): a browser meeting room over the same
+`session.py` core — streaming chat with Atlas, the two pipeline gates as **Approve / Revise**
+buttons (Approve calls `pipeline.produce(slug, approve=<gate>)` directly; Revise is a conversational
+turn back to Atlas), inline artifact/media previews, a roster sidebar, and per-agent persona chat
+(including Marlow's script job-gate surfaced as an approval button). Additive only — the terminal
+REPL, orchestrator, pipeline, contracts, and every sibling engine are untouched.
 
 **Atlas meeting-room commands** (`python run.py chat`):
 `<any message>` (delegates/answers), `/agents` (roster + each agent's effective provider),
@@ -402,10 +437,18 @@ python run.py produce "GPT-4o vs Claude … brief" # run the full video pipeline
 python run.py produce "" --resume <slug> --approve factcheck   # resume after sign-off
 ```
 
+**Run the web UI** (optional second frontend; install `requirements-web.txt` first):
+```bash
+cd atlas
+pip install -r requirements-web.txt              # chainlit 2.11.1 (terminal needs none of this)
+chainlit run web/app.py -w                        # -> http://localhost:8000
+```
+
 **Test** (per project; pure unit tests, no network/API):
 ```bash
 cd atlas && python -m pytest tests/ -q
-# CHANGELOG cites 58 passing for the Showrunner phase; counts grow as specialists land.
+# Atlas core is well over 100 tests green (incl. session/web-session/gate tests); each
+# specialist has its own suite. Counts grow as specialists and the web UI land.
 ```
 
 ---
@@ -442,21 +485,50 @@ cd atlas && python -m pytest tests/ -q
 - The full orchestration core (registry/adapters/loader/tools/orchestrator/session/memory).
 - The deterministic pipeline with contract validation, the composition auto-gate, and both human
   gates as pause-and-resume + resume-by-gate.
-- **All seven roles have real engines** (Scout, Sage, Marlow, Iris, Magpie, Cadence, Mason). The
+- **All seven pipeline roles have real engines** (Scout, Sage, Marlow, Iris, Magpie, Cadence, Mason). The
   registry's per-entry comments document each "stub slot was filled."
+- **An 8th agent — Vera 🔬 the Reference Analyst — is built and tested.** It is a standalone
+  delegable job + persona (job `reference_analyst_build_rubric`) that builds a `reference_rubric`
+  from reference videos via FFmpeg/OpenCV. It is a STANDARD/job, **not** a pipeline stage — the
+  10-stage line is unchanged. Adds `atlas/adapters/reference_analyst.py`,
+  `atlas/contracts/reference_rubric.schema.json`, and its tests; it surfaces through the registry
+  with no orchestrator change.
 - **An end-to-end run actually succeeded:** `atlas/projects/gpt-4o-vs-claude-vs-gemini-vs-deepseek-comparison--…/`
   has `status: "done"`, all 10 stages `done`, both gates `approved`, and a real `video.mp4`
   (11 scenes, ~72s audio).
+- **The web operator UI is fully built** (Chainlit, `atlas/web/app.py`). All planned phases are
+  complete: **A** streaming chat · **B** the two pipeline gates as Approve/Revise buttons with inline
+  artifact previews · **C-v1** roster sidebar + per-agent persona chat (`AgentSession`/`SessionRegistry`,
+  resume-on-profile-switch) · **C-v2** Marlow's script job-gate as an approval button (injectable
+  approver seam, terminal behavior byte-identical) · **D** inline media (swatches/thumbnails/draft MP4).
+  It's additive: orchestrator, pipeline, contracts, registry, and every sibling engine are untouched.
 
-**In-flight work (uncommitted, on `master`):**
-- **Issue #2 — "irrelevant footage" (Direction A):** the recent `checkpoint before …` commits plus the
-  uncommitted diff harden the LLM-comparison case. Mason (`composition_engine.py`) now renders **real
-  inline brand logos** (Lobe Icons, MIT — OpenAI/Claude/Gemini/DeepSeek SVG marks inlined as data, no
-  render-time fetch) for un-sourceable model logos, via `scene_brand_specs()` / `render_brand_chips()`;
-  a shot whose content reads as de-emphasized ("dimmed into the background") gets a `dim` chip so named
-  winners stand out. In parallel, the scriptwriter side gained citation/reliability hardening
-  (label-aware citation fix, qualitative-citation auto-repair, magnitude-comparative reliability rule).
-  See the `issue-2-irrelevant-footage` memory for the root-cause + A/B fix plan.
+**Recently resolved (owner run):**
+- **Issue #2 — "irrelevant footage" — now RESOLVED; both fix directions landed.**
+  Root cause: license-first ranking shipped zero-relevance museum art, the four AI brand logos are
+  un-sourceable by design (trademarked, outside the CC0/PD allowlist), and Mason ignored storyboard
+  shots so logo scenes rendered nothing. The two fixes:
+  - **Direction A — brand chips (Mason + Iris + Magpie).** Mason (`composition_engine.py`) now reads
+    `storyboard.shots` and renders **real inline brand logos** (Lobe Icons, MIT — OpenAI/Claude/Gemini/
+    DeepSeek SVG marks inlined as data, no render-time fetch) via `detect_brands()` / `scene_brand_specs()`
+    / `render_brand_chips()`; a `BRAND_CHIPS` registry is canonical; Iris auto-tags `kind:'brand'` shots;
+    Magpie skips asset rows for render-kinds. A shot framing a model as de-emphasized ("dimmed into the
+    background") gets a `dim` chip so named winners stand out. Known gap: generic "four logos" shots that
+    name no specific model get no chips until the brain re-tags them.
+  - **Direction B — relevant sourcing (Magpie, `asset-sourcer/source_engine.py` — the current working
+    diff).** `rank_candidates` is now **relevance-first** (license-rank only breaks ties — inverts the
+    Van Eyck bug); relevance is a normalized fraction of query *subject* tokens; museum sources are
+    dropped for non-historical queries; a `RELEVANCE_FLOOR` (0.20) ships a clean placeholder instead of
+    junk and a `RELEVANCE_WEAK` (0.50) flags weak-but-present assets for the human gate.
+  - In parallel, the scriptwriter side gained citation/reliability hardening (label-aware citation fix,
+    qualitative-citation auto-repair, magnitude-comparative reliability rule).
+  See the `issue-2-irrelevant-footage` memory for the full root-cause + A/B detail.
+- **Other owner-run fixes that landed alongside Issue #2:**
+  - **Model IDs normalized to full slugs:** creative agents on `claude-opus-4-8`, the others on
+    `claude-sonnet-4-6` (resolves the per-agent inconsistency the §9 note flags); plus a named-model
+    fallback so a creative agent degrades to a named model rather than failing.
+  - **Mason render fixes:** font handling, a native data-chart render, a contrast-blocking gate, and
+    caption legibility.
 
 **Known gaps / tech debt:**
 - **The `research` stage now runs Sage's REAL engine** (was a stub when this doc was first written).
@@ -465,12 +537,16 @@ cd atlas && python -m pytest tests/ -q
   (`stubs.produce_research`) is retained only as an **opt-in fallback**: set `ATLAS_RESEARCH_STUB` truthy
   to force it (dev / no-network), and that path logs loudly so a stub run is never mistaken for real
   research. So a `produce_video` run now researches the topic for real before scripting.
-- **Docs lag the code:** `atlas/README.md` and `atlas/PLAN.md` describe the early "Scout + Sage only"
-  phase; `CHANGELOG.md` 0.2.0 still calls five specialists "stubs." The registry/adapters are the
-  ground truth — trust them over the prose docs.
+- **Docs now reconciled to the code:** `atlas/README.md` and `atlas/PLAN.md` were updated to the full
+  8-agent fleet + 10-stage pipeline + gates + web UI (PLAN.md keeps its pre-build review as a clearly
+  marked historical record), and `CHANGELOG.md` gained a `0.3.0 — Full fleet, real engines` entry. The
+  registry/adapters remain the ground truth, but the prose no longer contradicts them.
 - **Per-scene TTS is sequential** (~11s/scene overhead); a 10+ scene script can run minutes
   (narration job timeout is raised to 900s). Parallelizing per-scene TTS is a documented follow-up.
-- **No web UI yet** — `session.py` is built for one, but only the terminal frontend exists.
+- **Web UI is complete but shares state with the terminal** — `atlas/web/app.py` (Chainlit) is a
+  full second frontend, but it shares one `chat_state.json` with the terminal Atlas (last-writer-wins);
+  don't run both at once. It also pulls in a dormant `opentelemetry-instrumentation-ollama` shim via
+  `literalai`/`traceloop` (not actual Ollama — can't be dropped cleanly).
 - Model IDs are inconsistent across agents' `llm.py` (see §9 note).
 - Provider-fallback chains (e.g. a transition `xfade` vs hard `cut`, `whisper.cpp` word timing) are
   best-effort and degrade silently — verify behavior when debugging render/caption issues.

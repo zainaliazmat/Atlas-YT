@@ -19,3 +19,5 @@ chat_state.json.corrupt-*
 venv/
 .venv/
 
+ReferanceVideos/
+reference-analyst/standards/

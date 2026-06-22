@@ -36,10 +36,22 @@ seams the adapter uses; `run_*(...)` are the CLI/chat conveniences.
 """
 from __future__ import annotations
 
+import concurrent.futures as _futures
+import os
 import pathlib
 import re
 import time
 import wave
+
+
+def _tts_workers(n_scenes: int) -> int:
+    """How many scenes to synthesize at once. Kokoro TTS is CPU-bound (and onnxruntime
+    multithreads internally), so oversubscribing the box makes EVERY per-call `hyperframes
+    tts` slower and can blow its per-call timeout. Bound concurrency to half the cores
+    (hard ceiling 3) so we get a real speedup without starving each synth. Determinism is
+    independent of this number — offsets/concat are computed in original scene order."""
+    cores = os.cpu_count() or 2
+    return max(1, min(n_scenes, cores // 2, 3))
 
 import chat_state
 import llm                # imported eagerly (the loader-safe sibling pattern) so the
@@ -242,16 +254,39 @@ def record_narration(script: dict, *, pdir: str | pathlib.Path,
     adir.mkdir(parents=True, exist_ok=True)
 
     scenes = [s for s in script["scenes"] if isinstance(s, dict)]
-    scene_wavs: list[pathlib.Path] = []
-    segments: list[dict] = []
-    t = 0.0
+
+    # The speakable scenes, in ORIGINAL ORDER. Each tts call is a pure function of its
+    # (text, voice) and writes to its OWN scene-NN.wav, so we synthesize them CONCURRENTLY
+    # and key results by ORIGINAL INDEX. Offsets/concat are then a prefix-sum over the
+    # order-preserved list — byte-identical to the old sequential loop, never completion
+    # order. If tts_fn is sync the pool runs it on threads; an async tts_fn run via a
+    # thread is fine (each call is independent and self-contained).
+    speakable: list[tuple[int, str, pathlib.Path]] = []
     for idx, scene in enumerate(scenes):
         text = str(scene.get("narration", "")).strip()
         if not text:
             continue  # a silent scene contributes no narration span
         n = _scene_no(scene, idx)
-        wav = adir / f"scene-{n:02d}.wav"
-        res = tts_fn(text, str(wav))
+        speakable.append((n, text, adir / f"scene-{n:02d}.wav"))
+
+    if not speakable:
+        raise RuntimeError("no narration was synthesized — every scene was empty.")
+
+    # Synthesize concurrently; collect into a list aligned to `speakable` order. We wait
+    # for ALL futures (the pool's __exit__ joins them) before inspecting any result, so a
+    # later-scene failure can't slip past — and we raise BEFORE any concat (no partial
+    # artifact). The first failure (in original order) wins, matching the sequential raise.
+    results: list[dict] = [None] * len(speakable)  # type: ignore[list-item]
+    with _futures.ThreadPoolExecutor(max_workers=_tts_workers(len(speakable))) as pool:
+        fut_to_pos = {pool.submit(tts_fn, text, str(wav)): pos
+                      for pos, (n, text, wav) in enumerate(speakable)}
+        for fut in _futures.as_completed(fut_to_pos):
+            results[fut_to_pos[fut]] = fut.result()  # propagates any tts_fn exception
+
+    segments: list[dict] = []
+    scene_wavs: list[pathlib.Path] = []
+    t = 0.0
+    for (n, text, wav), res in zip(speakable, results):  # ORIGINAL scene order
         if not res.get("ok"):
             raise RuntimeError(f"tts failed on scene {n}: {res.get('error')}")
         dur = float(res["duration"])
@@ -263,9 +298,6 @@ def record_narration(script: dict, *, pdir: str | pathlib.Path,
         })
         t += dur
         scene_wavs.append(wav)
-
-    if not scene_wavs:
-        raise RuntimeError("no narration was synthesized — every scene was empty.")
 
     total = round(t, 3)
     narration_rel = f"{AUDIO_SUBDIR}/narration.wav"

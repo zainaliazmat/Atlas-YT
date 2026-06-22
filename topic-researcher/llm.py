@@ -30,6 +30,7 @@ ClaudeSDKClient session, which would carry a single accumulating conversation an
 fixed system prompt across unrelated calls and leak context between them.
 """
 import asyncio
+import time
 import os
 import warnings
 
@@ -45,7 +46,7 @@ PROVIDER = os.environ.get("SAGE_LLM", "claude").strip().lower()
 
 # Per-use Claude models (subscription). Research wants strong reasoning; chat is
 # fine on a fast Sonnet-class brain and keeps the heavier rate limit free.
-CLAUDE_MODEL = "opus"                  # research / synthesis brain ("sonnet"/"haiku" spend less)
+CLAUDE_MODEL = "claude-opus-4-8"       # research / synthesis brain — Claude Opus 4.8 (full slug; no bare aliases)
 CHAT_MODEL = "claude-sonnet-4-6"       # fast chat brain (converse) — change here only.
 CHAT_TIMEOUT_SEC = 180                  # a chat turn beyond this is stalled, not thinking
 
@@ -70,7 +71,21 @@ def _warn_if_metered() -> None:
 # ----------------------------------------------------------------------
 def _chat_claude(system: str, user: str) -> str:
     _warn_if_metered()
-    return asyncio.run(_claude_chat_async(system, user))
+    # Retry transient API hiccups (server_error/overloaded/5xx/connection) with backoff
+    # so one blip doesn't fail a whole pipeline stage. Rate-limit caps are NOT retried
+    # away aggressively — a few spaced attempts at most.
+    _TRANSIENT = ('server_error', 'overloaded', 'connection', 'timeout',
+                  '500', '502', '503', '529')
+    last = None
+    for attempt in range(4):
+        try:
+            return asyncio.run(_claude_chat_async(system, user))
+        except Exception as e:  # noqa: BLE001 — classify, retry transient, else re-raise
+            last = e
+            if attempt == 3 or not any(t in str(e).lower() for t in _TRANSIENT):
+                raise
+            time.sleep(1.5 * (2 ** attempt))
+    raise last  # pragma: no cover
 
 
 async def _claude_chat_async(system: str, user: str) -> str:
