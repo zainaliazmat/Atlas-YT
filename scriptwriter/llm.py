@@ -45,7 +45,7 @@ PROVIDER = os.environ.get("MARLOW_LLM", "claude").strip().lower()
 # Per-use Claude models (subscription). Scriptwriting wants strong narrative
 # reasoning; chat is fine on a fast Sonnet-class brain and keeps the heavier rate
 # limit free.
-CLAUDE_MODEL = "opus"                  # scriptwriting brain ("sonnet"/"haiku" spend less)
+CLAUDE_MODEL = "claude-opus-4-8"       # scriptwriting brain — Claude Opus 4.8 (full slug; no bare aliases)
 CHAT_MODEL = "claude-sonnet-4-6"       # fast chat brain (converse) — change here only.
 CHAT_TIMEOUT_SEC = 180                  # a chat turn beyond this is stalled, not thinking
 
