@@ -221,7 +221,12 @@ def test_parallel_preserves_order_when_later_scenes_finish_first():
     scene-1's slow sleep would gate everything — but order is asserted by index).
 
     Reported durations are the SAME fixture (2,3,4) so expected offsets are known-good.
+
+    Ordering must hold for ANY concurrency width, so we pin the pool to 3 here (the
+    production width is CPU-bounded by _tts_workers; that bound is tested separately).
     """
+    _orig_workers = engine._tts_workers
+    engine._tts_workers = lambda n: 3
     barrier = threading.Barrier(3, timeout=5.0)
     # finish order (by sleep): scene 3 first, then 2, then 1 last.
     sleeps = {1: 0.15, 2: 0.08, 3: 0.0}
@@ -245,9 +250,12 @@ def test_parallel_preserves_order_when_later_scenes_finish_first():
         captured["wav_order"] = [pathlib.Path(w).name for w in wavs]
         return fake_concat(wavs, out)
 
-    with tempfile.TemporaryDirectory() as d:
-        out = engine.record_narration(SCRIPT, pdir=d, tts_fn=ooo_tts,
-                                      concat_fn=capture_concat)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            out = engine.record_narration(SCRIPT, pdir=d, tts_fn=ooo_tts,
+                                          concat_fn=capture_concat)
+    finally:
+        engine._tts_workers = _orig_workers
     # Proof the calls really overlapped and finished out of original order.
     assert completion_order == [3, 2, 1], completion_order
     # Despite that, the transcript is IDENTICAL to the sequential known-good output.
@@ -626,3 +634,15 @@ def _run_all():
 
 if __name__ == "__main__":
     _run_all()
+
+
+# --- TTS concurrency must be CPU-bounded (regression: 8-wide pool blew per-call timeouts) ---
+def test_tts_workers_bounded_by_cores():
+    import audio_engine as ae
+    # never exceed the scene count, half the cores, or the hard ceiling of 3
+    cores = __import__("os").cpu_count() or 2
+    for n in (1, 2, 5, 12):
+        w = ae._tts_workers(n)
+        assert 1 <= w <= 3
+        assert w <= n
+        assert w <= max(1, cores // 2)

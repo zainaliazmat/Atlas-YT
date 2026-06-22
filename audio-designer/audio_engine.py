@@ -37,10 +37,21 @@ seams the adapter uses; `run_*(...)` are the CLI/chat conveniences.
 from __future__ import annotations
 
 import concurrent.futures as _futures
+import os
 import pathlib
 import re
 import time
 import wave
+
+
+def _tts_workers(n_scenes: int) -> int:
+    """How many scenes to synthesize at once. Kokoro TTS is CPU-bound (and onnxruntime
+    multithreads internally), so oversubscribing the box makes EVERY per-call `hyperframes
+    tts` slower and can blow its per-call timeout. Bound concurrency to half the cores
+    (hard ceiling 3) so we get a real speedup without starving each synth. Determinism is
+    independent of this number — offsets/concat are computed in original scene order."""
+    cores = os.cpu_count() or 2
+    return max(1, min(n_scenes, cores // 2, 3))
 
 import chat_state
 import llm                # imported eagerly (the loader-safe sibling pattern) so the
@@ -266,7 +277,7 @@ def record_narration(script: dict, *, pdir: str | pathlib.Path,
     # later-scene failure can't slip past — and we raise BEFORE any concat (no partial
     # artifact). The first failure (in original order) wins, matching the sequential raise.
     results: list[dict] = [None] * len(speakable)  # type: ignore[list-item]
-    with _futures.ThreadPoolExecutor(max_workers=min(len(speakable), 8)) as pool:
+    with _futures.ThreadPoolExecutor(max_workers=_tts_workers(len(speakable))) as pool:
         fut_to_pos = {pool.submit(tts_fn, text, str(wav)): pos
                       for pos, (n, text, wav) in enumerate(speakable)}
         for fut in _futures.as_completed(fut_to_pos):
