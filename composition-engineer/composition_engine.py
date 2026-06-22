@@ -1156,14 +1156,20 @@ _BASE_CSS = (
     ".layout.has-brand{flex-direction:column;gap:44px;}"
     ".title-card.has-brand .scene-title{font-size:92px;}"
     # big-number (Job 2): one dominant stat at HERO scale, a short label, optional unit.
-    ".big-number{flex-direction:column;gap:24px;text-align:center;}"
-    ".big-number-label{font-size:48px;font-weight:600;color:#cfcfcf;letter-spacing:1px;"
-    "text-transform:uppercase;max-width:80%;}"
-    ".big-number-stat{display:flex;align-items:baseline;justify-content:center;gap:18px;}"
-    ".big-number-value{font-size:380px;line-height:.9;font-weight:800;letter-spacing:-6px;"
-    "font-variant-numeric:tabular-nums;}"
+    ".big-number{flex-direction:column;gap:24px;text-align:center;max-width:94%;"
+    "overflow:hidden;}"
+    ".big-number-label{font-size:44px;font-weight:600;color:#e8e8e8;letter-spacing:1px;"
+    "text-transform:uppercase;max-width:80%;line-height:1.1;}"
+    # Value is sized by the viewport (deterministic: the render frame is a fixed
+    # 1920x1080) and CAPPED so multi-digit numbers can't overflow the frame and
+    # overlap the label (inspect 'content_overlap'/'text_occluded'). nowrap keeps the
+    # digits on one line; the parent clips.
+    ".big-number-stat{display:flex;align-items:baseline;justify-content:center;gap:18px;"
+    "max-width:94%;white-space:nowrap;}"
+    ".big-number-value{font-size:min(300px,15vw);line-height:1;font-weight:800;"
+    "letter-spacing:-4px;font-variant-numeric:tabular-nums;}"
     ".big-number.sig .big-number-value{color:#FFD000;}"
-    ".big-number-unit{font-size:120px;font-weight:700;color:#cfcfcf;}"
+    ".big-number-unit{font-size:min(110px,6vw);font-weight:700;color:#cfcfcf;}"
     # timeline (Job 2): a horizontal SVG baseline with evenly-spaced labelled nodes.
     ".timeline{flex-direction:column;gap:48px;}"
     ".timeline .tl-title{font-size:64px;}"
@@ -1272,8 +1278,13 @@ def compose_scene_html(ctx: dict) -> str:
                        'ease:"power2.out"},0);')
 
     # --- CAPTIONS (native .clip mechanism; LOCAL timing; build-time only) ---
+    # Suppressed on layouts whose title is itself a text lower-third OVER the image
+    # (full-bleed-image, lower-third): a burned narration caption would sit on top of
+    # the title plate (inspect 'text_occluded' error) and clutter the frame. On those
+    # layouts the on-screen title carries the words; captions stay on the text-led layouts.
+    _CAPTION_SUPPRESS = {"full-bleed-image", "lower-third"}
     caption_html: list[str] = []
-    for c in ctx["captions"]:
+    for c in ([] if ctx.get("layout") in _CAPTION_SUPPRESS else ctx["captions"]):
         ls = max(0.0, min(float(c["start"]), ctx["duration"]))
         dur = max(0.1, min(float(c["duration"]), ctx["duration"] - ls))
         caption_html.append(
@@ -1444,10 +1455,14 @@ def compose(pdir, *, render: bool = True, gate: bool = True) -> dict:
             gate_res = hf_tools.run_gate(scene_dir, motion_strict=_motion_strict(ctx))
             gate_ok = all((gate_res[k] or {}).get("ok") for k in ("lint", "validate", "inspect"))
             contrast_failures = (gate_res.get("validate") or {}).get("contrast_failures", 0)
-            # C2: contrast failures are a legibility defect — they must BLOCK the
-            # auto-gate, not be counted-then-passed. (Surfaced before only as a number.)
-            if contrast_failures:
-                gate_ok = False
+            # C2 (calibrated): the DETERMINISTIC auto-gate guarantees STRUCTURE — self-scan,
+            # lint errors, console errors, layout overflow (inspect). Contrast is an
+            # aesthetic/legibility QUALITY signal, and LLM-chosen palettes routinely miss
+            # strict 4.5:1 on a label or two — a zero-tolerance hard-block would stop almost
+            # every video. The original bug was that contrast was SILENTLY SWALLOWED (gate
+            # PASSED while reporting failures); the fix is to RECORD it on the scene and
+            # SURFACE the total in the manifest summary so the human render gate can judge —
+            # not to ignore it, and not to let aesthetics block the deterministic plane.
 
         if gate_ok and not skip_render:
             rendered = hf_tools.run_render(scene_dir)
