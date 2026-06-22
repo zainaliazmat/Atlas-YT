@@ -1170,6 +1170,12 @@ _BASE_CSS = (
     "letter-spacing:-4px;font-variant-numeric:tabular-nums;}"
     ".big-number.sig .big-number-value{color:#FFD000;}"
     ".big-number-unit{font-size:min(110px,6vw);font-weight:700;color:#cfcfcf;}"
+    # When a big-number scene ALSO carries a brand chip (has-brand), the hero number
+    # shares the frame with the chip row — shrink it so the two stack without
+    # overlapping (inspect 'content_overlap'/'text_occluded').
+    ".has-brand .big-number-value{font-size:min(190px,11vw);}"
+    ".has-brand .big-number-label{font-size:34px;}"
+    ".has-brand .big-number-unit{font-size:min(70px,4vw);}"
     # timeline (Job 2): a horizontal SVG baseline with evenly-spaced labelled nodes.
     ".timeline{flex-direction:column;gap:48px;}"
     ".timeline .tl-title{font-size:64px;}"
