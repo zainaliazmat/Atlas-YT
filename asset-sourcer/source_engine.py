@@ -297,8 +297,34 @@ def classify_shot(shot: dict) -> ShotPlan:
 # ======================================================================
 _YEAR = re.compile(r"\b(1[5-9]\d{2}|20[0-2]\d)\b")
 _DECADE = re.compile(r"\b((?:1[5-9]|20)\d0)s\b")
-_STOP = {"a", "an", "the", "of", "with", "and", "in", "on", "to", "for", "single",
-         "shot", "image", "photo", "showing", "shows", "view"}
+# Filler that hurts an image search: articles/prepositions/pronouns, quantifiers and
+# vague adjectives, stage-direction nouns, and the storyboard's framing verbs. Trimmed
+# so the query is the SUBJECT, not the sentence (issue #2, Direction B).
+_STOP = {
+    # articles / prepositions / conjunctions / pronouns
+    "a", "an", "the", "of", "with", "and", "in", "on", "to", "for", "at", "as", "by",
+    "from", "into", "onto", "over", "under", "across", "up", "down", "out", "off",
+    "it", "its", "their", "they", "them", "this", "that", "these", "those", "each",
+    "like", "where", "which", "who", "is", "are", "be", "or", "no", "not", "yes",
+    # comparison / relational filler ("coffee vs tea") — not the subject, and it must
+    # not count as a coincidental relevance match (issue #2 / audit H2).
+    "vs", "versus", "than", "between", "either", "neither", "both", "comparison",
+    "compared", "against", "while", "whereas", "but",
+    # quantifiers / vague adjectives
+    "single", "several", "simple", "one", "two", "three", "four", "big", "small",
+    "bold", "flat", "equal", "large", "tiny", "clean", "new", "many", "full",
+    # generic visual / stage-direction nouns
+    "shot", "image", "photo", "picture", "showing", "shows", "view", "screen", "frame",
+    "corner", "background", "foreground", "center", "centre", "middle", "bottom", "top",
+    "side", "scene", "place", "thing",
+    # the storyboard's framing verbs (action of the camera/animation, not the subject)
+    "lined", "rearranging", "fanning", "landing", "filling", "blinking", "sitting",
+    "seated", "hovering", "deciding", "sliding", "locking", "connecting", "pulsing",
+    "glowing", "dimmed", "slashing", "sweeping", "sweep", "grab", "grabbing", "rising",
+    "ready", "set", "diagonally", "overhead", "together", "outward", "beneath", "back",
+}
+# An image search degrades on long queries; keep the salient head of the description.
+MAX_QUERY_TOKENS = 6
 
 
 @dataclass(frozen=True)
@@ -306,6 +332,8 @@ class Query:
     text: str
     era: str = ""
     monochrome: bool = False
+    archival: bool = False          # era OR an archival cue -> museum sources are in play
+    tokens: tuple = ()              # the core SUBJECT tokens (relevance is scored on these)
     filters: dict = field(default_factory=dict)
 
 
@@ -346,10 +374,21 @@ def derive_query(content: str, style_guide: dict | None = None) -> Query:
     if m:
         era = m.group(0)
 
-    # Keep meaningful tokens in order; drop punctuation + filler. Deterministic.
+    # Keep the salient SUBJECT tokens in order; drop filler, de-dupe, and cap the length
+    # so the search is the subject, not the whole sentence. Deterministic.
     words = re.findall(r"[A-Za-z0-9']+", raw.lower())
-    kept = [w for w in words if w not in _STOP]
-    text = " ".join(kept) if kept else raw.lower()
+    kept: list[str] = []
+    seen: set[str] = set()
+    for w in words:
+        if w in _STOP or w in seen:
+            continue
+        seen.add(w)
+        kept.append(w)
+    core = kept[:MAX_QUERY_TOKENS]
+    text = " ".join(core) if core else raw.lower()
+
+    # An era/archival cue means this shot wants a real period artifact (museum lane).
+    archival = bool(era) or bool(_ARCHIVAL_CUE.search(raw))
 
     mono = is_monochrome(style_guide or {})
     if mono and "black" not in text and "white" not in text:
@@ -357,8 +396,8 @@ def derive_query(content: str, style_guide: dict | None = None) -> Query:
     if era and era not in text:
         text = (text + " " + era).strip()
 
-    return Query(text=text.strip(), era=era, monochrome=mono,
-                 filters={"license": "cc0,pdm,by,by-sa"})
+    return Query(text=text.strip(), era=era, monochrome=mono, archival=archival,
+                 tokens=tuple(core), filters={"license": "cc0,pdm,by,by-sa"})
 
 
 # ======================================================================
@@ -373,20 +412,60 @@ def _license_rank(code: str) -> int:
     return _LICENSE_RANK.get(code, 50)
 
 
-def relevance(query: Query, cand: Candidate) -> int:
-    """A simple, deterministic token-overlap score between the query and the candidate."""
-    q_tokens = set(re.findall(r"[a-z0-9']+", query.text.lower()))
+# A single coincidental token is WEAK EVIDENCE, never a confident match. We discount
+# single-token overlaps so they can never clear the WEAK gate: a lone title word that
+# happens to coincide (the live "energy" -> coal-power-plant failure, audit H2 / C3)
+# must read as a maybe (flagged) or a miss (placeholder), not a sure thing. Multi-token
+# (>=2) overlaps — real subject agreement — keep the clean m/n fraction.
+_SINGLE_MATCH_FACTOR = 0.5     # one matched token counts half
+_SINGLE_MATCH_CAP = 0.45       # ...and never more than just-below RELEVANCE_WEAK (0.50)
+
+
+def relevance(query: Query, cand: Candidate) -> float:
+    """Normalized relevance in [0, 1]: how much of the query's SUBJECT survives in the
+    candidate's title/description. Deterministic; 0 when no query tokens.
+
+    Robust for SHORT queries (issue #2 / audit H2): a single coincidental subject token
+    no longer scores a perfect 1.0 — a lone match is weak evidence (discounted by
+    `_SINGLE_MATCH_FACTOR` and capped below the WEAK gate), so it can never present as a
+    confident match and sail past both thresholds. Requiring >=2 matched subject tokens
+    (real subject agreement) to score "good" is what catches the off-topic class: e.g.
+    "coffee vs tea energy" vs a "coal power plant energy" image (one shared incidental
+    token) now lands below the floor -> a clean placeholder, not the wrong picture.
+
+    Scoring on the core subject tokens (not the style-augmented text) keeps the score
+    about WHAT the shot needs, not the look bias (b/w / era) appended to the search. The
+    candidate side is stopword-stripped too, so coincidental "the/a/vs" can't inflate.
+    """
+    q_tokens = set(query.tokens) or {
+        t for t in re.findall(r"[a-z0-9']+", query.text.lower()) if t not in _STOP
+    }
+    if not q_tokens:
+        return 0.0
     hay = f"{cand.title} {cand.extra.get('description', '')}".lower()
-    h_tokens = set(re.findall(r"[a-z0-9']+", hay))
-    return len(q_tokens & h_tokens)
+    h_tokens = {t for t in re.findall(r"[a-z0-9']+", hay) if t not in _STOP}
+    matched = len(q_tokens & h_tokens)
+    if matched == 0:
+        return 0.0
+    score = matched / len(q_tokens)
+    if matched == 1:
+        # One token is not subject agreement — discount it below the WEAK gate so a
+        # short-query coincidence can't pass as confident.
+        score = min(score * _SINGLE_MATCH_FACTOR, _SINGLE_MATCH_CAP)
+    return score
 
 
 def rank_candidates(query: Query, candidates: list[Candidate]) -> list[Candidate]:
     """Return the ACCEPTABLE candidates, best first, by a fully-ordered key.
 
-    Off-allowlist candidates are dropped (defense in depth). Reject-licensed
-    candidates are dropped here so the clearing walk only sees usable assets. The
-    sort key is total and unseeded, so re-running on the same inputs is reproducible.
+    RELEVANCE-FIRST (issue #2, Direction B): the primary key is the RAW relevance score
+    (rounded only to 3 dp for float stability — fine enough that 1.0 and 0.6 no longer
+    collapse into one coarse bucket and fall back to license-rank, the bug that partially
+    re-introduced the old license-first bias). This inverts the original bug where a
+    zero-relevance CC0 museum painting beat a relevant stock photo — now a relevant
+    accept-licensed photo wins, and license-rank only breaks GENUINE relevance ties.
+    Off-allowlist and reject-licensed candidates are dropped. The key is total and
+    unseeded, so re-running on the same inputs is reproducible.
     """
     usable = []
     for c in candidates:
@@ -400,14 +479,37 @@ def rank_candidates(query: Query, candidates: list[Candidate]) -> list[Candidate
     def key(item):
         code, c = item
         return (
-            _license_rank(code),               # better license first
-            -relevance(query, c),              # more relevant first
-            SOURCE_ORDER.get(c.source, 99),    # allowlist preference order
+            -round(relevance(query, c), 3),    # MOST RELEVANT FIRST (raw, 3dp for stability)
+            _license_rank(code),               # then better license (only true rel ties)
+            SOURCE_ORDER.get(c.source, 99),    # then allowlist preference order
             -(c.width * c.height),             # higher resolution first
             c.source, c.source_url, c.title,   # stable final tiebreakers
         )
 
     return [c for _, c in sorted(usable, key=key)]
+
+
+# ----------------------------------------------------------------------
+# Source selection + the relevance floor (issue #2, Direction B)
+# ----------------------------------------------------------------------
+# Fine-art / museum / archival sources: superb for HISTORICAL topics, but a magnet for
+# irrelevant period art on a modern/tech shot (a Van Eyck for "writing"). They are
+# queried ONLY when the shot carries an archival/era cue.
+_MUSEUM_SOURCES = {"met", "smithsonian", "loc", "internet_archive"}
+
+# Below this normalized relevance, a clean placeholder is preferred over a real-but-
+# irrelevant image. Above the weak line but below "good", the asset still ships but is
+# flagged for a human to verify the match.
+RELEVANCE_FLOOR = 0.20
+RELEVANCE_WEAK = 0.50
+
+
+def _sources_for_query(available, query: Query):
+    """The subset of available sources to query for this shot: museum/archival sources
+    are dropped unless the shot has an era/archival cue (keeps them for history)."""
+    if query.archival:
+        return list(available)
+    return [s for s in available if s.name not in _MUSEUM_SOURCES]
 
 
 # ======================================================================
@@ -535,18 +637,28 @@ def source_assets(storyboard: dict, style_guide: dict | None = None, *,
 
         # --- action == "source" -------------------------------------------------
         query = derive_query(shot.get("content", ""), style_guide)
-        candidates = _gather(client, available, query)
+        srcs = _sources_for_query(available, query)            # drop museums w/o a cue
+        candidates = _gather(client, srcs, query)
         ranked = rank_candidates(query, candidates)
+        # Relevance floor: only clear candidates that actually match the shot — a clean
+        # placeholder is preferred over irrelevant footage.
+        eligible = [c for c in ranked if relevance(query, c) >= RELEVANCE_FLOOR]
 
-        recorded = _try_clear(ranked, asset_id, scene_no, plan, client,
-                              pdir, hash_to_uri, dedupe)
+        recorded = _try_clear(eligible, asset_id, scene_no, plan, client,
+                              pdir, hash_to_uri, dedupe, query)
         if recorded is None:
+            best = max((relevance(query, c) for c in ranked), default=0.0)
+            if not ranked:
+                flag = "no provably-reusable candidate found on the allowlist"
+            elif not eligible:
+                flag = (f"best match too weak (relevance {best:.2f} < {RELEVANCE_FLOOR:.2f})"
+                        " — clean placeholder preferred over irrelevant footage")
+            else:
+                flag = "candidates found but none could be cleared"
             recorded = _placeholder_asset(
                 asset_id, scene_no, plan.asset_type, source="(none cleared)",
-                license_label=PLACEHOLDER_LICENSE,
-                flag=("no provably-reusable candidate found on the allowlist"
-                      if ranked == [] else "candidates found but none could be cleared"),
-                query=query.text)
+                license_label=PLACEHOLDER_LICENSE, flag=flag, query=query.text)
+            recorded["relevance"] = round(best, 3)
         assets.append(recorded)
 
     return {"assets": assets}
@@ -571,13 +683,15 @@ def _gather(client, available, query: Query) -> list[Candidate]:
 
 
 def _try_clear(ranked, asset_id, scene_no, plan, client, pdir, hash_to_uri,
-               dedupe) -> dict | None:
+               dedupe, query=None) -> dict | None:
     """Walk ranked candidates; download + record the first that downloads. Else None.
 
-    A downloaded candidate is always accept-licensed (rank_candidates dropped the
-    rest). Status is decided here: PD/CC0 with a local file -> cleared; BY/BY-SA with
-    complete attribution -> cleared; force-sourced (Pexels/Pixabay/NASA) or
-    BY/BY-SA with incomplete attribution -> sourced + flag. Download failure -> next.
+    A downloaded candidate is always accept-licensed AND past the relevance floor
+    (the caller filtered both). Status is decided here: PD/CC0 with a local file ->
+    cleared; BY/BY-SA with complete attribution -> cleared; force-sourced
+    (Pexels/Pixabay/NASA) or BY/BY-SA with incomplete attribution -> sourced + flag.
+    The normalized relevance is recorded on the row; a weak (but above-floor) match is
+    flagged for a human to verify. Download failure -> next.
     """
     for cand in ranked:
         try:
@@ -600,6 +714,11 @@ def _try_clear(ranked, asset_id, scene_no, plan, client, pdir, hash_to_uri,
         else:
             status, flag = "cleared", ""
 
+        rel = round(relevance(query, cand), 3) if query is not None else None
+        if rel is not None and rel < RELEVANCE_WEAK:
+            note = f"weak relevance {rel:.2f} — verify the image matches the shot"
+            flag = f"{flag}; {note}" if flag else note
+
         asset = {
             "asset_id": asset_id,
             "scene_no": int(scene_no) if isinstance(scene_no, int) else (scene_no or 0),
@@ -613,6 +732,8 @@ def _try_clear(ranked, asset_id, scene_no, plan, client, pdir, hash_to_uri,
             "provenance": cand.source_url,
             "status": status,
         }
+        if rel is not None:
+            asset["relevance"] = rel
         if disp.share_alike:
             asset["share_alike"] = True
         if flag:

@@ -267,6 +267,158 @@ def test_ranking_is_deterministic_and_license_first():
 
 
 # ======================================================================
+# 5b. Direction B — relevance-first sourcing (issue #2)
+# ======================================================================
+def test_relevance_first_beats_a_zero_relevance_cc0_painting():
+    # The reproduced bug, INVERTED: a relevant accept-licensed stock photo must now
+    # outrank a zero-relevance CC0 museum painting.
+    q = engine.derive_query("a clean document with a blinking cursor", COLOR_STYLE)
+    painting = cand("met", "The Crucifixion; The Last Judgment", "CC0")   # relevance 0
+    photo = cand("pexels", "person typing a document, cursor blinking",
+                 "Pexels License", author="P")                           # relevant
+    ranked = engine.rank_candidates(q, [painting, photo])
+    assert ranked[0] is photo, "a relevant photo must beat a zero-relevance CC0 painting"
+
+
+def test_relevance_is_a_normalized_fraction_of_query_tokens():
+    q = engine.derive_query("harbor crane cargo", COLOR_STYLE)           # 3 core tokens
+    full = cand("openverse", "harbor crane cargo", "CC0")
+    two = cand("openverse", "harbor crane at dusk", "CC0")               # 2 of 3
+    one = cand("openverse", "harbor at dusk", "CC0")                     # 1 of 3
+    none = cand("openverse", "a quiet meadow", "CC0")
+    # A full / multi-token match is the clean fraction of subject tokens.
+    assert engine.relevance(q, full) == 1.0
+    assert abs(engine.relevance(q, two) - (2 / 3)) < 1e-9
+    # A SINGLE coincidental token is discounted (it is weak evidence, not 1/3 confident):
+    # it must stay strictly below the WEAK gate so it can never present as a sure match.
+    assert engine.relevance(q, one) < engine.RELEVANCE_WEAK
+    assert engine.relevance(q, none) == 0.0
+
+
+def test_single_token_query_match_does_not_score_full_confidence():
+    # The degeneracy (audit H2 / live C3): a 1-subject-token query where ONE coincidental
+    # title word used to score a perfect 1.0 and sail past BOTH thresholds. A single
+    # token is now capped below the WEAK gate — never a confident match.
+    q = engine.derive_query("energy", COLOR_STYLE)
+    assert q.tokens == ("energy",)
+    hit = cand("openverse", "renewable energy wind farm at sunset", "CC0")
+    assert engine.relevance(q, hit) < engine.RELEVANCE_WEAK
+    assert engine.relevance(q, hit) != 1.0
+
+
+def test_coal_plant_single_incidental_token_lands_below_floor():
+    # REGRESSION for the live failure: a "coffee vs tea energy" scene rendered a full-bleed
+    # COAL POWER PLANT image because the one token 'energy' matched and scored 1.0. The
+    # subject is multi-word ("coffee tea energy"); an asset matching only that one
+    # incidental token must now land BELOW the floor -> a clean placeholder ships, not the
+    # off-topic coal plant.
+    q = engine.derive_query("coffee vs tea energy comparison", COLOR_STYLE)
+    assert "vs" not in q.tokens                       # comparison stopword stripped
+    coal = cand("pexels", "coal power plant energy grid emissions", "Pexels License",
+                author="P")
+    assert engine.relevance(q, coal) < engine.RELEVANCE_FLOOR
+
+    sb = {"scenes": [_scene(1, [_shot(
+        "image", "coffee vs tea energy comparison", "s1-1")])]}
+    client = FakeClient({"pexels": [coal]}, downloads={coal.download_url: b"\x89PNG"})
+    with tempfile.TemporaryDirectory() as tmp:
+        pdir = pathlib.Path(tmp)
+        a = engine.source_assets(sb, COLOR_STYLE, client=client, pdir=pdir)["assets"][0]
+    assert a["status"] == "placeholder", "off-topic coal plant must NOT ship as an asset"
+    assert a["uri"] == engine.PLACEHOLDER_REL
+
+
+def test_relevance_first_sort_keeps_more_relevant_over_better_license():
+    # Direction B intent, re-confirmed after the scoring change: a clearly-more-relevant
+    # candidate must outrank a better-licensed but less-relevant one (license breaks only
+    # GENUINE relevance ties).
+    q = engine.derive_query("harbor crane cargo ship dock pier", COLOR_STYLE)
+    assert len(q.tokens) == 6
+    strong = cand("pexels", "harbor crane cargo ship dock view", "Pexels License",
+                  author="P")                                  # 5/6 = 0.833, worst license
+    weaker = cand("met", "harbor crane cargo barge", "CC0")    # 3/6 = 0.5, best license
+    assert engine.relevance(q, strong) > engine.relevance(q, weaker)
+    ranked = engine.rank_candidates(q, [weaker, strong])
+    assert ranked[0] is strong, "higher relevance must win over a better license"
+
+
+def test_sort_bucket_is_fine_enough_to_separate_near_relevances():
+    # Fix #2: the OLD primary sort key was round(relevance, 1) — a coarse 0.1 bucket that
+    # collapses DIFFERENT raw relevances into one tie, then falls back to license-rank
+    # (the partial re-introduction of the license-first bias). 5/6 = 0.833 and 3/4 = 0.75
+    # both round to the SAME 0.8 bucket yet are clearly different; the new key (round _, 3)
+    # keeps them ordered. We assert the bucket COLLISION exists and that the live key
+    # SEPARATES them, so a near-but-better relevance can't be demoted to license-rank.
+    five_sixths = engine.relevance(
+        engine.derive_query("a b c d e f", COLOR_STYLE),
+        cand("pexels", "a b c d e scene", "CC0"))             # 5/6 = 0.8333…
+    three_quarters = engine.relevance(
+        engine.derive_query("alpha beta gamma delta", COLOR_STYLE),
+        cand("pexels", "alpha beta gamma scene", "CC0"))     # 3/4 = 0.75
+    assert round(five_sixths, 1) == round(three_quarters, 1) == 0.8      # OLD key: a TIE
+    assert round(five_sixths, 3) != round(three_quarters, 3)            # NEW key: separated
+    assert five_sixths > three_quarters
+
+
+def test_relevance_floor_prefers_placeholder_over_irrelevant_image():
+    # A candidate the search RETURNS (shares a token) but that barely matches the shot
+    # (below the floor) -> a clean placeholder ships, NOT the weak real image.
+    sb = {"scenes": [_scene(1, [_shot(
+        "image", "a busy harbor with cranes loading cargo ships", "s1-1")])]}
+    weak = cand("openverse", "a busy meadow at noon", "CC0")   # shares only 'busy'
+    client = FakeClient({"openverse": [weak]},
+                        downloads={weak.download_url: b"\x89PNG"})
+    with tempfile.TemporaryDirectory() as tmp:
+        pdir = pathlib.Path(tmp)
+        a = engine.source_assets(sb, COLOR_STYLE, client=client, pdir=pdir)["assets"][0]
+    assert engine.relevance(engine.derive_query(
+        "a busy harbor with cranes loading cargo ships", COLOR_STYLE), weak) < \
+        engine.RELEVANCE_FLOOR
+    assert a["status"] == "placeholder"
+    assert a["uri"] == engine.PLACEHOLDER_REL
+    assert "relevance" in a["flag"].lower() or "match" in a["flag"].lower()
+
+
+def test_relevant_candidate_records_relevance_on_the_manifest():
+    sb = {"scenes": [_scene(1, [_shot("image", "an office drawer with files", "s1-1")])]}
+    good = cand("pexels", "an open office drawer full of files", "Pexels License",
+                author="P")
+    client = FakeClient({"pexels": [good]},
+                        downloads={good.download_url: b"\x89PNG"})
+    with tempfile.TemporaryDirectory() as tmp:
+        a = engine.source_assets(sb, COLOR_STYLE, client=client,
+                                 pdir=pathlib.Path(tmp))["assets"][0]
+    assert a["status"] == "sourced"          # Pexels force-sourced
+    assert a.get("relevance", 0) >= 0.5      # genuinely relevant
+
+
+def test_museum_sources_dropped_without_an_archival_cue():
+    avail = list(sources.SOURCES)
+    plain = engine.derive_query("a scrolling code editor on a laptop", COLOR_STYLE)
+    kept = {s.name for s in engine._sources_for_query(avail, plain)}
+    assert "met" not in kept and "smithsonian" not in kept
+    assert "loc" not in kept and "internet_archive" not in kept
+    assert "openverse" in kept and "pexels" in kept     # general/stock kept
+
+    # An era/archival cue brings the museums back.
+    historical = engine.derive_query("a 1929 photograph of the harbor", COLOR_STYLE)
+    kept2 = {s.name for s in engine._sources_for_query(avail, historical)}
+    assert "met" in kept2 and "loc" in kept2
+
+
+def test_query_construction_caps_length_and_drops_filler():
+    long = ("the words 'fast and cheap' set big on a white screen, with a logo beneath, "
+            "ready for a yellow highlighter band to sweep under it")
+    q = engine.derive_query(long, COLOR_STYLE)
+    assert len(q.tokens) <= engine.MAX_QUERY_TOKENS
+    # filler/stage words trimmed
+    for filler in ("the", "set", "big", "screen", "ready", "under", "with"):
+        assert filler not in q.tokens
+    # a salient subject word survives
+    assert any(t in q.tokens for t in ("fast", "cheap", "highlighter", "yellow", "band"))
+
+
+# ======================================================================
 # 6. TASL attribution + completeness
 # ======================================================================
 def test_build_attribution():
@@ -305,8 +457,11 @@ def _full_storyboard():
 
 
 def _full_client():
+    # Non-historical subjects come from general/stock sources (museum sources are
+    # deweighted unless the shot has an archival/era cue — Direction B). The one
+    # historical shot ("1929 …") DOES carry an era cue, so LoC is queried for it.
     return FakeClient({
-        "met": [cand("met", "cotton plant", "CC0")],                       # -> cleared
+        "openverse": [cand("openverse", "cotton plant", "CC0")],           # -> cleared
         "wikimedia": [
             cand("wikimedia", "harbor portrait", "CC BY 4.0", author="A. Smith"),  # cleared
             cand("wikimedia", "obscure widget", "CC BY 4.0", author=""),    # -> sourced
@@ -335,8 +490,8 @@ def test_source_assets_end_to_end():
                    for a in manifest["assets"])
 
         # Status transitions.
-        assert by_id["s1-1"]["status"] == "cleared"      # Met CC0
-        assert by_id["s8-1"]["status"] == "cleared"      # LoC PDM
+        assert by_id["s1-1"]["status"] == "cleared"      # Openverse CC0
+        assert by_id["s8-1"]["status"] == "cleared"      # LoC PDM (era cue keeps museums)
         assert by_id["s2-1"]["status"] == "cleared"      # CC BY + author
         assert by_id["s3-1"]["status"] == "sourced"      # Pexels (force-sourced)
         assert by_id["s4-1"]["status"] == "sourced"      # CC BY, no author -> incomplete
@@ -385,13 +540,13 @@ def test_missing_optional_key_skips_source(monkeypatch):
 
 def test_dead_source_is_skipped():
     sb = {"scenes": [_scene(1, [_shot("image", "harbor scene", "s1-1")])]}
-    client = FakeClient({"met": [cand("met", "harbor scene", "CC0")]},
-                        dead=("openverse", "wikimedia"))   # these raise on search
+    client = FakeClient({"wikimedia": [cand("wikimedia", "harbor scene", "CC0")]},
+                        dead=("openverse",))   # this raises on search
     with tempfile.TemporaryDirectory() as tmp:
         manifest = engine.source_assets(sb, COLOR_STYLE, client=client, pdir=tmp)
-    # The dead sources didn't crash the run; the Met candidate still cleared.
+    # The dead source didn't crash the run; the Wikimedia candidate still cleared.
     assert manifest["assets"][0]["status"] == "cleared"
-    assert manifest["assets"][0]["source"] == "met"
+    assert manifest["assets"][0]["source"] == "wikimedia"
 
 
 def test_failed_download_falls_to_placeholder():
@@ -412,10 +567,10 @@ def test_within_run_dedupe_shares_file_not_provenance():
     # but stay two asset entries with their own ids + attribution.
     sb = {"scenes": [_scene(1, [_shot("image", "twin photo", "s1-1")]),
                      _scene(2, [_shot("image", "twin photo", "s2-1")])]}
-    c1 = cand("met", "twin photo", "CC0", url="https://example.test/a.jpg")
-    c2 = cand("met", "twin photo", "CC0", url="https://example.test/b.jpg")
+    c1 = cand("wikimedia", "twin photo", "CC0", url="https://example.test/a.jpg")
+    c2 = cand("wikimedia", "twin photo", "CC0", url="https://example.test/b.jpg")
     same = b"IDENTICAL-BYTES"
-    client = FakeClient({"met": [c1, c2]},
+    client = FakeClient({"wikimedia": [c1, c2]},
                         downloads={c1.download_url: same, c2.download_url: same})
     with tempfile.TemporaryDirectory() as tmp:
         manifest = engine.source_assets(sb, COLOR_STYLE, client=client, pdir=tmp)
