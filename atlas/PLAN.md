@@ -1,4 +1,18 @@
-# Atlas — the YT Manager (orchestrator over Scout & Sage)
+# Atlas — the Showrunner (orchestrator over the agent fleet)
+
+> **Status note (2026-06-22).** This is the **original Phase-1/2 plan + pre-build
+> review** for when Atlas orchestrated just Scout & Sage. It is kept for the
+> architectural rationale and the review record; it does **not** describe the current
+> system. Since then Atlas evolved into the **Showrunner** of an 8-agent video studio:
+> Scout, Sage, Marlow (scriptwriter), Iris (art director), Magpie (asset sourcer),
+> Cadence (audio), Mason (composition engineer), and Vera (reference analyst). **All 8
+> are built with real engines.** A deterministic 10-stage production pipeline
+> (`pipeline.py`) with frozen JSON-Schema contracts, a compose auto-gate, and two
+> human pause-and-resume gates turns a brief into `video.mp4`; a Chainlit web operator
+> UI is a second frontend. See `README.md` and `CHANGELOG.md` (0.3.0) for the current
+> reality — the registry/adapters are the ground truth. The supervisor pattern below
+> (registry + adapters + tools generated from the registry) is exactly what carried
+> the fleet from 2 agents to 8 with no orchestrator changes, as promised.
 
 ## Problem & premise
 I (the CEO) run a fleet of single-purpose YouTube agents:

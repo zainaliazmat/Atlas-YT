@@ -17,9 +17,11 @@ Transparency stays split as designed: the deterministic 🔎/📝/✅ status lin
 emitted from here as work happens (progress.py); the decisions/synthesis are Atlas's
 streamed words in the meeting room.
 
-Offline + deterministic: the default producers are the stub specialists (stubs.py),
-so the whole pipeline runs end-to-end with no network and no API. Swapping a real
-specialist in later = replacing ONE producer; nothing else changes.
+Real engines, end-to-end: all 10 stages now bind real specialist producers (every
+former stub slot was filled). The only stub that survives is `research`, and only as
+an OPT-IN offline fallback behind the `ATLAS_RESEARCH_STUB` env flag (dev / no-network);
+by default `research` runs Sage's real engine like every other stage. Each stage is one
+producer, so swapping a specialist later = replacing ONE producer; nothing else changes.
 """
 from __future__ import annotations
 

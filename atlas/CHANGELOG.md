@@ -1,5 +1,33 @@
 # Changelog — Atlas (the YT Manager / Showrunner)
 
+## 0.3.0 — Full fleet, real engines (2026-06-22)
+
+The state-of-the-world entry. Everything the 0.2.0 notes called a "stub" is now a
+real engine; the pipeline runs end-to-end on real specialists.
+
+- **All 7 pipeline roles run REAL engines — no stubs.** The five former stub slots
+  (Scriptwriter **Marlow**, Art Director **Iris**, Asset Sourcer **Magpie**, Audio
+  **Cadence**, Composition Engineer **Mason**) are built and dropped into their
+  registered slots; Scout and Sage predate the pipeline. The 10-stage line is
+  research→script→factcheck (★gate)→style→storyboard→assets ∥ narration→compose
+  (▲auto-gate)→audiomix→render (★gate)→`video.mp4`. The `research` stage now binds
+  Sage's real engine; the offline placeholder survives only as an **opt-in fallback**
+  behind `ATLAS_RESEARCH_STUB` (and logs loudly when used).
+- **8th agent — Vera 🔬 the Reference Analyst** (`reference_analyst`). A standalone
+  delegable job + persona (job `reference_analyst_build_rubric`) that builds a
+  `reference_rubric` from reference videos via FFmpeg/OpenCV. It is a STANDARD/job,
+  **not** a pipeline stage. Adds `contracts/reference_rubric.schema.json`,
+  `adapters/reference_analyst.py`, and its tests — surfaced through the registry with
+  no orchestrator change.
+- **Issue #2 ("irrelevant footage") closed.** Brand chips (Mason renders real inline
+  brand logos for un-sourceable trademarked marks; Iris auto-tags `kind:'brand'` shots;
+  Magpie skips render-kind asset rows) + relevance-first sourcing (Magpie's
+  `rank_candidates` ranks by relevance, license only breaks ties; a relevance floor
+  ships a clean placeholder instead of zero-relevance footage) + named-model fallback.
+- **Owner-run fixes:** model IDs normalized to full slugs (creative agents on
+  `claude-opus-4-8`, others `claude-sonnet-4-6`); Mason render fixes (font, native
+  data-chart rendering, a contrast-blocking gate, caption legibility).
+
 ## 0.2.0 — Showrunner (evolve Atlas into the executive producer)
 
 Evolves Atlas's *role* from chief-of-staff to **Showrunner** of an explainer-video
