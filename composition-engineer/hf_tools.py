@@ -83,6 +83,12 @@ def run_lint(scene_dir: pathlib.Path) -> dict:
     r = _run("lint", scene_dir, timeout=LINT_TIMEOUT)
     if r["error"]:
         return {"ok": False, "errors": 0, "warnings": 0, "findings": [], "note": r["error"]}
+    if r["json"] is None:
+        # M3 fail-closed: rc==0 but no parseable JSON payload means we cannot CONFIRM
+        # the scene is clean — treat the unverifiable result as a gate FAILURE, never a
+        # vacuous pass.
+        return {"ok": False, "errors": 0, "warnings": 0, "findings": [],
+                "note": "lint produced no parseable JSON — cannot confirm; failing closed."}
     data = r["json"] or {}
     errors = data.get("errorCount")
     if errors is None:
@@ -102,6 +108,10 @@ def run_validate(scene_dir: pathlib.Path) -> dict:
     r = _run("validate", scene_dir, timeout=VALIDATE_TIMEOUT)
     if r["error"]:
         return {"ok": False, "console_errors": 0, "contrast_failures": 0, "note": r["error"]}
+    if r["json"] is None:
+        return {"ok": False, "console_errors": 0, "contrast_failures": 0,
+                "note": "validate produced no parseable JSON — cannot confirm; "
+                        "failing closed."}
     data = r["json"] or {}
     console = (data.get("consoleErrors") or data.get("errors") or
                data.get("console") or [])
@@ -119,6 +129,10 @@ def run_inspect(scene_dir: pathlib.Path, *, strict: bool = False) -> dict:
     r = _run("inspect", scene_dir, *extra, timeout=INSPECT_TIMEOUT)
     if r["error"]:
         return {"ok": False, "issues": 0, "note": r["error"]}
+    if r["json"] is None:
+        return {"ok": False, "issues": 0,
+                "note": "inspect produced no parseable JSON — cannot confirm; "
+                        "failing closed."}
     data = r["json"] or {}
     issues = data.get("issues", [])
     errs = sum(1 for i in issues if i.get("severity") in ("error", None) and

@@ -404,6 +404,24 @@ def _esc(text) -> str:
     return _html.escape(str(text or ""), quote=True)
 
 
+def _font_family(value, fallback: str = "Inter") -> str:
+    """Resolve a typography slot to a bare font-family STRING.
+
+    Iris emits typography slots as nested dicts (e.g. {"family":"GT Sectra",
+    "weight":700}); older/simple inputs may pass a bare string. Either way we must
+    inject a NAME into CSS, never a Python dict repr (which would leak '{' into
+    font-family and break the cascade). Empty/unknown shapes fall back.
+    """
+    if isinstance(value, dict):
+        fam = value.get("family")
+        if isinstance(fam, str) and fam.strip():
+            return fam.strip()
+        return fallback
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return fallback
+
+
 def detect_brands(text: str) -> list[str]:
     """Return the registry brand keys named in `text`, ordered by first appearance, deduped.
 
@@ -423,15 +441,52 @@ def detect_brands(text: str) -> list[str]:
     return [k for k, _ in sorted(pos.items(), key=lambda kv: kv[1])]
 
 
+# A generic "the major models / four AI logos lined up" cue that NAMES no specific
+# model (issue #2, H1). When a brand/logo shot reads like a roster lineup but no alias
+# is matched, Mason falls back to the full BRAND_CHIPS matchup row rather than shipping
+# an un-sourceable placeholder. Needs a "logos/models" word AND a lineup/count cue.
+_COUNT_WORD = (r"two|three|four|five|several|all|the\s+(?:major|leading|top|big|main)|"
+               r"\d+")
+_ROSTER_CUE = re.compile(
+    rf"\b(?:logos?|models?|ais?|chatbots?|assistants?)\b", re.IGNORECASE)
+_LINEUP_CUE = re.compile(
+    rf"(?:{_COUNT_WORD})|lined\s*up|line[\s-]?up|line-?up|lineup|in\s+a\s+row|"
+    r"\brow\b|side[\s-]?by[\s-]?side|matchup|line\s*up", re.IGNORECASE)
+
+
+def _is_generic_roster_shot(shot: dict) -> bool:
+    """True when a shot cues a generic brand/model LINEUP that names no specific model.
+
+    Fires on kind:'brand'/'logo' OR content like "four AI logos lined up" / "the major
+    models in a row" — a roster word plus a count/lineup cue. Used only as a FALLBACK
+    when detect_brands finds no named alias (issue #2, H1)."""
+    if not isinstance(shot, dict):
+        return False
+    text = f"{shot.get('content', '')} {shot.get('asset_ref', '')}"
+    kind = str(shot.get("kind", "")).strip().lower()
+    if kind in ("brand", "logo", "logos"):
+        return True
+    return bool(_ROSTER_CUE.search(text) and _LINEUP_CUE.search(text))
+
+
 def scene_brand_keys(shots) -> list[str]:
     """Brand keys named across a scene's storyboard shots (content + asset_ref), ordered.
 
     Detection is by model NAME, independent of shot.kind, so the existing storyboards
     (kind:'graphic'/'panel'/…) render chips too, alongside Iris's newer kind:'brand'.
+
+    H1 fallback: a brand/logo shot (or a generic "four AI logos lined up" lineup cue)
+    that names NO specific model falls back to the FULL roster as a matchup row, instead
+    of shipping an un-sourceable placeholder.
     """
     text = " ".join(f"{s.get('content', '')} {s.get('asset_ref', '')}"
                     for s in (shots or []) if isinstance(s, dict))
-    return detect_brands(text)
+    named = detect_brands(text)
+    if named:
+        return named
+    if any(_is_generic_roster_shot(s) for s in (shots or [])):
+        return list(BRAND_CHIPS.keys())
+    return []
 
 
 # A shot that frames a model as backgrounded/secondary (vs. a foregrounded "winner").
@@ -440,12 +495,45 @@ _DIM_CUE = re.compile(
     r"de-?emphasi\w*|secondary|behind)\b", re.IGNORECASE)
 
 
+def _dim_brands_in_shot(text: str, keys: list[str]) -> dict[str, bool]:
+    """Per-brand dim decision within ONE shot (M4): scope the dim cue to the brand it
+    actually describes, instead of dimming every brand in a multi-brand shot.
+
+    - 0 brands: nothing to dim.
+    - 1 brand: the whole-shot dim cue applies to it (legacy behavior).
+    - 2+ brands: only dim a brand whose alias sits inside a de-emphasis clause (the cue
+      and the alias in the SAME comma/'while'/'vs'-delimited clause). The foregrounded
+      winner — named in a clause with no dim cue — stays bright.
+    """
+    if not keys:
+        return {}
+    if not _DIM_CUE.search(text):
+        return {k: False for k in keys}
+    if len(keys) == 1:
+        return {keys[0]: True}
+    # Split into clauses; a brand is dim only if its clause carries a dim cue.
+    clauses = re.split(r"\s*(?:,|;|—|–|\bwhile\b|\bwhereas\b|\bvs\.?\b|\bversus\b|"
+                       r"\bbut\b|\bas\b)\s*", text, flags=re.IGNORECASE)
+    result = {k: False for k in keys}
+    for clause in clauses:
+        clause_dim = bool(_DIM_CUE.search(clause))
+        for key in detect_brands(clause):
+            if key in result and clause_dim:
+                result[key] = True
+    return result
+
+
 def scene_brand_specs(shots) -> list[dict]:
     """Per-scene chip specs [{key, dim}], ordered, deduped (first mention wins).
 
     A brand named in a shot whose content reads as de-emphasized (e.g. "dimmed into the
     background") is marked dim:True, so the scene's named winners stand out from the rest
-    — the intentional arrangement scene 4 ("Coding -> Claude/DeepSeek") needs.
+    — the intentional arrangement scene 4 ("Coding -> Claude/DeepSeek") needs. The dim
+    cue is scoped PER-BRAND within a shot (M4): in a multi-brand shot the foregrounded
+    winner is not dimmed just because a de-emphasized peer shares the frame.
+
+    H1 fallback: when no model is named but a brand/logo lineup is cued, the full roster
+    is returned (all bright) so the matchup still renders chips, not a placeholder.
     """
     out: list[dict] = []
     seen: set[str] = set()
@@ -453,12 +541,15 @@ def scene_brand_specs(shots) -> list[dict]:
         if not isinstance(s, dict):
             continue
         text = f"{s.get('content', '')} {s.get('asset_ref', '')}"
-        dim = bool(_DIM_CUE.search(text))
-        for key in detect_brands(text):
+        keys = detect_brands(text)
+        dims = _dim_brands_in_shot(text, keys)
+        for key in keys:
             if key in seen:
                 continue
             seen.add(key)
-            out.append({"key": key, "dim": dim})
+            out.append({"key": key, "dim": dims.get(key, False)})
+    if not out and any(_is_generic_roster_shot(s) for s in (shots or [])):
+        return [{"key": k, "dim": False} for k in BRAND_CHIPS.keys()]
     return out
 
 
@@ -480,6 +571,96 @@ def render_brand_chips(items, *, cls: str = "brand-chips") -> str:
         klass = "brand-chip dim" if dim else "brand-chip"
         chips.append(f'<div class="{klass}" style="--brand:{b["color"]}">{mark}{name}</div>')
     return f'<div class="{cls}">' + "".join(chips) + "</div>"
+
+
+# A data point in a comparison/bar scene: a numeric magnitude with an optional label.
+# Matches "Coffee ~95", "95 mg coffee", "coffee: 95", "29 mg green tea", etc. We pull
+# (number, nearest word-label) pairs deterministically from the scene's text so a
+# data-chart scene never renders as bare text even when the generated viz has no file.
+_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)")
+# a short label is 1-3 words of letters (e.g. "green tea", "black tea", "coffee")
+_LABEL_WORD = r"[A-Za-z][A-Za-z'-]*"
+# "Coffee ~95", "Coffee: 95", "Coffee 95 mg" — label BEFORE the number
+_LABEL_THEN_NUM = re.compile(
+    rf"((?:{_LABEL_WORD}\s+){{0,2}}{_LABEL_WORD})\s*[:~≈]?\s*(\d+(?:\.\d+)?)")
+
+
+def parse_chart_data(*texts: str, max_points: int = 6) -> list[dict]:
+    """Extract ordered {label, value} pairs from comparison/data text (deterministic).
+
+    Used by the native bar chart so a `data-chart` scene renders a real visual even
+    when its generated data-viz asset has no file. Prefers "<label> <number>" pairs
+    (e.g. "Coffee ~95"); ranges ("47-48") take the first number. Pure + ordered by
+    appearance; deduped by label (first wins).
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for text in texts:
+        s = str(text or "")
+        for m in _LABEL_THEN_NUM.finditer(s):
+            label = re.sub(r"\s+", " ", m.group(1)).strip()
+            # trim leading filler words so "stepping up to 95" -> drop, not a real label
+            _STOP = {"avg", "oz", "mg", "approx", "about", "around", "to", "and", "up",
+                     "of", "at", "than", "with", "the", "a", "an", "stepping", "rising",
+                     "reaching", "near", "over", "under"}
+            words = label.split()
+            while words and words[-1].lower() in _STOP:
+                words.pop()
+            label = " ".join(words)
+            low = label.lower()
+            if not label or low in _STOP:
+                continue
+            try:
+                val = float(m.group(2))
+            except ValueError:
+                continue
+            key = low
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"label": label, "value": val})
+            if len(out) >= max_points:
+                return out
+    return out
+
+
+def render_bar_chart(data: list[dict], *, cls: str = "media") -> str:
+    """A deterministic, build-time native bar chart (pure inline SVG — no JS, no
+    randomness, frame-seek safe). Bars scale to the max value; each carries its label
+    and value. Returns '' when there's nothing chartable."""
+    pts = [d for d in (data or []) if isinstance(d.get("value"), (int, float))]
+    if not pts:
+        return ""
+    vw, vh = 1000.0, 600.0
+    pad_b, pad_t = 90.0, 40.0
+    n = len(pts)
+    gap = 28.0
+    bw = (vw - gap * (n + 1)) / n
+    vmax = max(d["value"] for d in pts) or 1.0
+    plot_h = vh - pad_b - pad_t
+    bars = []
+    for i, d in enumerate(pts):
+        h = (float(d["value"]) / vmax) * plot_h
+        x = gap + i * (bw + gap)
+        y = pad_t + (plot_h - h)
+        # accent the tallest bar (the magnitude "winner") with the signature color
+        fill = SIGNATURE_HIGHLIGHT if d["value"] == vmax else "#F5F5F5"
+        bars.append(
+            f'<rect class="bar" x="{x:.1f}" y="{y:.1f}" width="{bw:.1f}" '
+            f'height="{h:.1f}" rx="6" fill="{fill}" />'
+            f'<text class="bar-val" x="{x + bw / 2:.1f}" y="{y - 12:.1f}" '
+            f'text-anchor="middle">{_esc(_fmt_num(d["value"]))}</text>'
+            f'<text class="bar-lbl" x="{x + bw / 2:.1f}" y="{vh - 28:.1f}" '
+            f'text-anchor="middle">{_esc(d["label"])}</text>')
+    return (f'<svg class="{cls} bar-chart" viewBox="0 0 {vw:.0f} {vh:.0f}" '
+            f'preserveAspectRatio="xMidYMid meet" role="img">'
+            f'<line class="axis" x1="0" y1="{vh - pad_b:.1f}" x2="{vw:.0f}" '
+            f'y2="{vh - pad_b:.1f}" />' + "".join(bars) + "</svg>")
+
+
+def _fmt_num(v) -> str:
+    f = float(v)
+    return str(int(f)) if f.is_integer() else f"{f:g}"
 
 
 def _media_html(ctx: dict, cls: str = "media") -> str:
@@ -530,8 +711,22 @@ def _layout_lower_third(ctx):
 
 
 def _layout_data_chart(ctx):
+    # A data-chart scene must render an actual VISUAL, never bare centered text (C5).
+    # Precedence: a PRESENT data-viz/image asset -> a deterministic native bar chart
+    # built from the scene's data -> the standard media/placeholder fallback. Brand
+    # scenes still get chips (handled inside _media_html).
+    if not ctx.get("brand_keys"):
+        asset = next((a for a in ctx["assets"]
+                      if a["type"] in ("data-viz", "image") and a.get("src_rel")), None)
+        if asset:
+            inner = f'<img class="media" src="{_esc(asset["src_rel"])}" alt="" />'
+        else:
+            chart = render_bar_chart(ctx.get("chart_data") or [])
+            inner = chart if chart else _media_html(ctx)
+    else:
+        inner = _media_html(ctx)
     return {"css": "", "html":
-            f'<div class="layout data-chart"><div class="chart-frame">{_media_html(ctx)}'
+            f'<div class="layout data-chart"><div class="chart-frame">{inner}'
             f'</div><h2 class="scene-title">{_esc(ctx["title"])}</h2></div>', "tl": []}
 
 
@@ -702,12 +897,27 @@ _BASE_CSS = (
     ".full-bleed-image .lower-strip,.lower-third .name-strip{position:absolute;left:0;"
     "right:0;bottom:140px;padding:32px 8%;background:linear-gradient(0deg,#000c,#0000);}"
     ".full-bleed-image .scene-title,.lower-third .scene-title{text-align:left;font-size:64px;}"
-    ".caption{position:absolute;left:8%;right:8%;bottom:28px;text-align:center;"
-    "font-size:40px;font-weight:600;text-shadow:0 2px 8px #000a;opacity:0;}"
+    # Captions (C4): burned-in narration must stay legible over dark imagery — a
+    # readable scrim panel behind the text + a text-shadow + adequate size/weight.
+    ".caption{position:absolute;left:6%;right:6%;bottom:40px;text-align:center;"
+    "font-size:42px;line-height:1.25;font-weight:700;color:#ffffff;"
+    "text-shadow:0 2px 10px #000d,0 0 2px #000d;opacity:0;}"
+    ".caption .caption-scrim{display:inline-block;max-width:100%;padding:18px 34px;"
+    "border-radius:14px;background:rgba(0,0,0,0.72);"
+    "box-shadow:0 6px 28px rgba(0,0,0,0.45);}"
     ".caption.clip{opacity:1;}"
     ".cmp{position:absolute;top:0;bottom:0;width:50%;display:flex;align-items:center;"
     "justify-content:center;}.cmp.myth{left:0;background:#1a1a1a;color:#777;}"
     ".cmp.fact{right:0;}"
+    # Native bar chart (C5): a build-time inline-SVG chart so a data-chart scene is
+    # never bare text. Deterministic under frame-seek (static SVG, no JS/animation).
+    ".data-chart{flex-direction:column;gap:40px;}"
+    ".data-chart .chart-frame{width:100%;flex:1;display:flex;align-items:center;"
+    "justify-content:center;min-height:0;}"
+    ".bar-chart{width:100%;height:100%;max-height:74%;}"
+    ".bar-chart .axis{stroke:#ffffff44;stroke-width:2;}"
+    ".bar-chart .bar-val{fill:#fff;font-size:34px;font-weight:800;}"
+    ".bar-chart .bar-lbl{fill:#cfcfcf;font-size:30px;font-weight:600;}"
     # Brand chips (issue #2, Direction A): a clean logo card — the real inline SVG mark
     # over the model name, framed by the brand color. A row of them when several models
     # appear (the matchup); dim cards de-emphasize a scene's non-winners. Static —
@@ -738,9 +948,14 @@ def compose_scene_html(ctx: dict) -> str:
     highlight, captions [{start,duration,text}], assets [resolved descriptors].
     """
     palette = ctx["palette"]
+    # Fonts are resolved to bare strings upstream (_scene_ctx/_font_family); guard here
+    # too so a raw dict shape can never leak into font-family (C1).
+    heading_font = _font_family(palette.get("font"), "Inter")
+    body_font = _font_family(palette.get("body_font"), heading_font)
     dyn_css = (f"html,body{{background:{palette.get('bg', '#0d0d0d')};"
                f"color:{palette.get('text', '#f5f5f5')};"
-               f"font-family:{palette.get('font', 'Inter')},system-ui,sans-serif;}}")
+               f"font-family:{body_font},system-ui,sans-serif;}}"
+               f".scene-title{{font-family:{heading_font},system-ui,sans-serif;}}")
     css_parts = [_BASE_CSS, dyn_css]
     tl_lines: list[str] = []
 
@@ -815,7 +1030,7 @@ def compose_scene_html(ctx: dict) -> str:
         dur = max(0.1, min(float(c["duration"]), ctx["duration"] - ls))
         caption_html.append(
             f'<div class="caption clip" data-start="{ls:.3f}" data-duration="{dur:.3f}">'
-            f'{_esc(c["text"])}</div>')
+            f'<span class="caption-scrim">{_esc(c["text"])}</span></div>')
 
     # --- ROOT (FIRST body element; everything nests inside) ---
     inner = "\n      ".join([layout_html] + effect_html + overlay_html + caption_html)
@@ -856,7 +1071,11 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
                pdir, scene_dir) -> dict:
     palette = (style_guide or {}).get("palette", {}) or {}
     typ = (style_guide or {}).get("typography", {}) or {}
-    font = typ.get("heading") or typ.get("body") or "Inter"
+    # Iris emits typography as nested dicts: display/body/caption = {family, weight}
+    # (no "heading" key). Resolve each slot to a bare STRING — never inject the dict.
+    # Accept "heading" as a legacy alias for "display".
+    heading_font = _font_family(typ.get("display") or typ.get("heading"), "Inter")
+    body_font = _font_family(typ.get("body"), heading_font)
     max_per = (((style_guide or {}).get("motion") or {}).get("max_per_scene")
                or DEFAULT_MAX_PER_SCENE)
     textures = _as_named((style_guide or {}).get("textures")) or \
@@ -878,17 +1097,27 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
 
     highlight = palette.get("signature_highlight", SIGNATURE_HIGHLIGHT)
     shots = board_scene.get("shots") or []
+    # Data for a native bar chart (C5): parse label/value pairs from the scene's
+    # on-screen line (the curated, clean source) first; fall to shot prose only if it
+    # yields nothing. Keeps a data-chart scene a real visual even when the generated
+    # data-viz asset has no file.
+    chart_data = parse_chart_data(str(script_scene.get("on_screen_text") or ""))
+    if not chart_data:
+        chart_data = parse_chart_data(
+            " ".join(str(s.get("content", "")) for s in shots if isinstance(s, dict)))
     return {
         "scene_no": n, "comp_id": f"scene-{n:02d}", "duration": duration,
         "fps": clamp_fps((style_guide or {}).get("fps", DEFAULT_FPS)),
         "title": script_scene.get("on_screen_text") or script_scene.get("point") or "",
         "layout": board_scene.get("layout") or "centered-statement",
         "transition": transition, "effects": effects, "textures": textures,
-        "signature": signature, "palette": {**palette, "font": font},
+        "signature": signature,
+        "palette": {**palette, "font": heading_font, "body_font": body_font},
         "highlight": highlight,
         "captions": scene_captions(segments, n), "assets": resolved,
         "shots": shots, "brand_keys": scene_brand_keys(shots),
         "brand_specs": scene_brand_specs(shots),
+        "chart_data": chart_data,
     }
 
 
@@ -947,6 +1176,10 @@ def compose(pdir, *, render: bool = True, gate: bool = True) -> dict:
             gate_res = hf_tools.run_gate(scene_dir, motion_strict=_motion_strict(ctx))
             gate_ok = all((gate_res[k] or {}).get("ok") for k in ("lint", "validate", "inspect"))
             contrast_failures = (gate_res.get("validate") or {}).get("contrast_failures", 0)
+            # C2: contrast failures are a legibility defect — they must BLOCK the
+            # auto-gate, not be counted-then-passed. (Surfaced before only as a number.)
+            if contrast_failures:
+                gate_ok = False
 
         if gate_ok and not skip_render:
             rendered = hf_tools.run_render(scene_dir)
@@ -979,6 +1212,7 @@ def compose(pdir, *, render: bool = True, gate: bool = True) -> dict:
 
     gated_ok = sum(1 for s in scenes_out
                    if s["self_scan"]["ok"] and
+                   not s["assets"]["contrast_failures"] and
                    all((s["gate"][k] or {}).get("ok", False) for k in
                        ("lint", "validate", "inspect")))
     if not gate:

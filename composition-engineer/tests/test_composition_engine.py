@@ -509,6 +509,141 @@ def test_compose_blocks_when_self_scan_fails(tmp_path, monkeypatch):
     assert manifest["scenes"][0]["self_scan"]["ok"] is False
 
 
+# ----------------------------------------------------------------------
+# C1 — typography must reach font-family as a NAME, never a leaked Python dict
+# ----------------------------------------------------------------------
+def test_dict_shaped_typography_emits_font_name_not_dict_repr():
+    # Iris emits typography slots as nested dicts: display/body = {family, weight}.
+    style = {"palette": {}, "typography": {"display": {"family": "GT Sectra", "weight": 700},
+                                           "body": {"family": "Inter", "weight": 400}}}
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": False}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, style, board,
+                            [], [], pathlib.Path("/tmp"), pathlib.Path("/tmp"))
+    html = engine.compose_scene_html(ctx)
+    # the designed DISPLAY font reaches the heading CSS; NO dict repr leaks anywhere
+    assert "GT Sectra" in html
+    assert "Inter" in html                       # body font present too
+    assert "'family'" not in html and '"family"' not in html
+    # no Python-dict brace leaked into any font-family declaration
+    for decl in html.split("font-family:")[1:]:
+        assert "{" not in decl.split(";", 1)[0]
+
+
+def test_string_shaped_typography_still_works():
+    style = {"palette": {}, "typography": {"display": "Georgia", "body": "Verdana"}}
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": False}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, style, board,
+                            [], [], pathlib.Path("/tmp"), pathlib.Path("/tmp"))
+    html = engine.compose_scene_html(ctx)
+    assert "Georgia" in html and "Verdana" in html
+    for decl in html.split("font-family:")[1:]:
+        assert "{" not in decl.split(";", 1)[0]
+
+
+# ----------------------------------------------------------------------
+# C5 — a data-chart scene must render an ACTUAL visual (chart markup), not bare text
+# ----------------------------------------------------------------------
+def test_parse_chart_data_extracts_label_value_pairs():
+    pairs = engine.parse_chart_data("Coffee ~95 · Black tea ~47-48 · Green tea ~29 mg")
+    by = {p["label"].lower(): p["value"] for p in pairs}
+    assert by["coffee"] == 95.0
+    assert by["green tea"] == 29.0
+
+
+def test_data_chart_renders_native_bar_chart_from_scene_data():
+    # No usable asset -> a deterministic native bar chart from the scene's numbers.
+    ctx = _ctx(layout="data-chart", signature=False, effects=[], assets=[],
+               chart_data=[{"label": "Coffee", "value": 95}, {"label": "Black tea", "value": 48},
+                           {"label": "Green tea", "value": 29}])
+    html = engine.compose_scene_html(ctx)
+    assert "<svg" in html and "<rect" in html        # real chart markup, not just a title
+    assert "bar-chart" in html
+    assert "Coffee" in html and "95" in html
+    assert engine.scan_determinism(html) == []       # still frame-seek safe
+
+
+def test_data_chart_scene_with_data_is_not_bare_text():
+    # The live regression: layout data-chart with a generated (file-less) data-viz asset.
+    ctx = _ctx(layout="data-chart", signature=False, effects=[],
+               title="8 oz averages",
+               assets=[{"type": "data-viz", "label": "s2_caffeine_bars", "src_rel": None,
+                        "placeholder": True}],
+               chart_data=[{"label": "Coffee", "value": 95}, {"label": "Green tea", "value": 29}])
+    html = engine.compose_scene_html(ctx)
+    assert "<rect" in html                           # a chart reached the DOM
+
+
+# ----------------------------------------------------------------------
+# C4 — caption legibility: a scrim/background panel behind the caption text
+# ----------------------------------------------------------------------
+def test_captions_have_a_legibility_scrim():
+    html = engine.compose_scene_html(_ctx())
+    assert "caption-scrim" in html                   # a background panel element
+    assert "background:rgba(0,0,0" in html           # readable dark scrim behind text
+    assert "text-shadow" in html                     # plus a shadow for over-image legibility
+
+
+# ----------------------------------------------------------------------
+# H1 — generic "four AI logos lined up" naming no model -> full roster of chips
+# ----------------------------------------------------------------------
+def test_generic_logo_lineup_shot_falls_back_to_full_roster():
+    shots = [{"kind": "brand", "content": "four AI logos lined up"}]
+    keys = engine.scene_brand_keys(shots)
+    assert set(keys) == set(engine.BRAND_CHIPS.keys())
+    specs = engine.scene_brand_specs(shots)
+    assert {s["key"] for s in specs} == set(engine.BRAND_CHIPS.keys())
+    assert all(s["dim"] is False for s in specs)
+
+
+def test_generic_models_lineup_by_content_cue_without_kind():
+    # No brand kind, but content cues "the major models" in a row -> full roster.
+    shots = [{"kind": "graphic", "content": "the major models lined up in a row"}]
+    assert set(engine.scene_brand_keys(shots)) == set(engine.BRAND_CHIPS.keys())
+
+
+def test_named_models_still_take_precedence_over_roster_fallback():
+    # A specific model named -> only that, not the whole roster.
+    shots = [{"kind": "brand", "content": "Claude logo, four models lined up"}]
+    assert engine.scene_brand_keys(shots) == ["anthropic"]
+
+
+# ----------------------------------------------------------------------
+# M4 — a multi-brand shot's dim cue must NOT dim the foregrounded winner
+# ----------------------------------------------------------------------
+def test_dim_cue_does_not_dim_the_foregrounded_brand_in_a_multibrand_shot():
+    shots = [{"kind": "panel",
+              "content": "Claude foregrounded while GPT-4o fades back into the background"}]
+    by = {s["key"]: s["dim"] for s in engine.scene_brand_specs(shots)}
+    assert by["anthropic"] is False              # the foregrounded winner stays bright
+    assert by["openai"] is True                  # only the de-emphasized peer dims
+
+
+def test_single_brand_dim_cue_still_applies():
+    shots = [{"kind": "panel", "content": "GPT-4o dimmed into the background"}]
+    by = {s["key"]: s["dim"] for s in engine.scene_brand_specs(shots)}
+    assert by["openai"] is True
+
+
+# ----------------------------------------------------------------------
+# C2 — contrast failures must BLOCK the auto-gate (not be counted-then-passed)
+# ----------------------------------------------------------------------
+def test_contrast_failures_block_the_auto_gate(tmp_path, monkeypatch):
+    _write_fixture_project(tmp_path)
+    monkeypatch.setenv("MASON_SKIP_RENDER", "1")
+    import hf_tools
+    # lint/inspect clean, but validate reports contrast failures (console clean).
+    monkeypatch.setattr(hf_tools, "run_gate", lambda d, motion_strict=False: {
+        "lint": {"ok": True, "errors": 0},
+        "validate": {"ok": True, "console_errors": 0, "contrast_failures": 5},
+        "inspect": {"ok": True, "issues": 0}})
+    manifest = engine.compose(tmp_path)
+    assert manifest["summary"]["contrast_failures"] == 5
+    assert manifest["summary"]["auto_gate"] != "PASS"     # must NOT pass with failures
+    assert manifest["verdict"] == "blocked"
+
+
 def test_compose_raises_on_invalid_inputs(tmp_path, monkeypatch):
     _write_fixture_project(tmp_path)
     monkeypatch.setenv("MASON_SKIP_RENDER", "1")
