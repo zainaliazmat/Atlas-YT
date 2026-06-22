@@ -35,6 +35,8 @@ the invariants, and the per-source parsers (canned dicts) are unit-tested here.
 import pathlib
 import sys
 import tempfile
+import threading
+import time
 import types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
@@ -207,6 +209,107 @@ def test_transcribe_enrichment_is_optional_and_safe():
         out = engine.record_narration(SCRIPT, pdir=d, tts_fn=fake_tts,
                                       concat_fn=fake_concat, transcribe_fn=boom_transcribe)
         assert out["transcript"]["total_duration_sec"] == 9.0  # survived a failed enrich
+
+
+# --- Parallelization safety: ordering is by SCENE INDEX, never completion order ---
+def test_parallel_preserves_order_when_later_scenes_finish_first():
+    """The determinism lock: synthesize concurrently, but the transcript offsets,
+    total, and WAV concat order MUST be byte-identical to the sequential version even
+    when LATER scenes complete FIRST. We force out-of-order completion by sleeping
+    LONGEST on scene 1 and shortest on scene 3, and a barrier to prove the calls run
+    concurrently (so a sequential impl on the same fake would deadlock/serialize and
+    scene-1's slow sleep would gate everything — but order is asserted by index).
+
+    Reported durations are the SAME fixture (2,3,4) so expected offsets are known-good.
+    """
+    barrier = threading.Barrier(3, timeout=5.0)
+    # finish order (by sleep): scene 3 first, then 2, then 1 last.
+    sleeps = {1: 0.15, 2: 0.08, 3: 0.0}
+    completion_order: list[int] = []
+    lock = threading.Lock()
+
+    def ooo_tts(text, out):
+        n = int(pathlib.Path(out).stem.split("-")[1])
+        barrier.wait()                    # all three must be in-flight at once => concurrent
+        time.sleep(sleeps[n])
+        with lock:
+            completion_order.append(n)
+        p = pathlib.Path(out)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"RIFFstub")
+        return {"ok": True, "duration": _DURS[n], "output": str(out), "error": None}
+
+    captured = {}
+
+    def capture_concat(wavs, out):
+        captured["wav_order"] = [pathlib.Path(w).name for w in wavs]
+        return fake_concat(wavs, out)
+
+    with tempfile.TemporaryDirectory() as d:
+        out = engine.record_narration(SCRIPT, pdir=d, tts_fn=ooo_tts,
+                                      concat_fn=capture_concat)
+    # Proof the calls really overlapped and finished out of original order.
+    assert completion_order == [3, 2, 1], completion_order
+    # Despite that, the transcript is IDENTICAL to the sequential known-good output.
+    segs = out["transcript"]["segments"]
+    assert [s["scene_no"] for s in segs] == [1, 2, 3]
+    assert (segs[0]["start_sec"], segs[0]["end_sec"]) == (0.0, 2.0)
+    assert (segs[1]["start_sec"], segs[1]["end_sec"]) == (2.0, 5.0)
+    assert (segs[2]["start_sec"], segs[2]["end_sec"]) == (5.0, 9.0)
+    assert out["total_duration_sec"] == 9.0
+    # And the concat order is by scene index, NOT completion order.
+    assert captured["wav_order"] == ["scene-01.wav", "scene-02.wav", "scene-03.wav"]
+
+
+def test_parallel_output_is_identical_to_sequential_reference():
+    """Equivalence lock: the parallel path's transcript dict equals the dict a strict
+    sequential prefix-sum produces for the same inputs (segments + total, byte-equal)."""
+    # Known-good sequential reference computed independently of the engine.
+    t = 0.0
+    ref_segments = []
+    for sc in SCRIPT["scenes"]:
+        n = sc["scene_no"]
+        dur = _DURS[n]
+        ref_segments.append({"scene_no": n, "start_sec": round(t, 3),
+                             "end_sec": round(t + dur, 3), "text": sc["narration"]})
+        t += dur
+    with tempfile.TemporaryDirectory() as d:
+        out = engine.record_narration(SCRIPT, pdir=d, tts_fn=fake_tts, concat_fn=fake_concat)
+    assert out["transcript"]["segments"] == ref_segments
+    assert out["transcript"]["total_duration_sec"] == round(t, 3)
+
+
+def test_parallel_midlist_failure_raises_no_partial_master():
+    """A failure on a MIDDLE scene must raise (matching sequential) and ship NO partial
+    artifact: no narration.wav, and concat is never invoked."""
+    concat_called = {"n": 0}
+
+    def counting_concat(wavs, out):
+        concat_called["n"] += 1
+        return fake_concat(wavs, out)
+
+    def fail_on_scene_2(text, out):
+        n = int(pathlib.Path(out).stem.split("-")[1])
+        if n == 2:
+            return {"ok": False, "duration": 0.0, "output": str(out),
+                    "error": "kokoro exploded on scene 2"}
+        p = pathlib.Path(out)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"RIFFstub")
+        return {"ok": True, "duration": _DURS[n], "output": str(out), "error": None}
+
+    with tempfile.TemporaryDirectory() as d:
+        raised = False
+        try:
+            engine.record_narration(SCRIPT, pdir=d, tts_fn=fail_on_scene_2,
+                                    concat_fn=counting_concat)
+        except RuntimeError as exc:
+            raised = True
+            assert "scene 2" in str(exc)
+        assert raised, "expected RuntimeError on mid-list tts failure"
+        # No partial master: concat never ran, no narration.wav exists.
+        assert concat_called["n"] == 0
+        assert not (pathlib.Path(d) / "audio" / "narration.wav").exists()
 
 
 # ======================================================================
