@@ -851,3 +851,16 @@ def test_count_up_value_at_a_sampled_frame_is_determined():
     assert m, "count-up tween not emitted with a fixed duration"
     # duration = min(1.2, dur*0.5) = 1.0 here -> deterministic, not clock-derived
     assert float(m.group(1)) == 1.0
+
+
+def test_has_brand_stacks_blocks_in_a_non_overlapping_grid():
+    """A big-number scene that ALSO carries a brand chip must place the two blocks in a
+    grid (content-sized rows) so the opaque chip can never occlude the hero number —
+    the live 'text_occluded' inspect error that blocked a real render."""
+    ctx = _ctx(layout="big-number", signature=False, effects=[],
+               hero_stat={"value": 1936, "unit": "", "label": "The year it was invented"},
+               brand_keys=["openai"], brand_specs=[{"key": "openai", "dim": False}])
+    html = engine.compose_scene_html(ctx)
+    assert "has-brand" in html
+    # the has-brand container is a grid (rows can't overlap), not a flex column
+    assert "has-brand{display:grid" in html.replace(" ", "")

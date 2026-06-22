@@ -1153,7 +1153,16 @@ _BASE_CSS = (
     "line-height:1;white-space:nowrap;}"
     ".brand-media{display:flex;align-items:center;justify-content:center;width:100%;"
     "height:100%;padding:6%;}"
-    ".layout.has-brand{flex-direction:column;gap:44px;}"
+    # has-brand stacks two content blocks (a brand-chip row + the layout's own
+    # content) in one scene. A flex column with centering let them OVERLAP when the
+    # combined height exceeded the frame (inspect 'text_occluded' — the opaque chip
+    # drawn over the hero number). A GRID with content-sized auto-rows guarantees each
+    # block occupies its OWN row and can never overlap, at ANY content length; the
+    # whole stack is clipped to the frame and centered.
+    ".layout.has-brand{display:grid;grid-auto-flow:row;grid-auto-rows:max-content;"
+    "align-content:center;justify-items:center;gap:40px;max-height:88%;max-width:92%;"
+    "overflow:hidden;}"
+    ".layout.has-brand>*{min-height:0;max-width:100%;}"
     ".title-card.has-brand .scene-title{font-size:92px;}"
     # big-number (Job 2): one dominant stat at HERO scale, a short label, optional unit.
     ".big-number{flex-direction:column;gap:24px;text-align:center;max-width:94%;"
