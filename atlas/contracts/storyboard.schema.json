@@ -18,7 +18,8 @@
         "additionalProperties": true,
         "properties": {
           "scene_no": {"type": "integer"},
-          "layout": {"type": "string"},
+          "layout": {"type": "string",
+            "description": "One composition token from the Art Director's closed LAYOUTS vocabulary (value-level, error-on-unknown in the engines, not enumerated here so it stays refinable without a schema bump): centered-statement, split-screen, full-bleed-image, lower-third, data-chart, quote-card, map-focus, list-stack, comparison-2up, title-card, big-number, timeline."},
           "shots": {
             "type": "array",
             "items": {
@@ -35,7 +36,7 @@
           "transition": {"type": "string"},
           "effects": {
             "type": "array",
-            "description": "schema_version 1.1 (additive): the per-scene, VARYING techniques (distinct from the style guide's always-on global textures and from layout). Structure is fixed here; the allowed effect NAMES are grounded in the Art Director's vocabulary (value-level), refinable by the Composition Engineer without another schema bump.",
+            "description": "schema_version 1.1 (additive): the per-scene, VARYING techniques (distinct from the style guide's always-on global textures and from layout). Structure is fixed here; the allowed effect NAMES are grounded in the Art Director's vocabulary (value-level), refinable by the Composition Engineer without another schema bump: stutter-12fps, stepped-ease, highlighter-FFD000, map-draw, chromatic-aberration, push-in, parallax, count-up.",
             "items": {"oneOf": [
               {"type": "string"},
               {"type": "object", "required": ["name"], "additionalProperties": true,

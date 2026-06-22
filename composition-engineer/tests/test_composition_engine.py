@@ -512,17 +512,18 @@ def test_compose_blocks_when_self_scan_fails(tmp_path, monkeypatch):
 # ----------------------------------------------------------------------
 # C1 — typography must reach font-family as a NAME, never a leaked Python dict
 # ----------------------------------------------------------------------
-def test_dict_shaped_typography_emits_font_name_not_dict_repr():
+def test_dict_shaped_typography_emits_font_name_not_dict_repr(tmp_path):
     # Iris emits typography slots as nested dicts: display/body = {family, weight}.
-    style = {"palette": {}, "typography": {"display": {"family": "GT Sectra", "weight": 700},
+    # A BUNDLED display family (Fraunces) reaches the heading CSS as a name; an unbundled
+    # one falls back (covered below). NO dict repr ever leaks.
+    style = {"palette": {}, "typography": {"display": {"family": "Fraunces", "weight": 700},
                                            "body": {"family": "Inter", "weight": 400}}}
     board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
              "effects": [], "signature_beat": False}
     ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, style, board,
-                            [], [], pathlib.Path("/tmp"), pathlib.Path("/tmp"))
+                            [], [], tmp_path, tmp_path)
     html = engine.compose_scene_html(ctx)
-    # the designed DISPLAY font reaches the heading CSS; NO dict repr leaks anywhere
-    assert "GT Sectra" in html
+    assert "Fraunces" in html
     assert "Inter" in html                       # body font present too
     assert "'family'" not in html and '"family"' not in html
     # no Python-dict brace leaked into any font-family declaration
@@ -530,16 +531,59 @@ def test_dict_shaped_typography_emits_font_name_not_dict_repr():
         assert "{" not in decl.split(";", 1)[0]
 
 
-def test_string_shaped_typography_still_works():
-    style = {"palette": {}, "typography": {"display": "Georgia", "body": "Verdana"}}
+def test_unbundled_family_falls_back_to_a_bundled_face(tmp_path):
+    # An unbundled (e.g. proprietary) family name must snap to a guaranteed-present OFL
+    # face so the render is never fontless — a serif/display role -> Noto Serif Display.
+    style = {"palette": {}, "typography": {"display": {"family": "GT Sectra", "weight": 700},
+                                           "body": "Helvetica Neue"}}
     board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
              "effects": [], "signature_beat": False}
     ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, style, board,
-                            [], [], pathlib.Path("/tmp"), pathlib.Path("/tmp"))
+                            [], [], tmp_path, tmp_path)
     html = engine.compose_scene_html(ctx)
-    assert "Georgia" in html and "Verdana" in html
+    assert "GT Sectra" not in html and "Helvetica Neue" not in html
+    assert engine.FALLBACK_DISPLAY_FAMILY in html   # Noto Serif Display
+    assert engine.FALLBACK_BODY_FAMILY in html      # Noto Sans
     for decl in html.split("font-family:")[1:]:
         assert "{" not in decl.split(";", 1)[0]
+
+
+# ----------------------------------------------------------------------
+# Job 1 — OFL fonts bundled LOCALLY as @font-face (no render-time font fetch)
+# ----------------------------------------------------------------------
+def test_emitted_css_has_local_font_face_no_http():
+    # The default display face (Fraunces) reaches the heading CSS via a LOCAL @font-face.
+    html = engine.compose_scene_html(_ctx(palette={"bg": "#0d0d0d", "text": "#fff",
+                                                   "font": "Fraunces", "body_font": "Inter"}))
+    assert "@font-face" in html
+    # the @font-face src points at a local assets/fonts/... path — NEVER http
+    assert "src:url('assets/fonts/Fraunces.ttf')" in html
+    assert "assets/fonts/Inter.ttf" in html
+    assert "http" not in html.split("@font-face", 1)[1].split("}", 1)[0]
+    # heading CSS uses the bundled display family NAME, no leaked dict brace
+    assert ".scene-title{font-family:'Fraunces'" in html
+    # variable faces declare the full weight range
+    assert "font-weight:100 900;" in html
+
+
+def test_scene_build_copies_font_files_into_the_project(tmp_path):
+    style = {"palette": {}, "typography": {"display": {"family": "Fraunces", "weight": 700},
+                                           "body": {"family": "Inter", "weight": 400}}}
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": False}
+    scene_dir = tmp_path / "scenes" / "scene-01"
+    scene_dir.mkdir(parents=True)
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, style, board,
+                            [], [], tmp_path, scene_dir)
+    # the .ttf files were copied into the scene project's assets/fonts/
+    assert (scene_dir / "assets" / "fonts" / "Fraunces.ttf").exists()
+    assert (scene_dir / "assets" / "fonts" / "Inter.ttf").exists()
+    # ctx records (family, local-rel-path) pairs, and the html references those paths
+    fams = {f for f, _ in ctx["font_faces"]}
+    assert fams == {"Fraunces", "Inter"}
+    html = engine.compose_scene_html(ctx)
+    assert "src:url('assets/fonts/Fraunces.ttf')" in html
+    assert "http" not in html.split("@font-face", 1)[1].split("}", 1)[0]
 
 
 # ----------------------------------------------------------------------
@@ -657,3 +701,83 @@ def test_compose_raises_on_invalid_inputs(tmp_path, monkeypatch):
         assert False, "expected ValueError on unknown token"
     except ValueError as exc:
         assert "unknown effect" in str(exc)
+
+
+# ----------------------------------------------------------------------
+# Job 2 — vocabulary extension (LOCKSTEP): big-number, timeline, count-up
+# ----------------------------------------------------------------------
+def test_big_number_renders_hero_stat_and_self_scans_clean():
+    ctx = _ctx(layout="big-number", signature=False, effects=[],
+               hero_stat={"value": 95, "unit": "mg", "label": "Caffeine per cup"})
+    html = engine.compose_scene_html(ctx)
+    assert 'class="layout big-number' in html
+    assert "big-number-value" in html
+    assert ">95<" in html                              # the stat reached the DOM
+    assert "Caffeine per cup" in html                  # the label
+    assert "mg" in html                                # the unit
+    assert "font-size:380px" in html                   # rendered at HERO scale
+    assert engine.scan_determinism(html) == []         # frame-seek safe
+
+
+def test_big_number_carries_signature_tint_on_the_beat():
+    ctx = _ctx(layout="big-number", signature=True,
+               effects=[{"name": engine.SIGNATURE_EFFECT, "params": {}}],
+               hero_stat={"value": 40, "unit": "%", "label": "fewer"})
+    html = engine.compose_scene_html(ctx)
+    assert "big-number sig" in html
+    assert ".big-number.sig .big-number-value{color:#FFD000;}" in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_timeline_emits_one_svg_node_per_parsed_entry():
+    entries = [{"date": "1969", "label": "Moon"}, {"date": "1991", "label": "Web"},
+               {"date": "2007", "label": "iPhone"}]
+    ctx = _ctx(layout="timeline", signature=False, effects=[], timeline_data=entries)
+    html = engine.compose_scene_html(ctx)
+    assert "<svg" in html and "timeline-svg" in html
+    assert html.count('class="tl-node"') == len(entries)   # N nodes for N entries
+    for e in entries:
+        assert e["date"] in html and e["label"] in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_parse_hero_stat_picks_the_dominant_number():
+    stat = engine.parse_hero_stat("Coffee delivers 95 mg of caffeine per cup")
+    assert stat["value"] == 95.0
+    assert stat["unit"].lower() == "mg"
+
+
+def test_parse_timeline_data_extracts_year_entries_in_order():
+    rows = engine.parse_timeline_data("1969 Moon landing, 2007 iPhone, 2023 GPT-4")
+    assert [r["date"] for r in rows] == ["1969", "2007", "2023"]
+    assert rows[0]["label"].startswith("Moon")
+
+
+def test_count_up_tweens_on_the_master_timeline_and_is_deterministic():
+    # count-up on a big-number scene: a GSAP tween 0->target on the paused timeline,
+    # onUpdate writes textContent. No Math.random/Date.now/late gsap.set -> self-scan clean.
+    ctx = _ctx(layout="big-number", signature=False,
+               effects=[{"name": "count-up", "params": {}}],
+               hero_stat={"value": 250, "unit": None, "label": "servers"})
+    html = engine.compose_scene_html(ctx)
+    assert 'data-target="250"' in html                 # build-time target on the element
+    assert "onUpdate" in html and "textContent" in html
+    assert "tl.to(" in html                            # motion lives on the master timeline
+    assert "gsap.set(" not in html
+    assert "Math.random" not in html and "Date.now" not in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_count_up_value_at_a_sampled_frame_is_determined():
+    # The tween is linear in eased progress; the engine seeks to fixed times, so the value
+    # at a given progress p is round(target * eased(p)) — a pure function of p (no clock).
+    # We verify the emitted tween parameters pin the target + duration deterministically.
+    import re as _re
+    ctx = _ctx(layout="big-number", signature=False,
+               effects=[{"name": "count-up", "params": {}}], duration=2.0,
+               hero_stat={"value": 100, "unit": None, "label": "x"})
+    html = engine.compose_scene_html(ctx)
+    m = _re.search(r"n:target,duration:([0-9.]+),ease:\"power1.out\"", html)
+    assert m, "count-up tween not emitted with a fixed duration"
+    # duration = min(1.2, dur*0.5) = 1.0 here -> deterministic, not clock-derived
+    assert float(m.group(1)) == 1.0

@@ -84,6 +84,28 @@ SIGNATURE_HIGHLIGHT = "#FFD000"
 SIGNATURE_EFFECT = "highlighter-FFD000"
 
 # ----------------------------------------------------------------------
+# BUNDLED OFL FONTS (HyperFrames forbids render-time font fetch) — local @font-face.
+# The .ttf files live beside this module in fonts/; at scene-build time they are
+# copied into each scene project's assets/fonts/ (the same deterministic localizing
+# pattern as _copy_asset_local) and referenced by a LOCAL relative url() — never http.
+# All SIL OFL 1.1 (see fonts/LICENSES.md). Fraunces/Inter are variable -> the @font-face
+# carries `font-weight:100 900`. Iris's typography.display.family resolves to "Fraunces"
+# and .body.family to "Inter"; an UNBUNDLED family name falls back to a bundled face
+# (Noto Serif Display for a display/serif role, Noto Sans for body) so a render is never
+# fontless. Map: family name -> {file, variable, fallback_for}.
+FONTS_DIR = HERE / "fonts"
+BUNDLED_FONTS = {
+    "Fraunces":           {"file": "Fraunces.ttf",                 "variable": True},
+    "Inter":              {"file": "Inter.ttf",                    "variable": True},
+    "Noto Serif Display": {"file": "NotoSerifDisplay-Regular.ttf", "variable": False},
+    "Noto Sans":          {"file": "NotoSans-Regular.ttf",         "variable": False},
+}
+DEFAULT_DISPLAY_FAMILY = "Fraunces"        # the bundled editorial display face
+DEFAULT_BODY_FAMILY = "Inter"              # the bundled neutral body face
+FALLBACK_DISPLAY_FAMILY = "Noto Serif Display"   # guaranteed-present OFL display fallback
+FALLBACK_BODY_FAMILY = "Noto Sans"               # guaranteed-present OFL body fallback
+
+# ----------------------------------------------------------------------
 # THE FINITE VOCABULARIES — must mirror the Art Director's vocabulary exactly.
 # Mason implements a partial for EVERY token; an unknown token is rejected, not
 # dropped. (Verified equal to art-director/art_engine.py at build time by a test.)
@@ -91,12 +113,12 @@ SIGNATURE_EFFECT = "highlighter-FFD000"
 LAYOUTS = (
     "centered-statement", "split-screen", "full-bleed-image", "lower-third",
     "data-chart", "quote-card", "map-focus", "list-stack", "comparison-2up",
-    "title-card",
+    "title-card", "big-number", "timeline",
 )
 TRANSITIONS = ("cut", "dip-to-black", "push", "wipe", "match-cut")
 EFFECTS = (
     "stutter-12fps", "stepped-ease", SIGNATURE_EFFECT, "map-draw",
-    "chromatic-aberration", "push-in", "parallax",
+    "chromatic-aberration", "push-in", "parallax", "count-up",
 )
 TEXTURES = ("paper", "grain", "halftone", "vignette", "scanlines")
 
@@ -395,6 +417,45 @@ def _copy_asset_local(pdir: pathlib.Path, scene_dir: pathlib.Path, asset: dict) 
     return f"assets/{src.name}"
 
 
+def _resolve_bundled_family(name, role: str) -> str:
+    """Resolve a requested font family to a BUNDLED family name.
+
+    `role` is "display" or "body". If `name` names a bundled family we keep it;
+    otherwise we fall back to the role's guaranteed-present OFL face so the render is
+    never fontless (HyperFrames cannot fetch a font at render time). Pure + deterministic.
+    """
+    if isinstance(name, str) and name.strip() in BUNDLED_FONTS:
+        return name.strip()
+    return FALLBACK_DISPLAY_FAMILY if role == "display" else FALLBACK_BODY_FAMILY
+
+
+def _copy_font_local(scene_dir: pathlib.Path, family: str) -> str | None:
+    """Copy a bundled font's .ttf into the scene project's assets/fonts/ and return the
+    in-project relative path (e.g. 'assets/fonts/Fraunces.ttf'). Mirrors _copy_asset_local
+    so each scene project is a self-contained, network-free render. None if not bundled."""
+    spec = BUNDLED_FONTS.get(family)
+    if not spec:
+        return None
+    src = FONTS_DIR / spec["file"]
+    dest_dir = scene_dir / "assets" / "fonts"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    try:
+        shutil.copyfile(src, dest)
+    except OSError:
+        return None
+    return f"assets/fonts/{src.name}"
+
+
+def _font_face_css(family: str, rel_path: str) -> str:
+    """A deterministic @font-face block pointing at a LOCAL bundled .ttf (no http).
+    Variable faces declare the full 100 900 weight range."""
+    spec = BUNDLED_FONTS.get(family, {})
+    weight = "font-weight:100 900;" if spec.get("variable") else "font-weight:400 700;"
+    return (f"@font-face{{font-family:'{family}';src:url('{rel_path}') format('truetype');"
+            f"{weight}font-style:normal;font-display:block;}}")
+
+
 # ======================================================================
 # THE TECHNIQUE LIBRARY — one partial per token, all four axes.
 # Builders return fragments: {"css": str, "html": str, "tl": [js lines]}.
@@ -624,6 +685,71 @@ def parse_chart_data(*texts: str, max_points: int = 6) -> list[dict]:
     return out
 
 
+# A single dominant statistic for big-number: a number, an optional unit token right
+# after it (%, mg, x, M, B, K, $ prefix), and a short label = the surrounding words.
+_BIG_UNIT = r"%|×|x|mg|kg|oz|ms|fps|bn|m|k|b|hrs?|min|gb|mb|°c|°f"
+_BIG_NUM_RE = re.compile(
+    rf"(\$?)\s*(\d{{1,3}}(?:,\d{{3}})+|\d+(?:\.\d+)?)\s*({_BIG_UNIT})?\b", re.IGNORECASE)
+
+
+def parse_hero_stat(*texts: str) -> dict | None:
+    """Extract ONE dominant {value, unit, label} from a scene's text (deterministic).
+
+    Picks the largest magnitude number (the 'hero' stat), keeping a trailing unit (%, mg,
+    x, M…) or a leading $ and the short surrounding phrase as the label. Returns None when
+    no number is present. Pure + deterministic."""
+    best = None
+    for text in texts:
+        s = str(text or "")
+        for m in _BIG_NUM_RE.finditer(s):
+            raw = m.group(2).replace(",", "")
+            try:
+                val = float(raw)
+            except ValueError:
+                continue
+            unit = (m.group(3) or "").strip()
+            if m.group(1) == "$":
+                unit = unit or "$"
+            # label = the words around the number, minus the number/unit themselves
+            label = re.sub(_BIG_NUM_RE, " ", s)
+            label = re.sub(r"\s+", " ", label).strip(" .,:–-—·|")
+            if best is None or val > best["value"]:
+                best = {"value": val, "unit": unit, "label": label[:48]}
+    return best
+
+
+# A timeline entry: a year/date token + its short label. "1969 Moon landing",
+# "2007: iPhone", "Step 1 — research". Deterministic, ordered by appearance.
+_YEAR_RE = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\b")
+_STEP_RE = re.compile(r"\b(?:step|phase|stage)\s*(\d+)\b", re.IGNORECASE)
+
+
+def parse_timeline_data(*texts: str, max_points: int = 6) -> list[dict]:
+    """Extract ordered {date, label} timeline entries from chronological/process text.
+
+    Prefers explicit years (1969, 2007…); falls back to 'Step N'/'Phase N' markers. The
+    label is the short phrase following the date token. Pure, ordered, deduped by date."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for text in texts:
+        s = str(text or "")
+        marks = [(m.start(), m.group(1), "year") for m in _YEAR_RE.finditer(s)]
+        if not marks:
+            marks = [(m.start(), f"Step {m.group(1)}", "step") for m in _STEP_RE.finditer(s)]
+        marks.sort()
+        for i, (pos, date, _kind) in enumerate(marks):
+            if date in seen:
+                continue
+            seen.add(date)
+            end = marks[i + 1][0] if i + 1 < len(marks) else len(s)
+            tail = s[pos + len(date):end]
+            label = re.sub(r"\s+", " ", tail).strip(" .,:–-—·|()")
+            out.append({"date": date, "label": label[:36]})
+            if len(out) >= max_points:
+                return out
+    return out
+
+
 def render_bar_chart(data: list[dict], *, cls: str = "media") -> str:
     """A deterministic, build-time native bar chart (pure inline SVG — no JS, no
     randomness, frame-seek safe). Bars scale to the max value; each carries its label
@@ -761,12 +887,66 @@ def _layout_title_card(ctx):
             f'{_esc(ctx["title"])}</h1></div>', "tl": []}
 
 
+def _layout_big_number(ctx):
+    # A single dominant statistic at HERO scale: a short label, the giant number (with an
+    # optional unit), centered. Pure CSS/HTML, no JS. The number carries the #FFD000
+    # signature tint only on the signature beat. The count-up effect (if present) tweens
+    # this same .big-number-value 0->target on the paused timeline.
+    stat = ctx.get("hero_stat") or {}
+    value = stat.get("value")
+    if value is None:
+        value = _esc(ctx["title"])              # no parsed stat -> the line is the hero
+        num_html = f'<div class="big-number-value">{value}</div>'
+    else:
+        num_html = (f'<div class="big-number-value" data-target="{_fmt_num(value)}">'
+                    f'{_esc(_fmt_num(value))}</div>')
+    label = stat.get("label") or ctx["title"]
+    unit = stat.get("unit")
+    unit_html = f'<span class="big-number-unit">{_esc(unit)}</span>' if unit else ""
+    klass = "big-number sig" if ctx.get("signature") else "big-number"
+    return {"css": "", "html":
+            f'<div class="layout {klass}">'
+            f'<div class="big-number-label">{_esc(label)}</div>'
+            f'<div class="big-number-stat">{num_html}{unit_html}</div></div>', "tl": []}
+
+
+def _layout_timeline(ctx):
+    # A horizontal SVG baseline with N evenly-spaced nodes; each node carries a date/label
+    # parsed from on_screen_text/shot content. Deterministic inline SVG, no animation.
+    entries = ctx.get("timeline_data") or []
+    if not entries:
+        # nothing parsed -> a single node so the layout is still a real timeline visual
+        entries = [{"date": "", "label": str(ctx["title"] or "now")}]
+    vw, vh = 1600.0, 360.0
+    y = vh / 2.0
+    n = len(entries)
+    x0, x1 = 80.0, vw - 80.0
+    step = (x1 - x0) / (n - 1) if n > 1 else 0.0
+    nodes = []
+    for i, e in enumerate(entries):
+        x = x0 + i * step
+        date = _esc(e.get("date") or "")
+        label = _esc(e.get("label") or "")
+        nodes.append(
+            f'<circle class="tl-node" cx="{x:.1f}" cy="{y:.1f}" r="14" />'
+            f'<text class="tl-date" x="{x:.1f}" y="{y - 44:.1f}" text-anchor="middle">{date}</text>'
+            f'<text class="tl-label" x="{x:.1f}" y="{y + 66:.1f}" text-anchor="middle">{label}</text>')
+    svg = (f'<svg class="timeline-svg" viewBox="0 0 {vw:.0f} {vh:.0f}" '
+           f'preserveAspectRatio="xMidYMid meet" role="img">'
+           f'<line class="tl-base" x1="{x0:.1f}" y1="{y:.1f}" x2="{x1:.1f}" y2="{y:.1f}" />'
+           + "".join(nodes) + "</svg>")
+    return {"css": "", "html":
+            f'<div class="layout timeline"><h2 class="scene-title tl-title">'
+            f'{_esc(ctx["title"])}</h2>{svg}</div>', "tl": []}
+
+
 LAYOUT_BUILDERS = {
     "centered-statement": _layout_centered, "split-screen": _layout_split,
     "full-bleed-image": _layout_full_bleed, "lower-third": _layout_lower_third,
     "data-chart": _layout_data_chart, "quote-card": _layout_quote,
     "map-focus": _layout_map_focus, "list-stack": _layout_list_stack,
     "comparison-2up": _layout_comparison, "title-card": _layout_title_card,
+    "big-number": _layout_big_number, "timeline": _layout_timeline,
 }
 
 
@@ -854,11 +1034,29 @@ def _fx_parallax(ctx):
                    f'duration:{ctx["duration"]:.3f},ease:"none"}},0);']}
 
 
+def _fx_count_up(ctx):
+    # The hero number tweens 0 -> target on the PAUSED master timeline. The target is read
+    # at build time from the .big-number-value's data-target; an onUpdate writes the
+    # rounded value into textContent. HyperFrames seeks to fixed times, so the value at
+    # each seeked frame is fully determined -> frame-deterministic. No Math.random/Date.now,
+    # no late gsap.set: the initial 0 is written by the tween's start, the proxy object is
+    # a plain build-time literal. Self-scan-clean.
+    dur = max(0.3, min(1.2, ctx["duration"] * 0.5))
+    return {"css": "", "html": "",
+            "tl": ['(function(){var el=document.querySelector(".big-number-value");'
+                   'if(!el||!el.dataset.target)return;'
+                   'var target=parseFloat(el.dataset.target);if(isNaN(target))return;'
+                   'var o={n:0};'
+                   f'tl.to(o,{{n:target,duration:{dur:.3f},ease:"power1.out",'
+                   'onUpdate:function(){el.textContent=String(Math.round(o.n));}},0);'
+                   '})();']}
+
+
 EFFECT_BUILDERS = {
     "stutter-12fps": _fx_stutter, "stepped-ease": _fx_stepped,
     SIGNATURE_EFFECT: _fx_highlighter, "map-draw": _fx_map_draw,
     "chromatic-aberration": _fx_chromatic, "push-in": _fx_push_in,
-    "parallax": _fx_parallax,
+    "parallax": _fx_parallax, "count-up": _fx_count_up,
 }
 
 
@@ -937,6 +1135,23 @@ _BASE_CSS = (
     "height:100%;padding:6%;}"
     ".layout.has-brand{flex-direction:column;gap:44px;}"
     ".title-card.has-brand .scene-title{font-size:92px;}"
+    # big-number (Job 2): one dominant stat at HERO scale, a short label, optional unit.
+    ".big-number{flex-direction:column;gap:24px;text-align:center;}"
+    ".big-number-label{font-size:48px;font-weight:600;color:#cfcfcf;letter-spacing:1px;"
+    "text-transform:uppercase;max-width:80%;}"
+    ".big-number-stat{display:flex;align-items:baseline;justify-content:center;gap:18px;}"
+    ".big-number-value{font-size:380px;line-height:.9;font-weight:800;letter-spacing:-6px;"
+    "font-variant-numeric:tabular-nums;}"
+    ".big-number.sig .big-number-value{color:#FFD000;}"
+    ".big-number-unit{font-size:120px;font-weight:700;color:#cfcfcf;}"
+    # timeline (Job 2): a horizontal SVG baseline with evenly-spaced labelled nodes.
+    ".timeline{flex-direction:column;gap:48px;}"
+    ".timeline .tl-title{font-size:64px;}"
+    ".timeline-svg{width:100%;height:auto;max-height:60%;}"
+    ".timeline-svg .tl-base{stroke:#ffffff55;stroke-width:4;}"
+    ".timeline-svg .tl-node{fill:#FFD000;}"
+    ".timeline-svg .tl-date{fill:#fff;font-size:34px;font-weight:800;}"
+    ".timeline-svg .tl-label{fill:#cfcfcf;font-size:26px;font-weight:600;}"
 )
 
 
@@ -949,13 +1164,26 @@ def compose_scene_html(ctx: dict) -> str:
     """
     palette = ctx["palette"]
     # Fonts are resolved to bare strings upstream (_scene_ctx/_font_family); guard here
-    # too so a raw dict shape can never leak into font-family (C1).
-    heading_font = _font_family(palette.get("font"), "Inter")
-    body_font = _font_family(palette.get("body_font"), heading_font)
-    dyn_css = (f"html,body{{background:{palette.get('bg', '#0d0d0d')};"
+    # too so a raw dict shape can never leak into font-family (C1). Snap each to a
+    # BUNDLED OFL family so the @font-face below always points at a local file we ship.
+    heading_font = _resolve_bundled_family(
+        _font_family(palette.get("font"), DEFAULT_DISPLAY_FAMILY), "display")
+    body_font = _resolve_bundled_family(
+        _font_family(palette.get("body_font"), DEFAULT_BODY_FAMILY), "body")
+    # @font-face blocks point at the LOCALLY-bundled .ttf (assets/fonts/...) — never http.
+    # _scene_ctx records the real localized paths; when ctx omits them (unit-test ctx),
+    # synthesize the deterministic default local path so the HTML still bundles locally.
+    faces = ctx.get("font_faces")
+    if not faces:
+        faces = [(fam, f"assets/fonts/{BUNDLED_FONTS[fam]['file']}")
+                 for fam in dict.fromkeys([heading_font, body_font])
+                 if fam in BUNDLED_FONTS]
+    font_face_css = "".join(_font_face_css(fam, rel) for fam, rel in faces)
+    dyn_css = (font_face_css
+               + f"html,body{{background:{palette.get('bg', '#0d0d0d')};"
                f"color:{palette.get('text', '#f5f5f5')};"
-               f"font-family:{body_font},system-ui,sans-serif;}}"
-               f".scene-title{{font-family:{heading_font},system-ui,sans-serif;}}")
+               f"font-family:'{body_font}',system-ui,sans-serif;}}"
+               f".scene-title{{font-family:'{heading_font}',system-ui,sans-serif;}}")
     css_parts = [_BASE_CSS, dyn_css]
     tl_lines: list[str] = []
 
@@ -1073,9 +1301,14 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
     typ = (style_guide or {}).get("typography", {}) or {}
     # Iris emits typography as nested dicts: display/body/caption = {family, weight}
     # (no "heading" key). Resolve each slot to a bare STRING — never inject the dict.
-    # Accept "heading" as a legacy alias for "display".
-    heading_font = _font_family(typ.get("display") or typ.get("heading"), "Inter")
-    body_font = _font_family(typ.get("body"), heading_font)
+    # Accept "heading" as a legacy alias for "display". Then snap each to a BUNDLED OFL
+    # family (Fraunces/Inter by default; an unbundled name falls back to a guaranteed
+    # Noto face) so the render is never fontless and never fetches a font at render time.
+    heading_font = _resolve_bundled_family(
+        _font_family(typ.get("display") or typ.get("heading"), DEFAULT_DISPLAY_FAMILY),
+        "display")
+    body_font = _resolve_bundled_family(
+        _font_family(typ.get("body"), DEFAULT_BODY_FAMILY), "body")
     max_per = (((style_guide or {}).get("motion") or {}).get("max_per_scene")
                or DEFAULT_MAX_PER_SCENE)
     textures = _as_named((style_guide or {}).get("textures")) or \
@@ -1095,16 +1328,29 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
         a["src_rel"] = _copy_asset_local(pdir, scene_dir, a) if a.get("present") else None
         resolved.append(a)
 
+    # Bundle the OFL fonts LOCALLY into this scene project (assets/fonts/) and record
+    # (family, rel_path) for the @font-face blocks — no render-time font fetch.
+    font_faces = []
+    for fam in dict.fromkeys([heading_font, body_font]):  # dedupe, keep order
+        rel = _copy_font_local(scene_dir, fam)
+        if rel:
+            font_faces.append((fam, rel))
+
     highlight = palette.get("signature_highlight", SIGNATURE_HIGHLIGHT)
     shots = board_scene.get("shots") or []
     # Data for a native bar chart (C5): parse label/value pairs from the scene's
     # on-screen line (the curated, clean source) first; fall to shot prose only if it
     # yields nothing. Keeps a data-chart scene a real visual even when the generated
     # data-viz asset has no file.
-    chart_data = parse_chart_data(str(script_scene.get("on_screen_text") or ""))
+    ost = str(script_scene.get("on_screen_text") or "")
+    shot_text = " ".join(str(s.get("content", "")) for s in shots if isinstance(s, dict))
+    chart_data = parse_chart_data(ost)
     if not chart_data:
-        chart_data = parse_chart_data(
-            " ".join(str(s.get("content", "")) for s in shots if isinstance(s, dict)))
+        chart_data = parse_chart_data(shot_text)
+    # big-number: the single dominant stat (on-screen line first, then shot prose).
+    hero_stat = parse_hero_stat(ost) or parse_hero_stat(shot_text)
+    # timeline: chronological/process entries parsed from the same sources.
+    timeline_data = parse_timeline_data(ost) or parse_timeline_data(shot_text)
     return {
         "scene_no": n, "comp_id": f"scene-{n:02d}", "duration": duration,
         "fps": clamp_fps((style_guide or {}).get("fps", DEFAULT_FPS)),
@@ -1115,9 +1361,11 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
         "palette": {**palette, "font": heading_font, "body_font": body_font},
         "highlight": highlight,
         "captions": scene_captions(segments, n), "assets": resolved,
+        "font_faces": font_faces,
         "shots": shots, "brand_keys": scene_brand_keys(shots),
         "brand_specs": scene_brand_specs(shots),
         "chart_data": chart_data,
+        "hero_stat": hero_stat, "timeline_data": timeline_data,
     }
 
 
