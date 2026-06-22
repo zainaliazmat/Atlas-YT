@@ -21,6 +21,7 @@ from adapters.art_director import ArtDirectorAdapter
 from adapters.asset_sourcer import AssetSourcerAdapter
 from adapters.audio import AudioAdapter
 from adapters.composition_engineer import CompositionEngineerAdapter
+from adapters.reference_analyst import ReferenceAnalystAdapter
 from adapters.sage import SageAdapter
 from adapters.scout import ScoutAdapter
 from adapters.scriptwriter import ScriptwriterAdapter
@@ -109,9 +110,9 @@ REGISTRY: list[AgentEntry] = [
     ),
 
     # ------------------------------------------------------------------
-    # The five not-yet-built specialists — REGISTERED SLOTS with stub adapters.
-    # The full pipeline shape exists now; each real specialist drops into its slot
-    # later, one at a time, with NO orchestrator or pipeline changes.
+    # The five production specialists — all BUILT and dropped into their slots.
+    # Each real specialist replaced its stub one at a time, with NO orchestrator
+    # or pipeline changes (same tool names / params / output contracts).
     # ------------------------------------------------------------------
     # Marlow — the real Scriptwriter (the stub slot was filled). His engine drafts
     # script.json from the brief; ATLAS validates it against the frozen contract at
@@ -254,6 +255,38 @@ REGISTRY: list[AgentEntry] = [
                 params={"topic": str},
             ),
         ],
+    ),
+    # Vera — the Reference Analyst (a delegable job + persona, NOT a pipeline stage).
+    # She DEFINES the standard: her engine measures one or more reference VIDEOS
+    # (FFmpeg/OpenCV, offline + deterministic) into banded quality targets + a judged
+    # style profile, and merges them into a durable named "standard" — feeding more
+    # references tightens the bands toward their shared DNA. She never generates or
+    # improves a video, and she is not the Coach/self-improvement loop. ATLAS stamps
+    # schema_version + validates the rubric against the frozen reference_rubric contract
+    # at the adapter boundary; Vera never imports atlas. Purely additive — no pipeline
+    # STAGES / gate / contract / existing-agent edits, her tools just appear.
+    AgentEntry(
+        name="reference_analyst",
+        display="Vera",
+        emoji="🔬",
+        blurb="Measures reference videos into a rubric (banded targets + style profile); turns taste into numbers, flags what's out of reach.",
+        project_dir=str(_ROOT / "reference-analyst"),
+        adapter_cls=ReferenceAnalystAdapter,
+        role="Reference Analyst (standards)",
+        jobs=[JobSpec(
+            name="build_rubric",
+            tool="reference_analyst_build_rubric",
+            description=("Measure one or more REFERENCE videos into a rubric: banded "
+                         "objective targets (pacing, motion, color, audio, structure) "
+                         "plus a judged style profile, merged into a durable standard. "
+                         "Pass 'videos' (a local path or a list/comma-separated list of "
+                         "local paths) and an optional 'ceo_prefs' (JSON of taste "
+                         "answers). Returns a targets digest + the open questions only "
+                         "taste can answer. Feeding more references tightens the bands."),
+            params={"videos": str, "ceo_prefs": str},
+            # FFmpeg + OpenCV analysis of several videos, plus an optional vision pass.
+            timeout=900,
+        )],
     ),
 ]
 
