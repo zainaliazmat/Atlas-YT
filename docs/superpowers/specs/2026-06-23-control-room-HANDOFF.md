@@ -116,9 +116,18 @@ CSS tokens** (`--st-queued/running/blocked/failed/done/cancelled`). **Retired** 
    `--reload`. A stale process serves NEW static files from disk but OLD Python in memory → new
    endpoints 404. After any .py change: kill the process and relaunch. (This caused a "/api/belt 404"
    that was purely staleness.)
-2. **SSE breaks Playwright `networkidle`.** The open `/api/events` connection never lets the page go
-   network-idle. e2e `_open()` now uses `wait_until="load"` + an explicit `wait_for_selector`. Do the
-   same for any new navigation in tests; never use `networkidle`.
+2. **Playwright navigation: use `wait_until="domcontentloaded"` + an explicit `wait_for_selector`.**
+   Two traps, both solved by this one rule: (a) the open `/api/events` SSE connection never lets the
+   page go **`networkidle`**; (b) the index.html **Google Fonts `<link>`** is an external CDN that
+   intermittently stalls in the sandbox — `wait_until="load"` waits for it and `page.goto` then times
+   out at 30s (this cascaded into ~8 false failures across a full run). `domcontentloaded` fires once
+   the HTML is parsed and `app.js` has executed (scripts block parsing), without waiting on fonts or
+   SSE. Every e2e nav now uses it; never use `load` or `networkidle`. Also: the console guard
+   (`conftest._ConsoleGuard`) ignores network resource-load errors (`failed to load resource` /
+   `net::err*`) so a flaky CDN doesn't fail a test — it still catches real JS exceptions + app
+   console.error. **The full e2e suite is heavy (~33 browser tests, multiple live uvicorn servers); run
+   it in two batches if the sandbox is contended, or expect occasional resource-pressure flakes —
+   every test passes isolated/in-subset.**
 3. **e2e must not run the real engine.** Triggering on the shared `live_server` would run Sage's real
    LLM. Use the `belt_server` fixture (fast fake `produce` honoring the lock/cancel hooks) for any
    test that triggers/cancels. `ANTHROPIC_API_KEY` is never set in tests.
@@ -172,8 +181,20 @@ CSS tokens** (`--st-queued/running/blocked/failed/done/cancelled`). **Retired** 
   `dashboard/tests/e2e/test_settings_e2e.py` (4); the 3 server fixtures now set an isolated
   `settings_path`. **SHELLED:** channel OAuth connect/reconnect (lands with #6 Herald); niche→Scout
   auto-pick (lands with #1.5).
-- **Slice 1.5:** Niche intake — select niche → Scout `find_topics` → configurable auto-pick / you-pick
-  candidate cards → enters the belt. Completes the launch modal's second path.
+- **Slice 1.5 — DONE (shipped, verified).** Niche intake in the launch modal. **Backend:**
+  `atlas/dashboard/intake.py` — `normalize_candidates()` (Scout's ranked ideas → `{idx,title,
+  confidence,why}` cards) + `default_find_topics()` (builds Scout's adapter from the registry and runs
+  `find_topics` — the real LLM+YouTube seam). `POST /api/intake/topics {niche}` validates the niche
+  (`validate.validate_niche`), runs the finder via `asyncio.to_thread` off an **injectable
+  `app.state.find_topics_fn`** (tests inject a fake — never the real engine), and returns
+  `{ok, candidates, intake_mode, auto_pick}`; a no-topics/raising Scout degrades to `{ok:false,error}`
+  (never a 500). `intake_mode` (`pick`|`auto`) added to settings defaults (+ surfaced in
+  `public_settings`). **Frontend:** the launch modal's niche pick now reveals an intake panel —
+  You-pick/Auto-pick toggle (default from settings) + "🔎 Find topics with Scout" → candidate cards
+  (title + color-coded confidence + why); picking one fills the topic field (auto-pick takes the top
+  one); Generate triggers it onto the belt. Added a `postJSON` helper. Tests:
+  `dashboard/tests/test_intake_api.py` (7) + `dashboard/tests/e2e/test_intake_e2e.py` (2); `belt_server`
+  now injects a canned `find_topics_fn`. The launch modal's niche path is no longer shelled.
 - **Slice 5 (#3 + gates):** agentic chat panel (bottom-right launcher, T1-only tools, NEVER satisfies
   T2/T3) + T2 gate review side-panel (the approve CLICK lives here; wire `dispatcher.resume()`) + T3
   publish-confirm modal shell (structured exact-package review; hard, no stray-escape).

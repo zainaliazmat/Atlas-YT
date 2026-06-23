@@ -22,7 +22,7 @@ from dashboard.tests.e2e.conftest import assert_no_console_errors
 def _open(page, base_url):
     # NOTE: not "networkidle" — the live SSE (/api/events) holds a connection open, so the
     # page never goes network-idle. Wait for `load` + the overview's first rendered data.
-    page.goto(base_url + "/", wait_until="load")
+    page.goto(base_url + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-kpis .kpi")
 
 

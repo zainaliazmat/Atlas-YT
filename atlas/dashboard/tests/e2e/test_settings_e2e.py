@@ -10,7 +10,7 @@ from dashboard.tests.e2e.conftest import assert_no_console_errors
 
 
 def _open_settings(page, base):
-    page.goto(base + "/", wait_until="load")
+    page.goto(base + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     page.click('.rail .ic[data-rail="settings"]')
     page.wait_for_selector("#v-settings.active")
@@ -43,7 +43,7 @@ def test_add_niche_save_and_persist(page, belt_server, guard_console):
     # (evaluate returns a promise → Playwright awaits it)
     assert any(n["name"] == "noise-cancelling tech" and n["default_length"] == "long"
                for n in saved["niches"])
-    page.reload(wait_until="load")
+    page.reload(wait_until="domcontentloaded")
     page.click('.rail .ic[data-rail="settings"]')
     page.wait_for_selector('#v-settings .srow.niche .f-name')
     assert page.locator("#v-settings .srow.niche .f-name").first.input_value() == "noise-cancelling tech"
@@ -64,7 +64,7 @@ def test_add_channel_shows_state_and_verification_flags(page, belt_server, guard
 def test_launch_modal_niche_pills_from_settings(page, belt_server, guard_console):
     base = belt_server["base_url"]
     # seed a niche via the API, then open the launch modal — the pill should appear
-    page.goto(base + "/", wait_until="load")
+    page.goto(base + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     page.evaluate("""() => fetch('/api/settings', {method:'PUT',
         headers:{'Content-Type':'application/json'},

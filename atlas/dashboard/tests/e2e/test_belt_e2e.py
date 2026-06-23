@@ -11,7 +11,7 @@ from dashboard.tests.e2e.conftest import assert_no_console_errors
 
 # ---------------------------------------------------------------- belt render
 def test_belt_renders_stations_and_rows(page, base_url, guard_console):
-    page.goto(base_url + "/", wait_until="load")
+    page.goto(base_url + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     page.wait_for_selector("#ov-belt .stations .station")
     assert page.locator("#ov-belt .stations .station").count() == 10   # the 10-station strip
@@ -20,7 +20,7 @@ def test_belt_renders_stations_and_rows(page, base_url, guard_console):
 
 
 def test_needs_you_tray_lists_blocked(page, base_url, guard_console):
-    page.goto(base_url + "/", wait_until="load")
+    page.goto(base_url + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     page.wait_for_selector("#ov-needs")
     # the fixtures include blocked projects (hard-block + final-render) → tray items
@@ -29,7 +29,7 @@ def test_needs_you_tray_lists_blocked(page, base_url, guard_console):
 
 
 def test_spine_row_opens_pipeline(page, base_url, guard_console):
-    page.goto(base_url + "/", wait_until="load")
+    page.goto(base_url + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     page.wait_for_selector("#ov-belt .spine-row")
     slug = page.locator("#ov-belt .spine-row").first.get_attribute("data-slug")
@@ -41,7 +41,7 @@ def test_spine_row_opens_pipeline(page, base_url, guard_console):
 
 # ---------------------------------------------------------------- launch modal craft
 def test_launch_modal_opens_validates_and_escapes(page, base_url, guard_console):
-    page.goto(base_url + "/", wait_until="load")
+    page.goto(base_url + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     page.click("#ov-generate")
     page.wait_for_selector("#dialog-root .dlg #lm-topic")
@@ -57,7 +57,7 @@ def test_launch_modal_opens_validates_and_escapes(page, base_url, guard_console)
 
 # ---------------------------------------------------------------- trigger flow (fake spine)
 def test_trigger_puts_card_on_belt_and_completes(page, belt_server, guard_console):
-    page.goto(belt_server["base_url"] + "/", wait_until="load")
+    page.goto(belt_server["base_url"] + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     page.click("#ov-generate")
     page.fill("#dialog-root #lm-topic", "noise cancelling headphones")
@@ -71,7 +71,7 @@ def test_trigger_puts_card_on_belt_and_completes(page, belt_server, guard_consol
 
 
 def test_many_in_flight(page, belt_server, guard_console):
-    page.goto(belt_server["base_url"] + "/", wait_until="load")
+    page.goto(belt_server["base_url"] + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     for i in range(3):
         page.evaluate(
@@ -86,7 +86,7 @@ def test_many_in_flight(page, belt_server, guard_console):
 
 
 def test_cancel_running_video_from_belt(page, belt_server, guard_console):
-    page.goto(belt_server["base_url"] + "/", wait_until="load")
+    page.goto(belt_server["base_url"] + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     page.click("#ov-generate")
     page.fill("#dialog-root #lm-topic", "cancel this one")

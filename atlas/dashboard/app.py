@@ -18,7 +18,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from dashboard import data, media, security, settings_store
+from dashboard import data, intake, media, security, settings_store
 
 HERE = pathlib.Path(__file__).resolve().parent
 STATIC = HERE / "static"
@@ -38,6 +38,7 @@ def create_app(projects_dir: pathlib.Path | str | None = None) -> FastAPI:
     # the AtlasSession used for the sanctioned gate write; built lazily (heavy import)
     app.state.session = None
     app.state.produce_fn = None  # tests inject a fake pipeline.produce here
+    app.state.find_topics_fn = None  # tests inject a fake Scout find_topics here (#1.5)
     # the assembly-line dispatcher (the belt); built lazily, injectable for tests
     app.state.dispatcher = None
     app.state.max_in_flight = 2  # spec §6.6 honest target: ~2–3 videos in flight
@@ -222,6 +223,31 @@ def create_app(projects_dir: pathlib.Path | str | None = None) -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache",
                      "X-Accel-Buffering": "no", "Connection": "keep-alive"})
+
+    # ---------------- niche intake: niche → Scout find_topics → candidates (#1.5) -----
+    @app.post("/api/intake/topics")
+    async def intake_topics(request: Request):
+        import asyncio
+        body = await _json_body(request)
+        niche = (body.get("niche") or "").strip()
+        import validate
+        ok, reason = validate.validate_niche(niche)
+        if not ok:
+            return JSONResponse({"error": reason}, status_code=400)
+        fn = app.state.find_topics_fn or intake.default_find_topics
+        try:
+            res = await asyncio.to_thread(fn, niche)
+        except Exception as exc:  # noqa: BLE001 — Scout failure degrades, never 500s
+            res = {"ok": False, "text": str(exc)}
+        res = res or {}
+        if not res.get("ok"):
+            return J({"ok": False, "niche": niche, "candidates": [],
+                      "error": res.get("text") or "Scout found no topics for that niche."})
+        settings = settings_store.load_settings(app.state.settings_path)
+        mode = (settings.get("defaults", {}) or {}).get("intake_mode", "pick")
+        return J({"ok": True, "niche": niche,
+                  "candidates": intake.normalize_candidates(res.get("ideas")),
+                  "intake_mode": mode, "auto_pick": mode == "auto"})
 
     # ---------------- settings: niches / defaults / channels (T1 reversible) ----------
     @app.get("/api/settings")

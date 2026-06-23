@@ -29,6 +29,17 @@
     return r.json();
   }
 
+  async function postJSON(path, body) {
+    const r = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    const data = await r.json().catch(function () { return {}; });
+    if (!r.ok) throw new Error(data.error || ("HTTP " + r.status + " for " + path));
+    return data;
+  }
+
   // module-level "current" deep-nav state (carries slug/name across views)
   var current = { slug: null, agent: null, gate: null };
 
@@ -1197,10 +1208,11 @@
         '" data-len="' + esc(n.default_length || "short") + '">' + esc(n.name) +
         '<span class="ch">' + esc(n.default_length || "short") + "</span></button>";
     }).join("");
+    var intakeMode = ((settings.defaults || {}).intake_mode) || "pick";
     var nicheField = pills
       ? '<div class="field"><label>Niche (optional)</label><div class="pills" id="lm-niches">' + pills + "</div>" +
-        '<div class="dlg-note">Tag this run with a niche to pre-fill its default length. ' +
-        "Niche → Scout auto-picks a topic arrives with the intake step.</div></div>"
+        '<div class="dlg-note">Pick a niche to pre-fill its default length, or let Scout find a topic for it.</div>' +
+        '<div id="lm-intake" class="intake"></div></div>'
       : "";
     var body =
       nicheField +
@@ -1235,8 +1247,62 @@
         nichesWrap.querySelectorAll(".pill-opt").forEach(function (x) { x.classList.remove("on"); });
         if (was) { niche = null; }                 // click again to clear
         else { p.classList.add("on"); niche = p.dataset.niche; setLength(p.dataset.len || length); }
+        renderIntake();
       };
     });
+
+    // --- niche intake (#1.5): niche → Scout find_topics → candidate cards ---
+    function renderIntake() {
+      var wrap = box.querySelector("#lm-intake");
+      if (!wrap) return;
+      if (!niche) { wrap.innerHTML = ""; return; }
+      wrap.innerHTML =
+        '<div class="intake-head"><span>Find a topic for <b>' + esc(niche) + "</b></span>" +
+        '<div class="seg-toggle sm" id="lm-mode">' +
+        '<button type="button" data-v="pick" class="' + (intakeMode !== "auto" ? "on" : "") + '">You pick</button>' +
+        '<button type="button" data-v="auto" class="' + (intakeMode === "auto" ? "on" : "") + '">Auto-pick</button></div></div>' +
+        '<button class="btn sm intake-find" type="button" id="lm-find">🔎 Find topics with Scout</button>' +
+        '<div id="lm-cands"></div>';
+      var modeWrap = wrap.querySelector("#lm-mode");
+      modeWrap.querySelectorAll("button").forEach(function (b) {
+        b.onclick = function () {
+          modeWrap.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
+          b.classList.add("on"); intakeMode = b.dataset.v;
+        };
+      });
+      wrap.querySelector("#lm-find").onclick = findTopics;
+    }
+
+    async function findTopics() {
+      var cands = box.querySelector("#lm-cands"), btn = box.querySelector("#lm-find");
+      if (!niche) return;
+      cands.innerHTML = '<div class="state-msg">🔎 Scout is scanning "' + esc(niche) + '" — this can take a moment…</div>';
+      if (btn) btn.disabled = true;
+      var d;
+      try { d = await postJSON("/api/intake/topics", { niche: niche }); }
+      catch (e) { cands.innerHTML = '<div class="state-msg err">Couldn\'t reach Scout. ' + esc(e.message) + "</div>"; if (btn) btn.disabled = false; return; }
+      if (btn) btn.disabled = false;
+      if (!d.ok || !(d.candidates || []).length) {
+        cands.innerHTML = '<div class="state-msg">' + esc(d.error || "Scout found no topics for that niche. Try a broader niche, or type a topic above.") + "</div>";
+        return;
+      }
+      cands.innerHTML = d.candidates.map(function (c) {
+        return '<button type="button" class="cand" data-title="' + esc(c.title) + '">' +
+          '<span class="ct">' + esc(c.title) + "</span>" +
+          '<span class="cm"><span class="conf c-' + esc(String(c.confidence).toLowerCase()) + '">' + esc(c.confidence) + "</span>" +
+          (c.why ? '<span class="why">' + esc(c.why) + "</span>" : "") + "</span></button>";
+      }).join("");
+      var cardEls = cands.querySelectorAll(".cand");
+      cardEls.forEach(function (el) {
+        el.onclick = function () {
+          cardEls.forEach(function (x) { x.classList.remove("on"); });
+          el.classList.add("on");
+          var t = box.querySelector("#lm-topic"); if (t) t.value = el.dataset.title;
+        };
+      });
+      // auto-pick: take the strongest candidate immediately (configurable, spec #1.5)
+      if (intakeMode === "auto" && cardEls[0]) cardEls[0].click();
+    }
     var sw = box.querySelector("#lm-gates");
     sw.onclick = function () {
       gatesOn = !gatesOn; sw.classList.toggle("on", gatesOn);

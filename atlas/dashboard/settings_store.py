@@ -26,6 +26,9 @@ import chat_state
 # idle, the 100-token/client cap, and — while unverified — a 7-day "Testing" expiry.
 CONNECTION_STATES = ("disconnected", "connected", "needs-reconnect", "expired", "revoked")
 LENGTH_OPTIONS = ("short", "long")
+# Niche intake (#1.5): 'pick' = show Scout's candidates and let the CEO choose; 'auto' =
+# take the top-ranked candidate automatically. Configurable, defaults to the safe 'pick'.
+INTAKE_MODES = ("pick", "auto")
 
 # YouTube Data API ceiling (spec §9, researched 2026-06-23): videos.insert costs 1600 units
 # against a default 10,000/day PER CLOUD PROJECT — a hard, PROJECT-WIDE ~6 uploads/day SHARED
@@ -45,7 +48,8 @@ QUOTA = {
 DEFAULT_SETTINGS = {
     "schema_version": "1.0",
     "niches": [],       # [{name, default_length, channel_id, default_angle, voice, style_preset}]
-    "defaults": {"target_length": "short", "voice": "", "style_preset": ""},
+    "defaults": {"target_length": "short", "voice": "", "style_preset": "",
+                 "intake_mode": "pick"},
     "channels": [],     # [{channel_id, title, niche_id, connection_status, project_verified,
                         #   channel_phone_verified, scopes}]
 }
@@ -132,10 +136,12 @@ def validate_settings(obj) -> tuple[bool, list[str], dict]:
     defaults = obj.get("defaults")
     if isinstance(defaults, dict):
         tl = defaults.get("target_length")
+        im = defaults.get("intake_mode")
         out["defaults"] = {
             "target_length": tl if tl in LENGTH_OPTIONS else "short",
             "voice": str(defaults.get("voice", "") or "")[:64],
             "style_preset": str(defaults.get("style_preset", "") or "")[:64],
+            "intake_mode": im if im in INTAKE_MODES else "pick",
         }
     return (not errors), errors, out
 
@@ -155,6 +161,7 @@ def public_settings(path) -> dict:
     s["quota"] = copy.deepcopy(QUOTA)
     s["connection_states"] = list(CONNECTION_STATES)
     s["length_options"] = list(LENGTH_OPTIONS)
+    s["intake_modes"] = list(INTAKE_MODES)
     return s
 
 

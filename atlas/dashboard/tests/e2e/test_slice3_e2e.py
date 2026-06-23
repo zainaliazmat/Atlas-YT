@@ -13,7 +13,7 @@ from dashboard.tests.e2e.conftest import assert_no_console_errors
 
 def _open_pipeline(page, base_url, slug):
     """Open a project's Video Detail page via the Projects list (deterministic nav)."""
-    page.goto(base_url + "/", wait_until="load")
+    page.goto(base_url + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     page.click('.rail .ic[data-rail="projects"]')
     page.wait_for_selector('#pr-list .row[data-slug="' + slug + '"]')
@@ -59,7 +59,7 @@ def test_stage_inspector_shows_invalid_contract_stamp(page, base_url, e2e_slugs,
 
 def test_inspector_failure_surface_and_retry(page, belt_fail_server, guard_console):
     base = belt_fail_server["base_url"]
-    page.goto(base + "/", wait_until="load")
+    page.goto(base + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     page.click("#ov-generate")
     page.fill("#dialog-root #lm-topic", "transient hiccup")
@@ -98,7 +98,7 @@ def test_inspector_healthy_stage_is_read_only(page, base_url, e2e_slugs, guard_c
 
 # ---------------------------------------------------------------- Fleet "now on"
 def test_fleet_shows_current_video_for_running_agent(page, base_url, guard_console):
-    page.goto(base_url + "/", wait_until="load")
+    page.goto(base_url + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     page.click('.rail .ic[data-rail="fleet"]')
     page.wait_for_selector("#fl-grid .ac")
@@ -112,7 +112,7 @@ def test_fleet_shows_current_video_for_running_agent(page, base_url, guard_conso
 # ---------------------------------------------------------------- Live Activity feed
 def test_activity_feed_lists_events_with_initiator_plane(page, belt_server, guard_console):
     base = belt_server["base_url"]
-    page.goto(base + "/", wait_until="load")
+    page.goto(base + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
     # trigger a production so the event ring has rows
     page.click("#ov-generate")
