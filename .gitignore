@@ -32,3 +32,6 @@ atlas/projects/_eval_holdout_tmp/
 # coach soft-tier addenda (written to the owning specialist on accept) + coach test caches
 **/COACH_ADDENDUM.md
 */.pytest_cache/
+
+# Control Room runtime settings (dashboard-owned, not source)
+atlas/dashboard/control_room_settings.json

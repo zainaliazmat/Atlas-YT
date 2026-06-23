@@ -25,6 +25,7 @@ producer, so swapping a specialist later = replacing ONE producer; nothing else 
 """
 from __future__ import annotations
 
+import contextlib
 import pathlib
 import time
 import uuid
@@ -185,11 +186,112 @@ def _resolve_blocked_slug(root: pathlib.Path, approve: set) -> tuple:
 # ----------------------------------------------------------------------
 # The runner
 # ----------------------------------------------------------------------
+@contextlib.contextmanager
+def _station(station_locks: dict | None, key: str):
+    """Hold a stage's single-occupancy 'station' lock while its producer runs.
+
+    `station_locks` maps stage.key -> a lock (e.g. threading.Semaphore(1)); the assembly-
+    line dispatcher passes it so only ONE video occupies a stage at a time (station=stage,
+    spec §6.1/6.3). When None (CLI / tests / the orchestrator) this is a no-op and the
+    spine behaves EXACTLY as before — the hook is opt-in."""
+    lock = station_locks.get(key) if station_locks else None
+    if lock is not None:
+        lock.acquire()
+    try:
+        yield
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+def _run_stage(stage: "Stage", st: dict, project: dict, pdir: pathlib.Path, topic: str,
+               progress: Progress, who: str, emoji: str) -> dict | None:
+    """Run one stage's producer + contract validation + auto-gate, mutating `project` in
+    place. Returns a failed result dict to short-circuit produce(), or None on success.
+
+    The failed dict carries `failure_kind`: 'transient' (a producer raised — often a
+    network/runtime hiccup, so the dispatcher MAY retry) vs 'deterministic' (a contract or
+    auto-gate failure — re-running yields the same result, so the dispatcher must NOT
+    retry; spec §6.4). The caller holds the station lock around this call."""
+    st["status"] = "running"
+    _save(project, pdir)
+    progress.emit(f"{emoji} {who} is {stage.label}…")
+    try:
+        art = stage.producer(pdir, topic)
+    except Exception as exc:  # noqa: BLE001 — a stage failure halts cleanly
+        st["status"] = "failed"
+        st["note"] = str(exc)
+        project["status"] = "failed"
+        _save(project, pdir)
+        progress.fail(who, str(exc))
+        return _result(project, pdir, status="failed", stage=stage.key,
+                       errors=[str(exc)], failure_kind="transient")
+
+    # validate against the frozen contract
+    if stage.contract is not None:
+        ok, errors = contracts.validate(stage.contract, art.data)
+        if not ok:
+            st["status"] = "failed"
+            st["validated"] = False
+            st["note"] = "; ".join(errors)
+            project["status"] = "failed"
+            _save(project, pdir)
+            progress.fail(who, f"{stage.contract} failed validation")
+            return _result(project, pdir, status="failed", stage=stage.key,
+                           errors=errors, failure_kind="deterministic")
+        st["validated"] = True
+
+    # composition auto-gate (lint + validate + inspect per scene)
+    if stage.autogate and "auto-gate PASS" not in art.summary:
+        st["status"] = "blocked"
+        st["note"] = art.summary
+        project["status"] = "failed"
+        _save(project, pdir)
+        progress.fail(who, "composition auto-gate failed")
+        return _result(project, pdir, status="failed", stage=stage.key,
+                       errors=[art.summary], failure_kind="deterministic")
+
+    st["status"] = "done"
+    st["artifact"] = art.rel_path
+    st["updated"] = time.time()
+    project["artifacts"][stage.key] = art.rel_path
+    progress.done(who, art.summary)
+    _save(project, pdir)
+    return None
+
+
+def create_project(brief: str | None = None, *, topic: str | None = None,
+                   gates: dict | None = None, unattended: bool = False,
+                   root: pathlib.Path | None = None) -> dict:
+    """Mint a new project on disk in the 'queued' state and return its summary
+    {slug, project_dir}. The assembly-line dispatcher calls this to get a slug + a belt
+    card IMMEDIATELY, then runs the project with produce(slug=...). Splitting create from
+    run is what lets the UI show the queued card before any stage runs. (produce(brief=)
+    still creates-and-runs in one call for the CLI/orchestrator — unchanged.)"""
+    root = pathlib.Path(root) if root else PROJECTS_DIR
+    b = (brief or topic or "").strip()
+    the_topic = (topic or b).strip()
+    cfg_gates = dict(DEFAULT_GATES)
+    if gates:
+        cfg_gates.update(gates)
+    if unattended:
+        cfg_gates = {k: False for k in cfg_gates}
+    slug = f"{_slug(the_topic)}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
+    pdir = root / slug
+    pdir.mkdir(parents=True, exist_ok=True)
+    project = _new_project(b, the_topic, slug, cfg_gates)
+    project["status"] = "queued"  # explicit belt state: minted, not yet on a station
+    _save(project, pdir)
+    return {"slug": slug, "project_dir": str(pdir)}
+
+
 def produce(brief: str | None = None, *, slug: str | None = None,
             approve: list[str] | None = None, gates: dict | None = None,
             unattended: bool = False, topic: str | None = None,
             root: pathlib.Path | None = None,
-            progress: Progress | None = None) -> dict:
+            progress: Progress | None = None,
+            station_locks: dict | None = None,
+            should_cancel: Callable[[], bool] | None = None) -> dict:
     """Run (or resume) the production pipeline for one video.
 
     NEW run: pass `brief`. RESUME: pass `slug` (and `approve=[gate]` to clear a gate).
@@ -265,6 +367,16 @@ def produce(brief: str | None = None, *, slug: str | None = None,
     # Gates are checked as CHECKPOINTS that read project.json / artifacts on disk, so
     # they fire correctly on a resume too (a stage already 'done' still hits its gate).
     for stage in STAGES:
+        # cooperative cancel: checked between stations so a cancelled video stops cleanly
+        # (it holds no lock here) and is removable from the belt (spec §6.5 / E6). No-op
+        # when should_cancel is None (CLI / orchestrator / tests).
+        if should_cancel is not None and should_cancel():
+            project["status"] = "cancelled"
+            _log(project, stage.key, "cancelled by operator")
+            _save(project, pdir)
+            progress.emit("✖ Cancelled by operator.")
+            return _result(project, pdir, status="cancelled", stage=stage.key)
+
         st = project["stages"][stage.key]
 
         # --- human gate BEFORE the final render (checkpoint) ----------------
@@ -279,50 +391,13 @@ def produce(brief: str | None = None, *, slug: str | None = None,
         who = entry.display if entry else stage.role
 
         if st.get("status") != "done":
-            st["status"] = "running"
-            _save(project, pdir)
-            progress.emit(f"{emoji} {who} is {stage.label}…")
-            try:
-                art = stage.producer(pdir, topic)
-            except Exception as exc:  # noqa: BLE001 — a stage failure halts cleanly
-                st["status"] = "failed"
-                st["note"] = str(exc)
-                project["status"] = "failed"
-                _save(project, pdir)
-                progress.fail(who, str(exc))
-                return _result(project, pdir, status="failed", stage=stage.key,
-                               errors=[str(exc)])
-
-            # validate against the frozen contract
-            if stage.contract is not None:
-                ok, errors = contracts.validate(stage.contract, art.data)
-                if not ok:
-                    st["status"] = "failed"
-                    st["validated"] = False
-                    st["note"] = "; ".join(errors)
-                    project["status"] = "failed"
-                    _save(project, pdir)
-                    progress.fail(who, f"{stage.contract} failed validation")
-                    return _result(project, pdir, status="failed", stage=stage.key,
-                                   errors=errors)
-                st["validated"] = True
-
-            # composition auto-gate (lint + validate + inspect per scene)
-            if stage.autogate and "auto-gate PASS" not in art.summary:
-                st["status"] = "blocked"
-                st["note"] = art.summary
-                project["status"] = "failed"
-                _save(project, pdir)
-                progress.fail(who, "composition auto-gate failed")
-                return _result(project, pdir, status="failed", stage=stage.key,
-                               errors=[art.summary])
-
-            st["status"] = "done"
-            st["artifact"] = art.rel_path
-            st["updated"] = time.time()
-            project["artifacts"][stage.key] = art.rel_path
-            progress.done(who, art.summary)
-            _save(project, pdir)
+            # Single-occupancy station lock held ONLY while the stage runs; a video that
+            # parks at a gate / fails / is cancelled releases it on return → frees the
+            # station for the next video (spec §6.1/6.3). No-op when station_locks is None.
+            with _station(station_locks, stage.key):
+                failed = _run_stage(stage, st, project, pdir, topic, progress, who, emoji)
+            if failed is not None:
+                return failed
 
         # --- human gate AFTER fact-check (checkpoint) -----------------------
         if stage.key == "factcheck":

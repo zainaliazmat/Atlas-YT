@@ -70,6 +70,24 @@ def _gate_keys() -> tuple[str, str]:
     return pipeline.GATE_FACTCHECK, pipeline.GATE_FINAL_RENDER
 
 
+# The upstream artifacts each stage's producer READS (domain truth, PROJECT_CONTEXT §6
+# Reads→Writes). Used by the Stage Inspector to show "inputs read" honestly — every path
+# is existence-checked at read time, never assumed.
+STAGE_INPUTS: dict[str, list[str]] = {
+    "research": [],
+    "script": ["research_brief.json"],
+    "factcheck": ["script.json", "research_brief.json"],
+    "style": ["script.json"],
+    "storyboard": ["script.json", "style_guide.json"],
+    "assets": ["storyboard.json", "style_guide.json"],
+    "narration": ["script.json"],
+    "compose": ["storyboard.json", "style_guide.json", "asset_manifest.json",
+                "narration.transcript.json"],
+    "audiomix": ["narration.transcript.json", "audio/audio_manifest.json"],
+    "render": ["composition_manifest.json", "audio/master.wav"],
+}
+
+
 # ----------------------------------------------------------------------
 # Small tolerant loaders
 # ----------------------------------------------------------------------
@@ -225,6 +243,66 @@ def _is_hard_block(pdir: pathlib.Path) -> bool:
 
 
 # ----------------------------------------------------------------------
+# The live belt (assembly line) — rebuilt from disk every call (spec §6.2)
+# ----------------------------------------------------------------------
+def _belt_state(proj: dict) -> str:
+    """Normalise project.json `status` to the ONE belt vocabulary (spec §6.1/§5):
+    queued | running | blocked | failed | cancelled | done."""
+    s = proj.get("status") or "queued"
+    if s.startswith("blocked_at_"):
+        return "blocked"
+    if s == "created":
+        return "queued"
+    if s in ("queued", "running", "failed", "cancelled", "done"):
+        return s
+    return s
+
+
+def _current_station(proj: dict, metas: list[dict]) -> str | None:
+    """The station this video occupies / is about to enter: the running stage if any,
+    else the first not-yet-done stage, else the last (all done)."""
+    stages = proj.get("stages", {}) or {}
+    for m in metas:
+        if (stages.get(m["key"], {}) or {}).get("status") == "running":
+            return m["key"]
+    for m in metas:
+        if (stages.get(m["key"], {}) or {}).get("status", "pending") != "done":
+            return m["key"]
+    return metas[-1]["key"] if metas else None
+
+
+def belt(projects_dir: pathlib.Path) -> dict:
+    """The live assembly line: every video, its belt-state, its current station, and a
+    compact per-stage status map (for the spine row), plus the 10 stations (for the
+    occupancy strip) and which station each running video holds. All from disk."""
+    metas = _stage_meta()
+    stations = [{"key": m["key"], "label": m["key"], "group": m["group"],
+                 "autogate": m["autogate"], "agent": _entry_brief(m["role"])}
+                for m in metas]
+    videos = []
+    for d, proj in iter_projects(projects_dir):
+        summ = _project_summary(d, proj)
+        pstages = proj.get("stages", {}) or {}
+        videos.append({
+            "slug": summ["slug"], "label": summ["label"], "topic": summ["topic"],
+            "belt_state": _belt_state(proj), "status": summ["status"],
+            "gate": summ["gate"], "station": _current_station(proj, metas),
+            "stages": {m["key"]: (pstages.get(m["key"], {}) or {}).get("status", "pending")
+                       for m in metas},
+            "updated": summ["updated"], "updated_rel": summ["updated_rel"],
+            "hard_block": _is_hard_block(d) if summ["status"] == "blocked_at_factcheck"
+            else False,
+        })
+    videos.sort(key=lambda v: v["updated"], reverse=True)
+    occupancy = {v["station"]: {"slug": v["slug"], "label": v["label"]}
+                 for v in videos if v["belt_state"] == "running" and v["station"]}
+    counts = {st: sum(1 for v in videos if v["belt_state"] == st) for st in
+              ("queued", "running", "blocked", "failed", "cancelled", "done")}
+    return {"stations": stations, "videos": videos, "occupancy": occupancy,
+            "counts": counts}
+
+
+# ----------------------------------------------------------------------
 # Pipeline detail (one project)
 # ----------------------------------------------------------------------
 def project_detail(projects_dir: pathlib.Path, slug: str) -> dict | None:
@@ -361,6 +439,87 @@ def _artifact_files(pdir: pathlib.Path) -> list[dict]:
     return out
 
 
+# ----------------------------------------------------------------------
+# Stage / Agent Inspector (depth 2) — one stage of one project, in full
+# ----------------------------------------------------------------------
+def _classify_failure(st: dict, contract: str | None) -> dict | None:
+    """{kind, reason} for a failed/blocked stage, or None. Mirrors the spine's own split
+    (pipeline._run_stage): a contract-validation or composition auto-gate failure is
+    DETERMINISTIC (re-running repeats it → the UI must NOT offer RETRY); a producer that
+    raised is TRANSIENT (a hiccup → RETRY is honest). Spec §6.4."""
+    status = (st or {}).get("status")
+    if status not in ("failed", "blocked"):
+        return None
+    note = (st or {}).get("note") or ""
+    low = note.lower()
+    validated = bool((st or {}).get("validated"))
+    deterministic = (
+        status == "blocked"                                  # composition auto-gate block
+        or (contract is not None and not validated and any(
+            kw in low for kw in ("valid", "required", "contract", "auto-gate",
+                                 "schema", "property")))
+    )
+    return {"kind": "deterministic" if deterministic else "transient",
+            "reason": note or "stage failed"}
+
+
+def stage_detail(projects_dir: pathlib.Path, slug: str, key: str) -> dict | None:
+    """One stage of one project, in full: the owning agent + its effective brain, the
+    upstream artifacts it reads, its output artifact with a field-level contract verdict,
+    and — when parked — the transient/deterministic failure with the honest action set
+    (RETRY only for transient; CANCEL while in-flight/parked). All read-only, all tolerant."""
+    pdir = projects_dir / slug
+    proj = read_json(pdir / "project.json", None)
+    if not isinstance(proj, dict):
+        return None
+    sm = next((m for m in _stage_meta() if m["key"] == key), None)
+    if sm is None:
+        return None
+    st = (proj.get("stages", {}) or {}).get(key, {}) or {}
+    ent = _entry_brief(sm["role"])
+    prov = provider_for(sm["role"])
+    label = proj.get("title") or proj.get("topic") or proj.get("slug") or slug
+    belt_state = _belt_state(proj)
+
+    inputs = [{"name": rel, "exists": (pdir / rel).is_file()}
+              for rel in STAGE_INPUTS.get(key, [])]
+
+    output = None
+    artifact = st.get("artifact")
+    if artifact:
+        present = (pdir / artifact).is_file()
+        out = {"artifact": artifact, "exists": present, "contract": sm["contract"],
+               "valid": None, "errors": []}
+        if sm["contract"] and present:
+            obj = read_json(pdir / artifact, None)
+            if obj is None:
+                out["valid"], out["errors"] = False, ["present but not parseable JSON"]
+            else:
+                ok, errors = contracts.validate(sm["contract"], obj)
+                out["valid"] = ok
+                out["errors"] = errors[:6] if not ok else []
+        output = out
+
+    failure = _classify_failure(st, sm["contract"])
+    can_retry = bool(failure and failure["kind"] == "transient")
+    can_cancel = belt_state in ("running", "queued", "blocked", "failed")
+
+    return {
+        "slug": proj.get("slug") or slug, "label": label, "key": key,
+        "stage_label": sm["label"], "group": sm["group"], "autogate": sm["autogate"],
+        "agent": ent,
+        "provider": {"provider": prov["provider"], "model": prov["model"],
+                     "switch": prov["switch"]},
+        "status": st.get("status", "pending"), "validated": bool(st.get("validated")),
+        "updated_rel": _rel_time(st.get("updated")),
+        "contract": sm["contract"], "inputs": inputs, "output": output,
+        "failure": failure, "note": st.get("note"),
+        "detail": _stage_detail_line(pdir, key, st),
+        "belt_state": belt_state,
+        "actions": {"can_retry": can_retry, "can_cancel": can_cancel},
+    }
+
+
 # ======================================================================
 # Fleet + agent detail (generalized to ALL registry entries)
 # ======================================================================
@@ -390,18 +549,22 @@ def _agent_jobs_across_projects(projects_dir: pathlib.Path) -> dict[str, list[di
     return jobs
 
 
-def _live_stage_roles(projects_dir: pathlib.Path) -> dict[str, str]:
-    """role -> live status: 'running' if an in-flight project is on that agent's stage."""
+def _live_stage_roles(projects_dir: pathlib.Path) -> dict[str, dict]:
+    """role -> {slug, label, stage}: who is on what RIGHT NOW. An agent appears iff an
+    in-flight (`running`) project has that agent's stage `running` — so the fleet can name
+    the exact video + station, not just "busy"."""
     role_of = _stage_role()
-    live: dict[str, str] = {}
-    for _, proj in iter_projects(projects_dir):
+    live: dict[str, dict] = {}
+    for d, proj in iter_projects(projects_dir):
         if proj.get("status") != "running":
             continue
+        label = proj.get("title") or proj.get("topic") or proj.get("slug") or d.name
         for key, st in (proj.get("stages", {}) or {}).items():
-            if st.get("status") == "running":
+            if (st or {}).get("status") == "running":
                 role = role_of.get(key)
                 if role:
-                    live[role] = "running"
+                    live[role] = {"slug": proj.get("slug") or d.name,
+                                  "label": label[:80], "stage": key}
     return live
 
 
@@ -415,8 +578,10 @@ def fleet(projects_dir: pathlib.Path) -> dict:
         prov = provider_for(e.name)
         status = "idle"
         detail = ""
-        if live.get(e.name) == "running":
-            status, detail = "running", "running a stage now"
+        cur = live.get(e.name)              # {slug, label, stage} or None
+        if cur:
+            status = "running"
+            detail = f"on {cur['stage']} · {cur['label'][:38]}"
         elif recent:
             detail = f"last: {recent[0]['stage']} · {recent[0]['updated_rel']}"
         # the agent who owns the gate the studio is paused at "holds for you"
@@ -426,6 +591,7 @@ def fleet(projects_dir: pathlib.Path) -> dict:
             **_entry_brief(e.name),
             "provider": prov["provider"], "model": prov["model"],
             "jobs_run": len(recent), "status": status, "detail": detail,
+            "current": cur,
             "last_rel": recent[0]["updated_rel"] if recent else "",
         })
     summary = {
@@ -484,7 +650,8 @@ def agent_detail(projects_dir: pathlib.Path, name: str) -> dict | None:
         "provider": prov["provider"], "model": prov["model"], "switch": prov["switch"],
         "persona": e.persona,
         "is_stage": e.name in set(_stage_role().values()),
-        "status": "running" if live.get(e.name) == "running" else "idle",
+        "status": "running" if live.get(e.name) else "idle",
+        "current": live.get(e.name),
         "jobs": [{"name": j.name, "tool": j.tool, "description": j.description,
                   "params": {k: getattr(v, "__name__", str(v)) for k, v in j.params.items()},
                   "timeout": j.timeout} for j in e.jobs],

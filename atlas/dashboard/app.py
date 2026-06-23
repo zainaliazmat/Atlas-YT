@@ -11,13 +11,14 @@ Run from the atlas/ dir:  uvicorn dashboard.app:app   (or python -m dashboard.se
 """
 from __future__ import annotations
 
+import json
 import pathlib
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from dashboard import data, media, security
+from dashboard import data, media, security, settings_store
 
 HERE = pathlib.Path(__file__).resolve().parent
 STATIC = HERE / "static"
@@ -37,6 +38,12 @@ def create_app(projects_dir: pathlib.Path | str | None = None) -> FastAPI:
     # the AtlasSession used for the sanctioned gate write; built lazily (heavy import)
     app.state.session = None
     app.state.produce_fn = None  # tests inject a fake pipeline.produce here
+    # the assembly-line dispatcher (the belt); built lazily, injectable for tests
+    app.state.dispatcher = None
+    app.state.max_in_flight = 2  # spec §6.6 honest target: ~2–3 videos in flight
+    app.state.max_retries = 1    # bounded transient auto-retry; injectable for tests
+    # Control-Room settings (niches/defaults/channels) — dashboard-owned JSON, injectable
+    app.state.settings_path = settings_store.DEFAULT_PATH
 
     def J(payload):
         """Redact every payload as the final pass before it leaves the process."""
@@ -58,6 +65,19 @@ def create_app(projects_dir: pathlib.Path | str | None = None) -> FastAPI:
         except security.UnsafePathError:
             return JSONResponse({"error": "not found"}, status_code=404)
         det = data.project_detail(_projects_dir(app), slug)
+        if det is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return J(det)
+
+    @app.get("/api/projects/{slug}/stage/{key}")
+    def stage(slug: str, key: str):
+        try:
+            security.resolve_project_dir(_projects_dir(app), slug)
+        except security.UnsafePathError:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if not security.safe_segment(key):
+            return JSONResponse({"error": "bad stage"}, status_code=400)
+        det = data.stage_detail(_projects_dir(app), slug, key)
         if det is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         return J(det)
@@ -117,10 +137,110 @@ def create_app(projects_dir: pathlib.Path | str | None = None) -> FastAPI:
             return JSONResponse({"error": "not found"}, status_code=404)
         return media.serve_artifact(pdir, name)
 
-    # ---------------- the ONE write: gate approval ----------------
+    # ---------------- the ONE write: gate approval (T2 — deterministic surface) ----
     @app.post("/api/gate/{slug}/approve")
     async def approve(slug: str, request: Request):
         return _approve_gate(app, slug, await _json_body(request))
+
+    # ---------------- the belt: trigger / cancel / live state (T1 — reversible) ----
+    @app.get("/api/belt")
+    def belt():
+        payload = data.belt(_projects_dir(app))
+        payload["live"] = _get_dispatcher(app).live_state()
+        return J(payload)
+
+    @app.post("/api/trigger")
+    async def trigger(request: Request):
+        body = await _json_body(request)
+        topic = (body.get("topic") or "").strip()
+        brief = (body.get("brief") or "").strip()
+        if not topic and not brief:
+            return JSONResponse({"error": "a topic or brief is required"},
+                                status_code=400)
+        niche = body.get("niche")
+        # Resolve the target length DASHBOARD-side: an explicit choice wins, else a niche's
+        # configured default flows in from settings. The value is passed INTO the pipeline as
+        # an arg — a pure engine never reads settings globally (§3/§11 decoupling).
+        length = body.get("length")
+        if not length and niche:
+            length = settings_store.length_for_niche(
+                settings_store.load_settings(app.state.settings_path), niche)
+        out = _get_dispatcher(app).trigger(
+            brief=brief or None, topic=topic or None, length=length,
+            niche=niche, gates=bool(body.get("gates", True)), initiator="ceo")
+        return J(out)
+
+    @app.post("/api/cancel/{slug}")
+    def cancel(slug: str):
+        try:
+            security.resolve_project_dir(_projects_dir(app), slug)
+        except security.UnsafePathError:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return J(_get_dispatcher(app).cancel(slug, initiator="ceo"))
+
+    @app.post("/api/retry/{slug}")
+    def retry(slug: str):
+        # T1 reversible: re-run a PARKED failed video. Only the deterministic UI offers it,
+        # and only for a transient failure (the spine still won't retry a deterministic one).
+        try:
+            security.resolve_project_dir(_projects_dir(app), slug)
+        except security.UnsafePathError:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if data.project_detail(_projects_dir(app), slug) is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return J(_get_dispatcher(app).retry(slug, initiator="ceo"))
+
+    # ---------------- the live activity feed: a snapshot of the event ring (§4 audit) ----
+    @app.get("/api/activity")
+    def activity(since: int = Query(0), kind: str | None = Query(None),
+                 initiator: str | None = Query(None)):
+        """Newest-first snapshot of the dispatcher's event ring — the same events the SSE
+        stream tails, so the feed renders history immediately then live-tails. Carries the
+        `initiator` plane on every row (the §4 audit property). Optional kind/initiator
+        filters are applied server-side."""
+        disp = _get_dispatcher(app)
+        evs = disp.events.since(since)
+        if kind:
+            evs = [e for e in evs if e.get("kind") == kind]
+        if initiator:
+            evs = [e for e in evs if e.get("initiator") == initiator]
+        evs = sorted(evs, key=lambda e: e["id"], reverse=True)[:200]
+        return J({"events": evs, "last_id": disp.events.last_id})
+
+    # ---------------- live updates: SSE with Last-Event-ID backfill (spec §10) ----
+    @app.get("/api/events")
+    async def events(request: Request):
+        disp = _get_dispatcher(app)
+        raw = (request.headers.get("last-event-id")
+               or request.query_params.get("last_event_id") or "0")
+        try:
+            start = int(raw)
+        except (TypeError, ValueError):
+            start = 0
+        return StreamingResponse(
+            _event_stream(disp, start, request),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache",
+                     "X-Accel-Buffering": "no", "Connection": "keep-alive"})
+
+    # ---------------- settings: niches / defaults / channels (T1 reversible) ----------
+    @app.get("/api/settings")
+    def get_settings():
+        return J(settings_store.public_settings(app.state.settings_path))
+
+    @app.put("/api/settings")
+    async def put_settings(request: Request):
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — unparseable body
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "settings must be a JSON object"},
+                                status_code=400)
+        ok, errors, _clean = settings_store.validate_settings(body)
+        saved = settings_store.save_settings(app.state.settings_path, body)
+        pub = settings_store.public_settings(app.state.settings_path)
+        return J({"ok": ok, "errors": errors, "settings": saved, "public": pub})
 
     @app.get("/healthz")
     def healthz():
@@ -143,6 +263,38 @@ async def _json_body(request: Request) -> dict:
         return body if isinstance(body, dict) else {}
     except Exception:  # noqa: BLE001 — empty/invalid body is just {}
         return {}
+
+
+def _get_dispatcher(app: FastAPI):
+    """Lazily build the assembly-line dispatcher (the belt). Uses the test-injected
+    `produce_fn` when present (so e2e never runs a real engine), else the real spine.
+    One dispatcher per process; its belt state is rebuildable from disk on restart."""
+    if app.state.dispatcher is None:
+        import dispatcher as dmod
+        app.state.dispatcher = dmod.Dispatcher(
+            projects_dir=app.state.projects_dir,
+            produce_fn=app.state.produce_fn,
+            max_in_flight=app.state.max_in_flight,
+            max_retries=getattr(app.state, "max_retries", 1))
+    return app.state.dispatcher
+
+
+async def _event_stream(disp, start: int, request: Request):
+    """SSE generator (spec §10): replay events since `start` (Last-Event-ID backfill), then
+    live-tail the ring; emit a keepalive comment when idle and stop on client disconnect.
+    Each connection has its own generator → natural multi-tab fan-out."""
+    import asyncio
+    last_id = start
+    while True:
+        if await request.is_disconnected():
+            break
+        evs = disp.events.since(last_id)
+        for ev in evs:
+            last_id = ev["id"]
+            yield f"id: {ev['id']}\ndata: {json.dumps(security.redact(ev))}\n\n"
+        if not evs:
+            yield ": keepalive\n\n"
+        await asyncio.sleep(1.0)
 
 
 def _get_session(app: FastAPI):

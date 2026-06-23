@@ -62,12 +62,14 @@
   // ---------------------------------------------------------------- view dispatch
   function loadView(view) {
     switch (view) {
-      case "v-overview": return renderOverview();
+      case "v-overview": renderOverview(); return renderBelt();
       case "v-projects": return renderProjects();
       case "v-pipeline": return renderPipeline(current.slug);
       case "v-fleet": return renderFleet();
       case "v-agent": return renderAgent(current.agent);
       case "v-quality": return renderQuality();
+      case "v-activity": return renderActivity();
+      case "v-settings": return renderSettings();
       case "v-gate": return renderGate(current.slug);
     }
   }
@@ -355,9 +357,12 @@
       var sub = s.detail ? ('<div class="sub"><span class="file">' + esc(s.artifact || "") + '</span>' + (s.detail ? '<span class="dot">·</span>' + esc(s.detail) : "") + "</div>") :
         (s.artifact ? '<div class="sub"><span class="file">' + esc(s.artifact) + "</span></div>" : "");
       var autogate = s.autogate ? '<div class="autogate">▲ <b>auto-gate</b> · self-scan ✓ · lint ✓ · validate ✓</div>' : "";
-      return '<div class="stage"><div class="gut"><span class="led ' + ledCls + '"></span><span class="line-v ' + lineCls + '"></span></div><div>' +
+      var failCls = (s.status === "failed") ? " failed" : "";
+      var when = s.updated_rel ? '<span class="when">' + esc(s.updated_rel) + "</span>" : "";
+      return '<div class="stage clickable' + failCls + '" data-stage="' + esc(s.key) + '" tabindex="0" role="button" aria-label="Inspect ' + esc(s.key) + ' stage">' +
+        '<div class="gut"><span class="led ' + ledCls + '"></span><span class="line-v ' + lineCls + '"></span></div><div>' +
         '<div class="stop"><span class="nm">' + esc(s.key) + '</span><span class="ag">' + esc(s.agent ? s.agent.emoji : "") + " <b>" + esc(s.agent ? s.agent.display : "") + "</b></span>" +
-        '<span class="sp"><span class="state ' + (s.status === "done" ? "done" : "") + '">' + esc(s.status) + "</span>" + (s.validated ? '<span class="ck">✓</span>' : "") + "</span></div>" +
+        '<span class="sp">' + when + '<span class="state ' + (s.status === "done" ? "done" : (s.status === "failed" ? "fail" : "")) + '">' + esc(s.status) + "</span>" + (s.validated ? '<span class="ck">✓</span>' : "") + '<span class="insp">inspect →</span></span></div>' +
         sub + autogate + "</div></div>";
     }).join("") || '<div class="state-msg">No stages.</div>';
 
@@ -382,15 +387,32 @@
         esc(c.status) + (ok ? " ✓" : " ✗") + "</span></div>";
     }).join("") || '<div class="state-msg">No contracts validated.</div>';
 
+    // event history (project.json history, newest-first from the API)
+    var history = (d.history || []).map(function (h) {
+      var line = h.decision || h.stage || "event";
+      return '<div class="ev"><span class="ts">' + esc(relTime(h.ts) || "") + '</span>' +
+        '<div class="evb"><div class="evd">' + esc(line) +
+        (h.stage ? '<span class="evs">' + esc(h.stage) + "</span>" : "") + "</div>" +
+        (h.why ? '<div class="evw">' + esc(h.why) + "</div>" : "") + "</div></div>";
+    }).join("") || '<div class="state-msg">No events recorded yet.</div>';
+
     body.innerHTML =
-      '<div class="ladder"><div class="lh">Production spine <span class="r">' + stages.length + " stages · contracts</span></div>" + ladder + "</div>" +
+      '<div class="ladder"><div class="lh">Production spine <span class="r">' + stages.length + " stages · click a stage to inspect</span></div>" + ladder + "</div>" +
       "<div>" + vid +
       '<div class="card files"><h3>Artifacts</h3>' + artifacts + "</div>" +
-      '<div class="card ctr"><h3>Contracts</h3>' + contracts + "</div></div>";
+      '<div class="card ctr"><h3>Contracts</h3>' + contracts + "</div>" +
+      '<div class="card hist"><h3>Event history <span class="r">project.json</span></h3>' + history + "</div></div>";
 
     // wire artifact "open" links + video button
     body.querySelectorAll("a[data-art]").forEach(function (a) {
       a.onclick = function (e) { e.preventDefault(); openArtifact(slug, a.dataset.art); };
+    });
+    // clicking (or Enter on) a stage opens the depth-2 inspector drawer
+    body.querySelectorAll(".stage.clickable").forEach(function (el) {
+      el.onclick = function () { openStageInspector(slug, el.dataset.stage); };
+      el.onkeydown = function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openStageInspector(slug, el.dataset.stage); }
+      };
     });
     var ov = $("pl-openvid");
     if (ov) ov.onclick = function () { window.open("/api/media/" + encodeURIComponent(slug) + "/video", "_blank"); };
@@ -428,12 +450,17 @@
       kpi("Non-claude", '<div class="v">' + num(s.non_claude, 0) + "</div>") +
       kpi("Holding for you", '<div class="v warn">' + num(s.holding, 0) + "</div>");
     grid.innerHTML = (d.agents || []).map(function (a) {
-      var lead = a.status === "holding" ? " lead" : "";
+      var lead = a.status === "holding" ? " lead" : (a.status === "running" ? " busy" : "");
+      var now = a.current
+        ? '<div class="nowon" data-go="v-pipeline" data-rail="pipeline" data-slug="' + esc(a.current.slug) +
+          '"><span class="onstage">' + esc(a.current.stage) + "</span> " + ellipEsc(a.current.label, 30) + "</div>"
+        : "";
       return '<div class="ac' + lead + '" data-go="v-agent" data-rail="fleet" data-agent="' + esc(a.name) + '">' +
         '<div class="em">' + esc(a.emoji) + "</div>" +
         '<div class="nm">' + esc(a.display) + "</div>" +
         '<div class="role">' + esc(a.role) + "</div>" +
         '<div class="st"><span class="led" style="background:' + statusColor(a.status) + '"></span>' + esc(a.detail || a.status) + "</div>" +
+        now +
         '<div class="foot"><span class="pv">' + esc(a.provider) + '</span><span class="arrow">→</span></div></div>';
     }).join("") || '<div class="state-msg">No agents in the fleet.</div>';
   }
@@ -477,7 +504,10 @@
       '<div class="phead"><div class="ava">' + esc(d.emoji) + "</div><div>" +
       '<div class="nmh">' + esc(d.display) + ' <span class="switch" id="ag-switch">▾ switch agent</span></div>' +
       '<div class="role"><span class="stled" style="background:' + statusColor(d.status) + '"></span>' + esc(d.status) +
-      " &nbsp;·&nbsp; <b>" + esc(d.blurb || "") + '</b> &nbsp; <span class="prov">brain: ' + esc(d.provider) + "</span></div></div>" +
+      " &nbsp;·&nbsp; <b>" + esc(d.blurb || "") + '</b> &nbsp; <span class="prov">brain: ' + esc(d.provider) + "</span>" +
+      (d.current ? ' <span class="nowchip nav-hint" data-go="v-pipeline" data-rail="pipeline" data-slug="' + esc(d.current.slug) +
+        '">▶ on ' + esc(d.current.stage) + " · " + ellipEsc(d.current.label, 34) + "</span>" : "") +
+      "</div></div>" +
       '<div class="acts"><button class="btn" data-go="v-fleet" data-rail="fleet">Back to fleet</button>' +
       '<button class="btn primary" data-go="v-quality" data-rail="quality">View quality loop</button></div></div>' +
       '<div id="ag-switchmenu"></div>' +
@@ -780,6 +810,680 @@
     return Math.round(diff / 86400) + "d";
   }
 
+  // ================================================================ THE BELT
+  var STAGE_KEYS = ["research", "script", "factcheck", "style", "storyboard",
+                    "assets", "narration", "compose", "audiomix", "render"];
+  var beltTimer = null, flashSlug = null, es = null;
+
+  function scheduleBeltRefresh() {
+    if (beltTimer) return;
+    beltTimer = setTimeout(function () { beltTimer = null; renderBelt(); }, 250);
+  }
+
+  async function renderBelt() {
+    var belt = $("ov-belt"), tray = $("ov-needs");
+    if (!belt) return;
+    var d;
+    try { d = await getJSON("/api/belt"); }
+    catch (e) { errState(belt, "Couldn't load the belt. " + e.message); return; }
+    renderNeedsTray(tray, d);
+
+    var live = d.live || {}, occ = d.occupancy || {}, counts = d.counts || {};
+    var strip = (d.stations || []).map(function (s) {
+      var busy = occ[s.key];
+      return '<div class="station' + (busy ? " busy" : "") + '" title="' + esc(s.key) +
+        (busy ? " — " + esc(busy.label) : "") + '">' +
+        (busy ? '<span class="live-dot"></span>' : "") +
+        '<div class="em">' + esc(s.agent ? s.agent.emoji : "•") + "</div>" +
+        '<div class="nm">' + esc(s.key) + "</div></div>";
+    }).join("");
+
+    var vids = d.videos || [];
+    var rows = vids.length
+      ? '<div class="spine">' + vids.map(spineRow).join("") + "</div>"
+      : '<div class="belt-empty"><b>The belt is empty.</b><br>Drop a topic to start a ' +
+        "production — it'll appear here and flow down the line.</div>";
+
+    belt.innerHTML =
+      '<div class="belt-head"><h3>Production belt</h3><div class="flow">' +
+      '<span class="run">running <b>' + (counts.running || 0) + "</b></span>" +
+      '<span class="gate">awaiting you <b>' + (counts.blocked || 0) + "</b></span>" +
+      '<span class="fail">failed <b>' + (counts.failed || 0) + "</b></span>" +
+      '<span class="done">done <b>' + (counts.done || 0) + "</b></span>" +
+      "<span>in flight <b>" + ((live.running || []).length) + "</b>/" +
+      (live.max_in_flight || "—") + "</span></div></div>" +
+      '<div class="stations">' + strip + "</div>" + rows;
+
+    belt.querySelectorAll(".spine-row").forEach(function (r) {
+      r.onclick = function (e) {
+        if (e.target.closest(".row-act")) return;
+        current.slug = r.dataset.slug; go("v-pipeline", "pipeline");
+      };
+    });
+    belt.querySelectorAll(".row-act.danger").forEach(function (b) {
+      b.onclick = function (e) { e.stopPropagation(); cancelVideo(b.dataset.slug); };
+    });
+    if (flashSlug) {
+      var fr = belt.querySelector('.spine-row[data-slug="' + cssEsc(flashSlug) + '"]');
+      if (fr) fr.classList.add("flash");
+      flashSlug = null;
+    }
+  }
+
+  function spineRow(v) {
+    var track = STAGE_KEYS.map(function (k) {
+      var st = (v.stages || {})[k] || "pending";
+      var cls = ["done", "running", "failed", "blocked"].indexOf(st) >= 0 ? st : "pending";
+      return '<div class="seg ' + cls + '" data-k="' + esc(k) + '"></div>';
+    }).join("");
+    var bs = v.belt_state || "queued";
+    var act = (bs === "running" || bs === "queued")
+      ? '<button class="row-act danger" data-slug="' + esc(v.slug) + '">cancel</button>' : "";
+    return '<div class="spine-row s-' + esc(bs) + '" data-slug="' + esc(v.slug) + '">' +
+      '<div class="lbl"><div class="t">' + ellipEsc(v.label || v.topic || v.slug, 60) +
+      '</div><div class="s">' + esc(v.station || "—") + " · " + esc(v.updated_rel || "") +
+      "</div></div>" + '<div class="track">' + track + "</div>" +
+      '<div class="rgt"><span class="pill-state ' + esc(bs) + '">' + esc(bs) + "</span>" +
+      act + "</div></div>";
+  }
+
+  function renderNeedsTray(tray, d) {
+    if (!tray) return;
+    var items = (d.videos || []).filter(function (v) {
+      return v.belt_state === "blocked" || v.belt_state === "failed";
+    });
+    if (!items.length) {
+      tray.className = "tray";
+      tray.innerHTML = "<h3>Needs you</h3><div class=\"ok\"><span class=\"dot\"></span>" +
+        "Nothing needs you — the belt is flowing.</div>";
+      return;
+    }
+    tray.className = "tray has-items";
+    tray.innerHTML = '<h3>Needs you <span class="badge-n">' + items.length + "</span></h3>" +
+      items.map(function (v) {
+        var fail = v.belt_state === "failed";
+        return '<div class="tray-item ' + (fail ? "fail" : "gate") + '" data-slug="' +
+          esc(v.slug) + '" data-kind="' + (fail ? "fail" : "gate") + '">' +
+          '<div class="ic">' + (fail ? "⛔" : "⚑") + "</div>" +
+          '<div class="tx"><div class="t">' + ellipEsc(v.label || v.slug, 64) + "</div>" +
+          '<div class="s">' + (fail ? "failed at " + esc(v.station || "?")
+            : "awaiting your sign-off · " + esc(v.gate || "gate") + " gate") + "</div></div>" +
+          '<div class="go">' + (fail ? "review →" : "open gate →") + "</div></div>";
+      }).join("");
+    tray.querySelectorAll(".tray-item").forEach(function (it) {
+      it.onclick = function () {
+        current.slug = it.dataset.slug;
+        if (it.dataset.kind === "gate") go("v-gate", "projects");
+        else go("v-pipeline", "pipeline");
+      };
+    });
+  }
+
+  async function cancelVideo(slug) {
+    try {
+      await fetch("/api/cancel/" + encodeURIComponent(slug),
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    } catch (e) { /* surfaced on the next belt refresh */ }
+    scheduleBeltRefresh();
+  }
+
+  // ================================================================ ACTIVITY FEED
+  // The live audit trail (spec §4/§10): every belt event, newest-first, tagged with the
+  // initiator PLANE (ceo / dispatcher / chat) — because "who set it off" is the property
+  // an audit checks. Backfilled from /api/activity, then live-tailed by the SSE stream.
+  var ACT_KINDS = ["triggered", "progress", "retry", "blocked", "gate_approved",
+                   "failed", "cancel_requested", "cancelled", "done"];
+  var activityFilter = { kind: null, initiator: null };
+  var actTimer = null;
+
+  function scheduleActivityRefresh() {
+    if (actTimer) return;
+    actTimer = setTimeout(function () {
+      actTimer = null;
+      var active = document.querySelector(".view.active");
+      if (active && active.id === "v-activity") drawActivityFeed();
+    }, 250);
+  }
+
+  async function renderActivity() {
+    buildActivityFilters($("ac-filters"));
+    await drawActivityFeed();
+  }
+
+  function buildActivityFilters(el) {
+    if (!el) return;
+    var kc = '<span class="tab' + (!activityFilter.kind ? " on" : "") + '" data-k="">All events</span>' +
+      ACT_KINDS.map(function (k) {
+        return '<span class="tab' + (activityFilter.kind === k ? " on" : "") + '" data-k="' + k + '">' + esc(k) + "</span>";
+      }).join("");
+    var planes = ["ceo", "dispatcher", "chat"];
+    var ic = '<span class="iflt' + (!activityFilter.initiator ? " on" : "") + '" data-i="">any</span>' +
+      planes.map(function (p) {
+        return '<span class="iflt' + (activityFilter.initiator === p ? " on" : "") + '" data-i="' + p + '">' + esc(p) + "</span>";
+      }).join("");
+    el.innerHTML = '<div class="tabs">' + kc + '</div>' +
+      '<div class="ifltbar"><span class="lbl">initiated by</span>' + ic + "</div>";
+    el.querySelectorAll(".tab[data-k]").forEach(function (t) {
+      t.onclick = function () { activityFilter.kind = t.dataset.k || null; renderActivity(); };
+    });
+    el.querySelectorAll(".iflt[data-i]").forEach(function (t) {
+      t.onclick = function () { activityFilter.initiator = t.dataset.i || null; renderActivity(); };
+    });
+  }
+
+  async function drawActivityFeed() {
+    var feed = $("ac-feed");
+    if (!feed) return;
+    var qs = [];
+    if (activityFilter.kind) qs.push("kind=" + encodeURIComponent(activityFilter.kind));
+    if (activityFilter.initiator) qs.push("initiator=" + encodeURIComponent(activityFilter.initiator));
+    var d;
+    try { d = await getJSON("/api/activity" + (qs.length ? "?" + qs.join("&") : "")); }
+    catch (e) { errState(feed, "Couldn't load activity. " + e.message); return; }
+    var rows = (d.events || []).map(activityRow).join("");
+    feed.innerHTML = rows ||
+      '<div class="state-msg">No events' + (activityFilter.kind || activityFilter.initiator ? " match this filter" : " yet — trigger a production and they'll stream in here") + ".</div>";
+    feed.querySelectorAll(".ev-row[data-slug]").forEach(function (r) {
+      r.onclick = function () { current.slug = r.dataset.slug; go("v-pipeline", "pipeline"); };
+    });
+  }
+
+  function activityRow(e) {
+    var slug = e.slug ? ' data-slug="' + esc(e.slug) + '"' : "";
+    var plane = e.initiator || "—";
+    return '<div class="ev-row' + (e.slug ? " nav-hint" : "") + '"' + slug + '>' +
+      '<span class="ts">' + esc(relTime(e.ts) || "") + "</span>" +
+      '<span class="kind ' + esc(e.kind) + '">' + esc(e.kind) + "</span>" +
+      '<span class="plane p-' + esc(plane) + '">' + esc(plane) + "</span>" +
+      '<span class="body"><b>' + ellipEsc(e.slug || "system", 38) + "</b>" +
+      (e.message ? '<span class="m">' + ellipEsc(e.message, 96) + "</span>" : "") + "</span>" +
+      (e.stage ? '<span class="stg">' + esc(e.stage) + "</span>" : "") + "</div>";
+  }
+
+  // ================================================================ SETTINGS (#4)
+  // Niches / defaults / channels — the dashboard-owned config the launch pills read and the
+  // pipeline gets PASSED at trigger time. T1 reversible write (Save; re-edit = undo).
+  var settingsState = null;   // {niches[], defaults{}, channels[], quota, connection_states, length_options}
+
+  async function renderSettings() {
+    var body = $("set-body");
+    loading(body, "Loading settings…");
+    setSaveState("");
+    try { settingsState = await getJSON("/api/settings"); }
+    catch (e) { errState(body, "Couldn't load settings. " + e.message); return; }
+    drawSettings();
+    var sv = $("set-save"); if (sv) sv.onclick = saveSettings;
+  }
+
+  function setSaveState(msg, cls) {
+    var el = $("set-state");
+    if (el) el.innerHTML = msg ? '<span class="' + (cls || "") + '">' + esc(msg) + "</span>" : "";
+  }
+
+  function lengthToggle(name, val) {
+    return '<div class="seg-toggle sm" data-field="' + name + '">' +
+      '<button type="button" data-v="short" class="' + (val !== "long" ? "on" : "") + '">Short</button>' +
+      '<button type="button" data-v="long" class="' + (val === "long" ? "on" : "") + '">Long</button></div>';
+  }
+
+  function nicheChannelOptions(sel) {
+    var opts = '<option value="">— no channel —</option>';
+    (settingsState.channels || []).forEach(function (c) {
+      var id = c.channel_id || "";
+      opts += '<option value="' + esc(id) + '"' + (id && id === sel ? " selected" : "") + '>' +
+        esc(c.title || id || "untitled") + "</option>";
+    });
+    return opts;
+  }
+
+  function channelNicheOptions(sel) {
+    var opts = '<option value="">— any niche —</option>';
+    (settingsState.niches || []).forEach(function (n, i) {
+      opts += '<option value="' + i + '"' + (String(i) === String(sel) ? " selected" : "") + '>' +
+        esc(n.name) + "</option>";
+    });
+    return opts;
+  }
+
+  function drawSettings() {
+    var body = $("set-body");
+    var s = settingsState, q = s.quota || {};
+
+    // --- niches ---
+    var nicheRows = (s.niches || []).map(function (n, i) {
+      return '<div class="srow niche" data-i="' + i + '">' +
+        '<input class="f-name" type="text" value="' + esc(n.name || "") + '" placeholder="niche name, e.g. AI tools & productivity">' +
+        lengthToggle("default_length", n.default_length) +
+        '<select class="f-channel">' + nicheChannelOptions(n.channel_id) + "</select>" +
+        '<button class="row-x" title="Remove niche" aria-label="Remove niche">✕</button></div>';
+    }).join("") || '<div class="state-msg">No niches yet. Add one — it becomes a launch pill and carries its default length into the pipeline.</div>';
+
+    // --- defaults ---
+    var d = s.defaults || {};
+    var defaults =
+      '<div class="setrow"><label>Default target length</label>' + lengthToggle("def_length", d.target_length) + "</div>" +
+      '<div class="setrow"><label>Default voice</label><input id="def-voice" type="text" value="' + esc(d.voice || "") + '" placeholder="(optional) preset voice name"></div>' +
+      '<div class="setrow"><label>Default style preset</label><input id="def-style" type="text" value="' + esc(d.style_preset || "") + '" placeholder="(optional) preset name"></div>';
+
+    // --- channels (the broadcast bay shell) ---
+    var quota =
+      '<div class="quota"><div class="qh"><span class="qn">' + num(q.max_uploads_per_day, 6) +
+      '</span><span class="ql">uploads / day<br><b>shared across ALL channels</b></span></div>' +
+      '<div class="qbreak">' + esc(q.insert_cost || 1600) + ' units / upload · ' + esc(q.daily_units || 10000) +
+      ' units / day · project-wide ceiling</div>' +
+      '<div class="qnote">' + esc(q.note || "") + "</div></div>";
+
+    var chanCards = (s.channels || []).map(function (c, i) {
+      var st = c.connection_status || "disconnected";
+      var states = s.connection_states || ["disconnected"];
+      var stateOpts = states.map(function (x) {
+        return '<option value="' + esc(x) + '"' + (x === st ? " selected" : "") + ">" + esc(x) + "</option>";
+      }).join("");
+      return '<div class="chan" data-i="' + i + '">' +
+        '<div class="chan-hd"><span class="conn ' + connClass(st) + '">' + esc(st) + "</span>" +
+        '<button class="row-x" title="Remove channel" aria-label="Remove channel">✕</button></div>' +
+        '<input class="c-title" type="text" value="' + esc(c.title || "") + '" placeholder="channel title">' +
+        '<input class="c-id" type="text" value="' + esc(c.channel_id || "") + '" placeholder="channelId (read back from channels.list?mine=true)">' +
+        '<div class="setrow"><label>Mapped niche</label><select class="c-niche">' + channelNicheOptions(c.niche_id) + "</select></div>" +
+        '<div class="setrow"><label>Connection</label><select class="c-state">' + stateOpts + "</select></div>" +
+        '<div class="vflags">' +
+        '<label class="vf"><input type="checkbox" class="c-pv"' + (c.project_verified ? " checked" : "") + '> Cloud project sensitive-scope verified</label>' +
+        '<label class="vf"><input type="checkbox" class="c-cv"' + (c.channel_phone_verified ? " checked" : "") + '> Channel phone-verified</label>' +
+        "</div>" +
+        '<button class="btn sm conn-btn" disabled title="OAuth connect arrives with Herald (#6)">Connect channel — arrives with Herald</button>' +
+        "</div>";
+    }).join("") || '<div class="state-msg">No channels yet. Add one to map a niche → channel (OAuth wiring lands with Herald).</div>';
+
+    body.innerHTML =
+      '<div class="card"><h3>Niches <span class="r">launch pills + per-niche defaults</span></h3>' +
+      '<div class="srows">' + nicheRows + "</div>" +
+      '<button class="btn sm add" id="add-niche">+ Add niche</button></div>' +
+      '<div class="card"><h3>Defaults <span class="r">passed into the pipeline as args</span></h3>' + defaults + "</div>" +
+      '<div class="card chans"><h3>Channels <span class="r">YouTube publishing shell · OAuth at #6</span></h3>' +
+      quota +
+      '<div class="chan-grid">' + chanCards + "</div>" +
+      '<button class="btn sm add" id="add-channel">+ Add channel</button></div>';
+
+    wireSettings();
+  }
+
+  function connClass(st) {
+    if (st === "connected") return "ok";
+    if (st === "needs-reconnect" || st === "expired") return "warn";
+    if (st === "revoked") return "bad";
+    return "off";
+  }
+
+  function wireSettings() {
+    var body = $("set-body");
+    // segmented length toggles (niche rows + the default)
+    body.querySelectorAll(".seg-toggle[data-field]").forEach(function (tg) {
+      tg.querySelectorAll("button").forEach(function (b) {
+        b.onclick = function () {
+          tg.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
+          b.classList.add("on");
+        };
+      });
+    });
+    body.querySelectorAll(".srow.niche .row-x").forEach(function (x) {
+      x.onclick = function () { syncSettingsFromDOM(); var i = +x.closest(".srow").dataset.i; settingsState.niches.splice(i, 1); drawSettings(); };
+    });
+    body.querySelectorAll(".chan .row-x").forEach(function (x) {
+      x.onclick = function () { syncSettingsFromDOM(); var i = +x.closest(".chan").dataset.i; settingsState.channels.splice(i, 1); drawSettings(); };
+    });
+    var an = $("add-niche");
+    if (an) an.onclick = function () { syncSettingsFromDOM(); settingsState.niches.push({ name: "", default_length: "short", channel_id: "" }); drawSettings(); };
+    var ac = $("add-channel");
+    if (ac) ac.onclick = function () { syncSettingsFromDOM(); settingsState.channels.push({ title: "", channel_id: "", niche_id: "", connection_status: "disconnected", project_verified: false, channel_phone_verified: false }); drawSettings(); };
+  }
+
+  function syncSettingsFromDOM() {
+    var body = $("set-body");
+    settingsState.niches = Array.prototype.map.call(body.querySelectorAll(".srow.niche"), function (r) {
+      return {
+        name: r.querySelector(".f-name").value.trim(),
+        default_length: r.querySelector('.seg-toggle[data-field="default_length"] button.on').dataset.v,
+        channel_id: r.querySelector(".f-channel").value,
+      };
+    });
+    settingsState.channels = Array.prototype.map.call(body.querySelectorAll(".chan"), function (c) {
+      return {
+        title: c.querySelector(".c-title").value.trim(),
+        channel_id: c.querySelector(".c-id").value.trim(),
+        niche_id: c.querySelector(".c-niche").value,
+        connection_status: c.querySelector(".c-state").value,
+        project_verified: c.querySelector(".c-pv").checked,
+        channel_phone_verified: c.querySelector(".c-cv").checked,
+      };
+    });
+    var defLen = body.querySelector('.seg-toggle[data-field="def_length"] button.on');
+    settingsState.defaults = {
+      target_length: defLen ? defLen.dataset.v : "short",
+      voice: ($("def-voice") || {}).value || "",
+      style_preset: ($("def-style") || {}).value || "",
+    };
+  }
+
+  async function saveSettings() {
+    if (!settingsState) return;
+    syncSettingsFromDOM();
+    setSaveState("Saving…");
+    var btn = $("set-save"); if (btn) btn.disabled = true;
+    try {
+      var r = await fetch("/api/settings", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ niches: settingsState.niches, defaults: settingsState.defaults, channels: settingsState.channels }),
+      });
+      var out = await r.json().catch(function () { return {}; });
+      if (!r.ok) throw new Error(out.error || ("HTTP " + r.status));
+      settingsState = out.public || settingsState;
+      drawSettings();
+      var note = (out.errors && out.errors.length) ? ("Saved — " + out.errors.join("; ")) : "Saved ✓";
+      setSaveState(note, (out.errors && out.errors.length) ? "warn" : "ok");
+    } catch (e) {
+      setSaveState("Couldn't save: " + e.message, "err");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // ================================================================ LAUNCH MODAL
+  async function openLaunchModal() {
+    var length = "short", gatesOn = true, niche = null;
+    var settings = { niches: [] };
+    try { settings = await getJSON("/api/settings"); } catch (e) { /* niche pills optional */ }
+    var pills = (settings.niches || []).map(function (n) {
+      return '<button type="button" class="pill-opt" data-niche="' + esc(n.name) +
+        '" data-len="' + esc(n.default_length || "short") + '">' + esc(n.name) +
+        '<span class="ch">' + esc(n.default_length || "short") + "</span></button>";
+    }).join("");
+    var nicheField = pills
+      ? '<div class="field"><label>Niche (optional)</label><div class="pills" id="lm-niches">' + pills + "</div>" +
+        '<div class="dlg-note">Tag this run with a niche to pre-fill its default length. ' +
+        "Niche → Scout auto-picks a topic arrives with the intake step.</div></div>"
+      : "";
+    var body =
+      nicheField +
+      '<div class="field"><label>Topic</label>' +
+      '<textarea id="lm-topic" rows="2" placeholder="e.g. How noise-cancelling headphones actually work"></textarea>' +
+      '<div class="dlg-note">Type a specific topic to produce now.</div></div>' +
+      '<div class="field"><label>Target length</label><div class="seg-toggle" id="lm-len">' +
+      '<button data-v="short" class="on" type="button">Short<small>~60–90s</small></button>' +
+      '<button data-v="long" type="button">Long<small>~5–8 min</small></button></div></div>' +
+      '<div class="field"><label>Human gates</label>' +
+      '<div class="toggle-row"><div class="tx"><div class="t">Pause at fact-check & final-render</div>' +
+      '<div class="s">off = unattended run, straight through</div></div>' +
+      '<button class="sw on" id="lm-gates" type="button" role="switch" aria-checked="true"></button></div></div>' +
+      '<div id="lm-err"></div>';
+    var box = openDialog({
+      icon: "▶", title: "Generate new video",
+      sub: "drops onto the belt as a reversible run", body: body,
+      primary: { label: "Generate", onClick: submit }, secondaryLabel: "Cancel",
+    });
+    var lenWrap = box.querySelector("#lm-len");
+    function setLength(v) {
+      length = v;
+      lenWrap.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x.dataset.v === v); });
+    }
+    lenWrap.querySelectorAll("button").forEach(function (b) {
+      b.onclick = function () { setLength(b.dataset.v); };
+    });
+    var nichesWrap = box.querySelector("#lm-niches");
+    if (nichesWrap) nichesWrap.querySelectorAll(".pill-opt").forEach(function (p) {
+      p.onclick = function () {
+        var was = p.classList.contains("on");
+        nichesWrap.querySelectorAll(".pill-opt").forEach(function (x) { x.classList.remove("on"); });
+        if (was) { niche = null; }                 // click again to clear
+        else { p.classList.add("on"); niche = p.dataset.niche; setLength(p.dataset.len || length); }
+      };
+    });
+    var sw = box.querySelector("#lm-gates");
+    sw.onclick = function () {
+      gatesOn = !gatesOn; sw.classList.toggle("on", gatesOn);
+      sw.setAttribute("aria-checked", String(gatesOn));
+    };
+    setTimeout(function () { var t = box.querySelector("#lm-topic"); if (t) t.focus(); }, 30);
+
+    async function submit() {
+      var topic = (box.querySelector("#lm-topic").value || "").trim();
+      if (!topic) {
+        box.querySelector("#lm-err").innerHTML =
+          '<div class="dlg-note warn">Enter a topic to produce.</div>'; return;
+      }
+      var btn = box.querySelector(".dlg-primary");
+      if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+      try {
+        var r = await fetch("/api/trigger", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ topic: topic, length: length, gates: gatesOn, niche: niche }),
+        });
+        var out = await r.json().catch(function () { return {}; });
+        if (!r.ok) throw new Error(out.error || ("HTTP " + r.status));
+        closeDialog();
+        flashSlug = out.slug;
+        renderBelt();
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.textContent = "Generate"; }
+        box.querySelector("#lm-err").innerHTML =
+          '<div class="dlg-note warn">Couldn\'t start: ' + esc(e.message) + "</div>";
+      }
+    }
+  }
+  window.openLaunchModal = openLaunchModal;
+
+  // ================================================================ DRAWER (depth-2 inspect)
+  // A right-side slide-in panel for inspect-in-context (modal-vs-panel-vs-page discipline:
+  // page = full video detail, panel = inspect a stage without leaving, modal = a decision).
+  var drawerPrevFocus = null;
+  function openDrawer(opts) {
+    var root = $("drawer-root");
+    root.innerHTML =
+      '<div class="dw" role="dialog" aria-modal="true" aria-label="' + esc(opts.title) + '">' +
+      '<div class="dw-scrim"></div>' +
+      '<div class="dw-panel"><div class="dw-hd"><div class="dw-ttl"><h2>' + esc(opts.title) + "</h2>" +
+      (opts.sub ? '<div class="dw-sub">' + esc(opts.sub) + "</div>" : "") + "</div>" +
+      '<button class="x" type="button" aria-label="Close">✕</button></div>' +
+      '<div class="dw-body"></div></div></div>';
+    var dw = root.querySelector(".dw");
+    drawerPrevFocus = document.activeElement;
+    root.querySelector(".x").onclick = closeDrawer;
+    root.querySelector(".dw-scrim").onclick = closeDrawer;
+    dw._keyh = function (e) {
+      if (e.key === "Escape") { e.preventDefault(); closeDrawer(); return; }
+      if (e.key === "Tab") trapFocus(dw, e);
+    };
+    document.addEventListener("keydown", dw._keyh);
+    requestAnimationFrame(function () { dw.classList.add("in"); });
+    return dw.querySelector(".dw-panel");
+  }
+  function closeDrawer() {
+    var root = $("drawer-root"), dw = root.querySelector(".dw");
+    if (dw && dw._keyh) document.removeEventListener("keydown", dw._keyh);
+    root.innerHTML = "";
+    if (drawerPrevFocus && drawerPrevFocus.focus) { try { drawerPrevFocus.focus(); } catch (e) {} }
+    drawerPrevFocus = null;
+  }
+  window.closeDrawer = closeDrawer;
+
+  // ================================================================ STAGE/AGENT INSPECTOR
+  async function openStageInspector(slug, key) {
+    var panel = openDrawer({ title: "Stage inspector", sub: key });
+    var body = panel.querySelector(".dw-body");
+    loading(body, "Loading stage…");
+    var d;
+    try { d = await getJSON("/api/projects/" + encodeURIComponent(slug) + "/stage/" + encodeURIComponent(key)); }
+    catch (e) { errState(body, "Couldn't load this stage. " + e.message); return; }
+    renderStageInspector(panel, slug, d);
+  }
+  window.openStageInspector = openStageInspector;
+
+  function artChip(slug, name, exists) {
+    var miss = exists ? "" : " miss";
+    var open = exists ? ' data-art="' + esc(name) + '"' : "";
+    return '<span class="chipf' + miss + '"' + open + '>' + esc(name) +
+      (exists ? "" : ' <i>missing</i>') + "</span>";
+  }
+
+  function renderStageInspector(panel, slug, d) {
+    var body = panel.querySelector(".dw-body");
+    var ag = d.agent || {}, pv = d.provider || {};
+    var bs = d.belt_state || "queued";
+
+    // reads → writes flow
+    var inputs = (d.inputs || []).length
+      ? (d.inputs || []).map(function (i) { return artChip(slug, i.name, i.exists); }).join("")
+      : '<span class="io-none">intake stage — no upstream inputs</span>';
+
+    var writes;
+    if (d.output) {
+      var o = d.output, stamp;
+      if (o.valid === true) stamp = '<div class="stamp ok">contract valid ✓<small>' + esc(o.contract || "") + "</small></div>";
+      else if (o.valid === false) {
+        var errs = (o.errors || []).map(function (e) { return "<li>" + esc(e) + "</li>"; }).join("");
+        stamp = '<div class="stamp bad">contract invalid ✗<small>' + esc(o.contract || "") + "</small></div>" +
+          (errs ? '<ul class="slip">' + errs + "</ul>" : "");
+      } else stamp = '<div class="stamp none">binary artifact · no contract</div>';
+      writes = artChip(slug, o.artifact, o.exists) + stamp;
+    } else {
+      writes = '<span class="io-none">no artifact written yet</span>';
+    }
+
+    // failure surface — honest vocab: UNDERSTAND (what + what it means) + RETRY + CANCEL
+    var failBlock = "";
+    if (d.failure) {
+      var det = d.failure.kind === "deterministic";
+      var means = det
+        ? "Re-running repeats the same result — the upstream artifact or contract needs a fix first, so retry won't help. Cancel it, fix upstream, and run a fresh production."
+        : "A transient hiccup (network or runtime). Retrying the stage may clear it.";
+      var acts = "";
+      if (d.actions && d.actions.can_retry) acts += '<button class="dw-btn primary" data-act="retry">Retry stage</button>';
+      if (d.actions && d.actions.can_cancel) acts += '<button class="dw-btn danger" data-act="cancel">Cancel video</button>';
+      acts += '<button class="dw-btn" data-act="close">Close</button>';
+      failBlock =
+        '<div class="insp-fail ' + (det ? "det" : "tr") + '">' +
+        '<div class="fk">' + (det ? "deterministic failure" : "transient failure") + "</div>" +
+        '<div class="why"><span class="lab">What happened</span>' + esc(d.failure.reason || "stage failed") + "</div>" +
+        '<div class="means"><span class="lab">What this means</span>' + esc(means) + "</div>" +
+        '<div class="insp-acts">' + acts + "</div>" +
+        '<div id="insp-result"></div></div>';
+    }
+
+    body.innerHTML =
+      '<div class="insp-head"><div class="ava">' + esc(ag.emoji || "•") + "</div><div>" +
+      '<div class="nm">' + esc(ag.display || ag.name || "—") +
+      ' <span class="pill-state ' + esc(bs) + '">' + esc(d.status || "") + "</span></div>" +
+      '<div class="role">' + esc(d.stage_label || "") + " · station <b>" + esc(d.key) + "</b></div>" +
+      '<div class="brain">brain: ' + esc(pv.provider || "—") + " · " + esc(pv.model || "") + "</div></div>" +
+      (d.updated_rel ? '<span class="when">' + esc(d.updated_rel) + "</span>" : "") + "</div>" +
+      (d.detail ? '<div class="insp-detail">' + esc(d.detail) + "</div>" : "") +
+      '<div class="insp-flow">' +
+      '<div class="io"><div class="io-lbl">Reads</div><div class="io-row">' + inputs + "</div></div>" +
+      '<div class="io-arrow">↓ ' + esc(ag.display || "agent") + " runs</div>" +
+      '<div class="io"><div class="io-lbl">Writes</div><div class="io-row">' + writes + "</div></div></div>" +
+      failBlock +
+      (d.failure ? "" : '<div class="insp-foot">Read-only inspector. Open an artifact to see its contents.</div>');
+
+    // wire artifact opens (jmodal layers above the drawer)
+    body.querySelectorAll(".chipf[data-art]").forEach(function (c) {
+      c.onclick = function () { openArtifact(slug, c.dataset.art); };
+    });
+    // wire honest fix actions
+    body.querySelectorAll("[data-act]").forEach(function (b) {
+      b.onclick = function () { inspectorAction(slug, d.key, b.dataset.act, body); };
+    });
+  }
+
+  async function inspectorAction(slug, key, act, body) {
+    if (act === "close") { closeDrawer(); return; }
+    var res = body.querySelector("#insp-result");
+    var path = act === "retry" ? "/api/retry/" + encodeURIComponent(slug)
+      : "/api/cancel/" + encodeURIComponent(slug);
+    if (res) res.innerHTML = '<div class="state-msg">' + (act === "retry" ? "Retrying…" : "Cancelling…") + "</div>";
+    try {
+      var r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      var out = await r.json().catch(function () { return {}; });
+      if (!r.ok) throw new Error(out.error || ("HTTP " + r.status));
+      if (res) res.innerHTML = '<div class="state-msg" style="color:var(--done)">✓ ' +
+        (act === "retry" ? "Retry started — back on the belt." : "Cancellation requested.") + "</div>";
+      flashSlug = slug;
+      scheduleBeltRefresh();
+      setTimeout(function () { closeDrawer(); renderPipeline(slug); }, 700);
+    } catch (e) {
+      if (res) res.innerHTML = '<div class="state-msg err">Couldn\'t ' + esc(act) + ": " + esc(e.message) + "</div>";
+    }
+  }
+
+  // ================================================================ DIALOG SYSTEM
+  var dlgPrevFocus = null;
+  function openDialog(opts) {
+    var root = $("dialog-root");
+    var ft = (opts.primary || opts.secondaryLabel !== undefined)
+      ? '<div class="ft">' +
+        (opts.secondaryLabel !== undefined
+          ? '<button class="btn dlg-cancel" type="button">' + esc(opts.secondaryLabel || "Cancel") + "</button>" : "") +
+        (opts.primary ? '<button class="btn primary grow dlg-primary" type="button">' + esc(opts.primary.label) + "</button>" : "") +
+        "</div>" : "";
+    root.innerHTML =
+      '<div class="dlg" role="dialog" aria-modal="true" aria-label="' + esc(opts.title) + '">' +
+      '<div class="box"><div class="hd"><div class="ic">' + esc(opts.icon || "●") + "</div>" +
+      "<div><h2>" + esc(opts.title) + "</h2>" +
+      (opts.sub ? '<div class="sub">' + esc(opts.sub) + "</div>" : "") + "</div>" +
+      '<button class="x" type="button" aria-label="Close">✕</button></div>' +
+      '<div class="bd">' + opts.body + "</div>" + ft + "</div></div>";
+    var dlg = root.querySelector(".dlg");
+    dlgPrevFocus = document.activeElement;
+    function close() { closeDialog(); if (opts.onClose) opts.onClose(); }
+    root.querySelector(".x").onclick = close;
+    var cancelBtn = root.querySelector(".dlg-cancel");
+    if (cancelBtn) cancelBtn.onclick = close;
+    var primary = root.querySelector(".dlg-primary");
+    if (primary && opts.primary) primary.onclick = opts.primary.onClick;
+    dlg.onclick = function (e) { if (e.target === dlg && !opts.hard) close(); };
+    dlg._keyh = function (e) {
+      if (e.key === "Escape" && !opts.hard) { e.preventDefault(); close(); return; }
+      if (e.key === "Tab") trapFocus(dlg, e);
+    };
+    document.addEventListener("keydown", dlg._keyh);
+    return dlg.querySelector(".box");
+  }
+  function closeDialog() {
+    var root = $("dialog-root"), dlg = root.querySelector(".dlg");
+    if (dlg && dlg._keyh) document.removeEventListener("keydown", dlg._keyh);
+    root.innerHTML = "";
+    if (dlgPrevFocus && dlgPrevFocus.focus) { try { dlgPrevFocus.focus(); } catch (e) {} }
+    dlgPrevFocus = null;
+  }
+  window.closeDialog = closeDialog;
+  function trapFocus(container, e) {
+    var f = container.querySelectorAll(
+      'button,[href],input,textarea,select,[tabindex]:not([tabindex="-1"])');
+    f = Array.prototype.filter.call(f, function (el) {
+      return !el.disabled && el.offsetParent !== null;
+    });
+    if (!f.length) return;
+    var first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+  function cssEsc(s) {
+    return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/"/g, '\\"');
+  }
+
+  // ================================================================ SSE (live)
+  function connectEvents() {
+    if (es || typeof EventSource === "undefined") return;
+    try { es = new EventSource("/api/events"); }
+    catch (e) { return; }
+    es.onmessage = function () { scheduleBeltRefresh(); scheduleActivityRefresh(); };
+    es.onerror = function () { /* EventSource auto-reconnects + resumes via Last-Event-ID */ };
+  }
+
   // ---------------------------------------------------------------- boot
-  document.addEventListener("DOMContentLoaded", function () { renderOverview(); });
+  document.addEventListener("DOMContentLoaded", function () {
+    renderOverview();
+    renderBelt();
+    connectEvents();
+    var g = $("ov-generate");
+    if (g) g.onclick = openLaunchModal;
+  });
 })();

@@ -20,7 +20,10 @@ from dashboard.tests.e2e.conftest import assert_no_console_errors
 
 
 def _open(page, base_url):
-    page.goto(base_url + "/", wait_until="networkidle")
+    # NOTE: not "networkidle" — the live SSE (/api/events) holds a connection open, so the
+    # page never goes network-idle. Wait for `load` + the overview's first rendered data.
+    page.goto(base_url + "/", wait_until="load")
+    page.wait_for_selector("#ov-kpis .kpi")
 
 
 def _active_view_id(page) -> str:
@@ -259,6 +262,29 @@ def test_responsive_mobile(page, base_url, guard_console):
     page.wait_for_selector("#ov-kpis .kpi")
     assert page.locator("#ov-kpis .kpi").count() >= 1
     assert page.locator("#ov-bottom .frow").count() >= 1
+    assert_no_console_errors(guard_console)
+
+
+# ============================================================ 6. Wide / 4k — no dead right-side gap
+def test_wide_viewport_no_dead_right_gap(page, base_url, guard_console):
+    """The retired mock capped content at 1320px and left-aligned it, dumping all empty
+    space on the right of a wide screen (the CEO's original complaint). The fluid shell
+    centers content within its column, so left/right gutters are balanced (no lopsided
+    right-side gap) and the cap is larger than the old 1320px."""
+    _open(page, base_url)
+    page.wait_for_selector("#ov-kpis .kpi")
+    for vw, vh in ((2560, 1440), (3840, 2160)):
+        page.set_viewport_size({"width": vw, "height": vh})
+        box = page.eval_on_selector(
+            ".view.active .main",
+            "el => { const m = el.getBoundingClientRect();"
+            " const c = el.closest('.content').getBoundingClientRect();"
+            " return {gapL: m.left - c.left, gapR: c.right - m.right, w: m.width}; }")
+        # centered within the content column → no lopsided dead right-side space
+        assert abs(box["gapL"] - box["gapR"]) <= 4, (
+            f"@{vw}px not centered: gapL={box['gapL']} gapR={box['gapR']}")
+        # uses meaningfully more width than the retired 1320px cap
+        assert box["w"] > 1320, f"@{vw}px content too narrow: {box['w']}"
     assert_no_console_errors(guard_console)
 
 
