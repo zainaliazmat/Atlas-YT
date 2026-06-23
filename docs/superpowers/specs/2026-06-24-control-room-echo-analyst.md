@@ -206,8 +206,9 @@ Via the YouTube Analytics API (`yt-analytics.readonly`), per published video:
 A **cohort** is the set of published videos sharing the same `(channelId, format)` within the rolling
 window. This is the unit Echo aggregates and reasons over. Rationale: channel size and short-vs-long are
 the two confounders large enough to manufacture false signals on their own; holding both constant is the
-cheapest honest comparison. (Finer segmentation — by hook shape, topic cluster — is a future refinement,
-O5; v1 keeps the axis coarse and trustworthy.)
+cheapest honest comparison. **The cohort key is a structured tuple** (`channelId`, `format`) so a third
+axis — **`hook-shape`** is the chosen next refinement (O5) — is **additive, not a rewrite**. v1 keeps
+the axis coarse and trustworthy; finer segmentation waits for real cohorts to exist.
 
 ### 6.3 Aggregation → cohort signals
 For each cohort with **n ≥ min-N** and **mature** data, Echo computes robust aggregates (median + IQR,
@@ -330,8 +331,9 @@ When a cohort signal **contradicts** a rubric band, Echo emits a `rubric_contrad
 - **Detection.** Echo holds the *real* outcome (e.g. cohort intro-retention is healthy) against the
   band's *predicted* verdict (the band says the hook property should fail / pass). A **sustained,
   cohort-scale, mature** disagreement is a decomposition gap — *the rubric is measuring the wrong thing
-  or missing a term.* (One-off or immature disagreements are not contradictions — same n=1/maturity
-  discipline as §5.3.)
+  or missing a term.* **Sensitivity (O2):** Echo raises the interview item only when **≥2 consecutive
+  mature cohorts agree** on the disagreement (one-off or immature disagreements are not contradictions —
+  same n=1/maturity discipline as §5.3). This avoids interview spam without letting a wrong band linger.
 - **Shape.** `kind:"rubric_contradiction"`, `acceptable:false`, `addendum:null`, `soft_path:null`,
   `evidence.cohort` populated, plus a `contradiction` block: `{band_id, band_predicts, reality_shows,
   cohort, sustained_over}`.
@@ -558,38 +560,45 @@ empty/under-powered state plainly so "no signal yet" never reads as "everything'
 
 ---
 
-## 18. OPEN QUESTIONS FOR CEO REVIEW
+## 18. OPEN QUESTIONS FOR CEO REVIEW — **RESOLVED 2026-06-24**
 
-1. **The discipline constants (O1 — the most important numbers).** What is the **minimum cohort size
+All seven were resolved by the CEO in this session (recommendations accepted). Recorded here with
+their resolutions; the body reflects them.
+
+1. **The discipline constants (O1 — the most important numbers).** The **minimum cohort size
    `min_cohort_n`**, the **rolling `window_days`**, and the **analytics-maturity lag `maturity_days`**
-   that make a `(channel × format)` signal *proposable* rather than noise? These are Echo's
-   noise-floor-equivalent — CEO-owned. Placeholders for the build: `min_cohort_n = 5`, `window_days =
-   30`, `maturity_days = 14`. Your call on the real floor (and whether short vs long need different
-   floors).
+   that make a `(channel × format)` signal *proposable* rather than noise — Echo's noise-floor-
+   equivalent, CEO-owned.
+   **→ RESOLVED:** start at **`min_cohort_n = 5`, `window_days = 30`, `maturity_days = 14`**, **tuned
+   against real data** once Herald has published for weeks. Short vs long *may* later get different
+   floors — revisit when real cohorts exist (re-open if the data demands it).
 
-2. **Contradiction sensitivity (O2).** How *sustained* must a reality-vs-rubric disagreement be before
-   Echo raises a `rubric_contradiction` CEO-interview item — e.g. ≥2 consecutive mature cohorts, or a
-   single cohort with n well above `min_cohort_n`? (Too sensitive → interview spam; too strict → the
-   rubric stays wrong longer.) Recommended: ≥2 mature cohorts agreeing.
+2. **Contradiction sensitivity (O2).** How *sustained* a reality-vs-rubric disagreement must be before
+   Echo raises a `rubric_contradiction` CEO-interview item.
+   **→ RESOLVED:** require **≥2 consecutive mature cohorts agreeing** on the disagreement before
+   raising the interview item (avoids interview spam without letting a wrong band linger). Encoded in
+   §9.
 
-3. **CTR baseline (O3).** Echo compares a cohort's CTR to **its own rolling baseline** (it has no
-   trustworthy absolute number). Confirm that's the right reference, or do you want an explicit target
-   CTR per format you'd own (like a rubric band, but for packaging)?
+3. **CTR baseline (O3).** What Echo compares a cohort's CTR against.
+   **→ RESOLVED:** **cohort's own rolling baseline** — Echo has no trustworthy absolute number, so it
+   never invents one. (If the CEO later sets an explicit per-format CTR target they own, Echo can adopt
+   it then; not now.)
 
-4. **Report retention (O4).** Keep an append-only `echo_reports.jsonl` history forever (drift over
-   time), cap it to the last N refreshes, or keep latest-only? Recommended: keep history (it's small
-   and shows whether coaching actually moved reality).
+4. **Report retention (O4).** History vs latest-only.
+   **→ RESOLVED:** **keep the append-only `echo_reports.jsonl` history** — it's small and is the proof
+   that coaching actually moved reality over time. (§10.)
 
-5. **Finer cohorts later (O5).** v1 is `channel × format`. Is the next refinement **hook-shape** or
-   **topic-cluster** segmentation, or do you want to stay coarse indefinitely? (Affects whether the
-   cohort key is designed to extend.)
+5. **Finer cohorts later (O5).** Whether/how to segment below `channel × format`.
+   **→ RESOLVED:** **stay coarse (`channel × format`) for v1**, but **design the cohort key to extend
+   toward `hook-shape`** later (closest to what coaching can change). The cohort key is a structured
+   tuple so a third axis is additive, not a rewrite. (§6.2.)
 
-6. **Rubric-contradiction notification (O6 — carries Slice-6 O5).** The contradiction interview item is
-   Echo's rarest, highest-value output. Beyond the Activity feed, should it also notify outside the
-   dashboard (email/Slack) so it isn't missed for weeks? Recommended: Activity feed for now, external
-   notify later.
+6. **Rubric-contradiction notification (O6 — carries Slice-6 O5).**
+   **→ RESOLVED:** **Activity feed only for now**; external notify (email/Slack) is a later add if items
+   start getting missed. (§9.)
 
-7. **The Herald token-store contract (O7).** This spec defines the `TokenProvider` interface Echo
-   consumes (`list_channels` / `analytics_token`, read-scope only — §6.4). Confirm Herald (#6) will
-   expose exactly this read-only handle (and never hands Echo the upload/force-ssl tokens), so Echo's
-   least-privilege read access is guaranteed at the contract, not by convention.
+7. **The Herald token-store contract (O7).** The `TokenProvider` interface Echo consumes
+   (`list_channels` / `analytics_token`, **read-scope only** — §6.4).
+   **→ RESOLVED:** **confirmed** — Echo must be **structurally incapable** of touching the channel:
+   Herald (#6) exposes only this read-only handle and **never** hands Echo the `youtube.upload` /
+   `force-ssl` tokens. This is the one promise to lock when the Herald spec is written. (§6.4.)
