@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YT-AGENTS — Control Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="rail">
+    <div class="logo">A</div>
+    <div class="ic on" data-go="v-overview" data-rail="overview">▦<span>Overview</span></div>
+    <div class="ic" data-go="v-pipeline" data-rail="pipeline">⛓<span>Pipeline</span></div>
+    <div class="ic" data-go="v-fleet" data-rail="fleet">◷<span>Fleet</span></div>
+    <div class="ic" data-go="v-quality" data-rail="quality">◔<span>Quality</span></div>
+    <div class="ic" data-go="v-projects" data-rail="projects">▤<span>Projects</span></div>
+  </aside>
+
+  <div class="content">
+
+    <!-- ===================== OVERVIEW ===================== -->
+    <section class="view active" id="v-overview"><div class="main">
+      <div class="phead">
+        <h1>Mission Control</h1>
+        <span class="sub">// live fleet + production spine</span>
+        <span class="who"><span class="dot"></span>CEO · Atlas online</span>
+      </div>
+      <div class="kpis k5" id="ov-kpis"></div>
+      <div id="ov-spine"></div>
+      <div class="grid2" id="ov-mid"></div>
+      <div class="grid2" id="ov-bottom"></div>
+    </div></section>
+
+    <!-- ===================== PIPELINE ===================== -->
+    <section class="view" id="v-pipeline"><div class="main">
+      <div class="crumb"><a data-go="v-projects" data-rail="projects">Projects</a> / <b>Pipeline</b> / <span id="pl-crumb-slug"></span></div>
+      <div class="phead" id="pl-head"></div>
+      <div class="kpis k6" id="pl-kpis"></div>
+      <div class="cols" id="pl-body"></div>
+    </div></section>
+
+    <!-- ===================== FLEET ===================== -->
+    <section class="view" id="v-fleet"><div class="main">
+      <div class="crumb"><b>Fleet</b></div>
+      <div class="phead"><h1>Fleet</h1><span class="sub" id="fl-sub">// select one to open their profile</span></div>
+      <div class="kpis k5" id="fl-kpis" style="margin-bottom:20px"></div>
+      <div class="grid" id="fl-grid"></div>
+    </div></section>
+
+    <!-- ===================== AGENT ===================== -->
+    <section class="view" id="v-agent"><div class="main">
+      <div class="crumb"><a data-go="v-fleet" data-rail="fleet">Fleet</a> / <b id="ag-crumb">Agent</b></div>
+      <div id="ag-body"></div>
+    </div></section>
+
+    <!-- ===================== QUALITY ===================== -->
+    <section class="view" id="v-quality"><div class="main">
+      <div class="crumb">Quality / <b>Self-improvement</b></div>
+      <div class="phead"><h1>Quality &amp; self-improvement</h1><span class="sub" id="ql-sub">// standard from reference videos · loop runs after every render</span>
+        <div class="acts"><button class="btn">Reference set</button><button class="btn">Run inspector</button><button class="btn primary">Edit rubric (CEO)</button></div>
+      </div>
+      <div class="kpis k6" id="ql-kpis"></div>
+      <div id="ql-body"></div>
+    </div></section>
+
+    <!-- ===================== PROJECTS ===================== -->
+    <section class="view" id="v-projects"><div class="main">
+      <div class="crumb"><b>Projects</b></div>
+      <div class="phead"><h1>Projects</h1><span class="sub">// every video — atlas/projects/</span><div class="acts"><button class="btn primary">+ New production</button></div></div>
+      <div class="kpis k6" id="pr-kpis"></div>
+      <div class="bar"><div class="tabs" id="pr-tabs"></div><div class="search"><input id="pr-search" placeholder="Search projects…"><button class="btn sm">Sort: updated ▾</button></div></div>
+      <div class="list" id="pr-list"></div>
+    </div></section>
+
+    <!-- ===================== GATE ===================== -->
+    <section class="view" id="v-gate"><div class="main" id="gt-main"></div></section>
+
+  </div>
+
+  <div id="modal-root"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -21,6 +21,8 @@ from adapters.art_director import ArtDirectorAdapter
 from adapters.asset_sourcer import AssetSourcerAdapter
 from adapters.audio import AudioAdapter
 from adapters.composition_engineer import CompositionEngineerAdapter
+from adapters.editorial_coach import EditorialCoachAdapter
+from adapters.production_coach import ProductionCoachAdapter
 from adapters.reference_analyst import ReferenceAnalystAdapter
 from adapters.sage import SageAdapter
 from adapters.scout import ScoutAdapter
@@ -286,6 +288,61 @@ REGISTRY: list[AgentEntry] = [
             params={"videos": str, "ceo_prefs": str},
             # FFmpeg + OpenCV analysis of several videos, plus an optional vision pass.
             timeout=900,
+        )],
+    ),
+
+    # ------------------------------------------------------------------
+    # The two domain COACHES — the self-improvement loop's hands (Phase-2 step 3).
+    # A coach is NOT a pipeline stage. Its job is to AUTHOR a soft-tier coaching
+    # addendum that moves a quality metric into its rubric band; the CEO-owned
+    # rubric decides the DIRECTION (the band decides; the coach proposes). The
+    # improvement loop (atlas/eval/loop.py) routes a diagnosed shortfall to the
+    # owning coach and persists the addendum through the GUARDED soft-tier write
+    # path — so a coach can influence only soft-tier persona/prompt text, never the
+    # rubric/contracts/spine. Purely additive: one registry entry + one adapter
+    # each, no orchestrator edits — their tools just appear.
+    # ------------------------------------------------------------------
+    # Quill — the Editorial / Content coach (pre-production: research, script,
+    # factcheck framing, asset relevance; mirrors rubric dimension G2).
+    AgentEntry(
+        name="editorial_coach",
+        display="Quill",
+        emoji="🖋️",
+        blurb="Coaches the content side (research/script/relevance) to move an editorial metric into band — authors the soft-tier note; the rubric sets the target.",
+        project_dir=str(_ROOT / "editorial-coach"),
+        adapter_cls=EditorialCoachAdapter,
+        role="Editorial / Content Coach",
+        jobs=[JobSpec(
+            name="propose_addendum",
+            tool="editorial_coach_propose_addendum",
+            description=("Author a soft-tier coaching addendum for a CONTENT specialist "
+                         "(research/script/factcheck/assets) to move a named quality band "
+                         "in the rubric-decided direction, without regressing siblings. "
+                         "Pass band_id and direction; returns the addendum text."),
+            params={"band_id": str, "direction": str},
+            timeout=180,
+        )],
+    ),
+    # Flux — the Production / Craft coach (production: style, storyboard, narration,
+    # composition, audio mix; mirrors rubric dimensions G3/G5/G6).
+    AgentEntry(
+        name="production_coach",
+        display="Flux",
+        emoji="🎚️",
+        blurb="Coaches the craft side (style/storyboard/audio/composition) to move a production metric into band — authors the soft-tier note; the rubric sets the target.",
+        project_dir=str(_ROOT / "production-coach"),
+        adapter_cls=ProductionCoachAdapter,
+        role="Production / Craft Coach",
+        jobs=[JobSpec(
+            name="propose_addendum",
+            tool="production_coach_propose_addendum",
+            description=("Author a soft-tier coaching addendum for a CRAFT specialist "
+                         "(style/storyboard/narration/compose/audiomix/render) to move a "
+                         "named quality band in the rubric-decided direction, without "
+                         "regressing siblings. Pass band_id and direction; returns the "
+                         "addendum text."),
+            params={"band_id": str, "direction": str},
+            timeout=180,
         )],
     ),
 ]

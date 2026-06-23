@@ -17,14 +17,16 @@ SEVEN = {"scout", "sage", "scriptwriter", "art_director", "asset_sourcer",
 # are now ready; no slot is a stub.
 NO_STUBS: set[str] = set()
 READY = set(SEVEN)
-# Additive (non-pipeline) agents that live in the registry alongside the seven roles.
-ADDITIVE = {"reference_analyst"}
+# Additive (non-pipeline) agents that live in the registry alongside the seven roles:
+# Vera (reference_analyst) defines the standard; Quill (editorial_coach) + Flux
+# (production_coach) are the self-improvement loop's two domain coaches (Phase-2 step 3).
+ADDITIVE = {"reference_analyst", "editorial_coach", "production_coach"}
 
 
 def test_all_seven_roles_registered():
     names = {e.name for e in registry.REGISTRY}
     assert SEVEN <= names                       # every pipeline role is present
-    assert names - SEVEN == ADDITIVE            # the only extras are additive agents (Vera)
+    assert names - SEVEN == ADDITIVE            # the only extras are additive agents
 
 
 def test_no_stubs_remain_all_seven_ready():

@@ -31,10 +31,15 @@ agents to do the production grind while they stay in the director's chair.
 `atlas/projects/` that ran all 10 stages and produced a real `video.mp4`. **All 7 pipeline roles
 now run real engines** — Scout and Sage predate the pipeline; the other five specialists were built
 and dropped into their registered slots, and the former `research`-stage stub is now wired to
-Sage's real engine (the stub survives only as an opt-in offline fallback; see §12). An **8th agent,
-Vera 🔬 the Reference Analyst**, is also built and tested — a standalone delegable job/persona
-(builds a `reference_rubric` from reference videos), **not** a pipeline stage (§12). Beyond the
+Sage's real engine (the stub survives only as an opt-in offline fallback; see §12). Beyond the
 terminal, a **Chainlit web operator UI is fully built** as a second frontend (§12).
+
+The registry now holds **10 agents**: the 7 pipeline specialists plus three **additive, off-pipeline**
+agents that power a new **self-improvement / evaluation system** (§13): **Vera 🔬** the Reference
+Analyst (builds a `reference_rubric` from reference videos — defines the standard), and two domain
+coaches — **Quill 🖋️** (editorial/content) and **Flux 🎚️** (production/craft) — that author coaching
+addenda when the eval loop diagnoses a quality shortfall. None of the three is a pipeline stage; the
+10-stage line is unchanged.
 
 ---
 
@@ -54,8 +59,9 @@ terminal, a **Chainlit web operator UI is fully built** as a second frontend (§
 | **External data APIs** | YouTube Data API v3 (Scout), Google Trends via `pytrends` (Scout), web search (DuckDuckGo `ddgs` default; Tavily/Brave optional), Wikipedia REST, GDELT news, plus PD/CC asset & audio archives (see §9) |
 | **Package manager** | `pip` + per-project `requirements.txt` |
 | **Web UI (optional)** | **Chainlit** 2.11.1 (in-process, additive) — the web "meeting room" at `atlas/web/app.py`; deps in `atlas/requirements-web.txt`, runtime config in `.chainlit/`. The terminal REPL needs none of it. |
-| **Tests** | `pytest` (43 test files across the repo; pure unit tests, no network) |
-| **Version control** | **Git** (`main` is the upstream default; active work is on `master`). History is a series of `checkpoint before …` commits — see §12 for the current in-flight work. |
+| **Dashboard (optional)** | **FastAPI + uvicorn** (additive, read-mostly) — the "Control Room" monitoring service at `atlas/dashboard/`; deps in `atlas/dashboard/requirements.txt`; launched by `./yt-atlas` (port 8848). Playwright for its E2E tests. |
+| **Tests** | `pytest` (73 test files across the repo, 36 of them under `atlas/tests/` — plus the dashboard's own suite under `atlas/dashboard/tests/`; pure unit tests, no network) |
+| **Version control** | **Git** (active branch is **`main`**, which is also the upstream default). The owner-run fixes landed via PR #1; the self-improvement system (§13) is the current uncommitted in-flight work. |
 
 A **web frontend now exists**: `atlas/session.py` is the UI-neutral core shared by both the
 terminal REPL (`atlas/chat.py`) and the Chainlit web operator UI (`atlas/web/app.py`). Both
@@ -141,6 +147,13 @@ YT-AGENTS/
 ├── .chainlit/                 # Chainlit runtime config (config.toml + translations) for the web UI
 ├── venv/                      # the one shared virtualenv (noise — skip)
 │
+├── rubric-decomposition.md            # design doc: the per-artifact rubric + credit-assignment model (§13)
+├── self-improvement-enhancement-decisions.md  # design doc: the self-improvement loop's principles + guardrails (§13)
+├── yt-atlas                           # ★ one-command launcher (bash) for the Control Room dashboard (port 8848)
+├── yt-agents-dashboard.html           # the approved static PROTOTYPE that the real atlas/dashboard/ app implements
+├── docs/                              # phase reports for the self-improvement work (phase1-report, phase2-plan, …)
+├── ReferanceVideos/                   # reference videos the rubric/calibration are derived from (sic: spelling)
+│
 ├── atlas/                     # ★ THE SHOWRUNNER / ORCHESTRATOR (the brain of the system)
 │   ├── run.py                 # entry point: `chat` (meeting room) | "<niche>" | `produce …`
 │   ├── chat.py                # terminal REPL frontend (commands, memory, SIGINT handling)
@@ -151,6 +164,14 @@ YT-AGENTS/
 │   │   └── README.md          #   how to run it (chainlit run web/app.py -w → :8000)
 │   ├── requirements-web.txt   # web-only deps (chainlit 2.11.1) — terminal needs none of it
 │   ├── web_sessions/          # per-agent web persona memory (created at runtime; separate from terminal state)
+│   ├── dashboard/             # ★ the FastAPI "Control Room" monitoring service (optional, read-mostly) — §8
+│   │   ├── app.py             #   create_app(): FastAPI factory; serves typed JSON + the static Control Room UI
+│   │   ├── server.py          #   uvicorn launcher (python -m dashboard.server [--port 8848] [--projects DIR])
+│   │   ├── data.py media.py   #   reads live state (registry, project.json, artifacts, souls, eval scorecards)
+│   │   ├── security.py        #   read-mostly guardrails; the one sanctioned write is gate approval via the seam
+│   │   ├── static/            #   the Control Room front-end assets
+│   │   ├── tests/             #   API + security + real-gate-write tests + Playwright E2E (e2e/)
+│   │   ├── requirements.txt REPORT.md __init__.py
 │   ├── orchestrator.py        # Atlas's brain: SDK query() loop, system prompt, playbooks
 │   ├── registry.py            # ★ THE REGISTRY — one AgentEntry per agent; the source of truth
 │   ├── tools.py               # generates SDK tools FROM the registry (+ timeout/containment)
@@ -162,15 +183,33 @@ YT-AGENTS/
 │   ├── contracts/             # ★ FROZEN ARTIFACT CONTRACTS (JSON Schema) + validator
 │   │   ├── __init__.py        #   validate(name, obj), CONTRACT_VERSION, version_for()
 │   │   └── *.schema.json      #   project, research_brief, script, factcheck_report, …
+│   ├── rubric/                # ★ FROZEN, CEO-OWNED QUALITY STANDARD (read-only; NO write path) — §13
+│   │   ├── __init__.py        #   deep-frozen accessors (load_rubric, bands, global_weights…); no writers
+│   │   └── rubric.json        #   v0.2.0-phase2-calibrated: 6 weighted dims + 1 floor + per-stage bands
+│   ├── eval/                  # ★ THE EVALUATION / SELF-IMPROVEMENT SUBSYSTEM (read-only over rubric) — §13
+│   │   ├── inspector.py       #   orchestrates analyzers → scorecard (python -m eval.inspector projects/<slug>)
+│   │   ├── analyzers/         #   text.py (structural JSON) · audio.py (ffmpeg) · video.py (ffprobe/frame-diff)
+│   │   ├── judged.py          #   the only LLM analyzer: ensembled, seeded pairwise-vs-reference judging
+│   │   ├── rollup.py          #   gate(measurement, band) + roll_up to global dimensions + floor
+│   │   ├── diagnose.py        #   credit assignment → one primary failing property to fix
+│   │   ├── loop.py            #   inspect→diagnose→propose→re-measure; WriteBoundaryError; coach routing
+│   │   ├── calibrate.py       #   propose bands from reference videos → rubric.proposal.json (never rubric.json)
+│   │   ├── holdout.py         #   train/test split; reject a change that regresses any held-out pass
+│   │   ├── tracking.py        #   append-only JSONL store (runs/eval_runs.jsonl) + noise_floor()
+│   │   ├── validation.py      #   eval-of-the-eval: every gated band must pass-good / fail-bad
+│   │   ├── types.py           #   Measurement dataclass + Analyzer/EvalContext
+│   │   └── runs/              #   append-only evaluation results (created at runtime)
 │   ├── adapters/              # uniform wrappers around each specialist (no sibling edits)
 │   │   ├── loader.py          #   in-process isolated import (the collision fix)
 │   │   ├── base.py            #   Adapter ABC: run_job (JOB) + ask (PERSONA)
 │   │   ├── stubs.py           #   offline placeholder producers + StubAdapter
 │   │   ├── scout.py sage.py scriptwriter.py art_director.py
 │   │   ├── asset_sourcer.py audio.py composition_engineer.py
+│   │   ├── reference_analyst.py            # Vera 🔬 — builds the reference_rubric standard (off-pipeline)
+│   │   ├── editorial_coach.py production_coach.py   # Quill 🖋️ + Flux 🎚️ — the two domain coaches (§13)
 │   ├── soul/                  # Atlas's persona: SOUL.md + STYLE.md + examples/
 │   ├── projects/              # ★ per-video working dirs (project.json + all artifacts + assets)
-│   ├── tests/                 # 14 test files (contracts, pipeline, registry, routing, …)
+│   ├── tests/                 # 36 test files (contracts, pipeline, registry, routing, + 15 test_eval_* + coaches)
 │   ├── README.md PLAN.md CHANGELOG.md   # (README/PLAN describe the early Scout+Sage phase)
 │   └── atlas.log              # produce_video arg-logging (INFO)
 │
@@ -196,6 +235,13 @@ YT-AGENTS/
 │   └── audio_engine.py audio_sources.py sfx_kit.py hf_audio.py run.py llm.py SKILL.md soul/
 ├── composition-engineer/      # "Mason" — artifacts → HyperFrames HTML + render → video.mp4
 │   └── composition_engine.py hf_tools.py run.py chat.py llm.py SKILL.md soul/ tests/
+│
+├── reference-analyst/         # "Vera" 🔬 — reference videos → reference_rubric (the STANDARD)
+│   └── *_engine.py run.py chat.py llm.py standards/ SKILL.md soul/ tests/
+├── editorial-coach/           # "Quill" 🖋️ — editorial/content coach (off-pipeline; §13)
+│   └── coach_engine.py run.py chat.py llm.py SKILL.md soul/ tests/
+├── production-coach/          # "Flux" 🎚️ — production/craft coach (off-pipeline; §13)
+│   └── coach_engine.py run.py chat.py llm.py SKILL.md soul/ tests/
 │
 └── .agents/skills/            # HyperFrames documentation skills (hyperframes, -cli, -media,
                                #   -animation, faceless-explainer, embedded-captions, …)
@@ -271,8 +317,16 @@ changes). See §12 and `atlas/web/README.md`.
   Streaming reuses the orchestrator's already-callback-parameterized seams (`on_text=`, `Progress(sink=)`),
   so `orchestrator.py` is untouched by the web UI.
 - **`project_view.py`** — read-only artifact previews + `find_latest_blocked()`; feeds the web gate cards.
+- **`rubric/` + `eval/`** — the **self-improvement / evaluation system** (full detail in §13). `rubric/` is the
+  frozen, CEO-owned quality standard (read-only, no write path); `eval/` measures a finished project against it
+  (deterministic + ensembled-judge analyzers → scorecard), diagnoses the single biggest shortfall, and lets the
+  loop propose a **soft-tier-only** coaching fix via the Quill/Flux coaches. Strictly read-only over the rubric,
+  contracts, and spine — enforced structurally by `WriteBoundaryError`.
 
-### The eight agents (each is an independent, runnable project)
+### The ten agents (each is an independent, runnable project)
+
+The first seven are pipeline specialists; the last three (Vera, Quill, Flux) are **additive, off-pipeline**
+agents for the self-improvement system (§13).
 
 | Agent (project) | Persona | Role | Engine entry point(s) | Reads → Writes |
 |---|---|---|---|---|
@@ -284,6 +338,8 @@ changes). See §12 and `atlas/web/README.md`.
 | `audio-designer` | **Cadence** 🎙️ | Audio / Sound Designer | `audio_engine.record_narration(script, pdir)`; `audio_engine.mix_audio(...)` | `script.json` → `narration.wav` + `narration.transcript.json` + `master.wav` + `audio_manifest.json` |
 | `composition-engineer` | **Mason** 🛠️ | Composition Engineer | `composition_engine.compose(pdir)`; `composition_engine.run_render(pdir)` | all artifacts → scene HTML + `composition_manifest.json` → `video.mp4` |
 | `reference-analyst` | **Vera** 🔬 | Reference Analyst (off-pipeline job) | `reference_analyst` engine over reference videos (FFmpeg/OpenCV) | reference videos → `reference_rubric` (a STANDARD, not a pipeline artifact) |
+| `editorial-coach` | **Quill** 🖋️ | Editorial/Content Coach (off-pipeline; §13) | `coach_engine.propose_addendum(band_id, direction, …)` | diagnosed editorial shortfall → markdown coaching addendum (text only) |
+| `production-coach` | **Flux** 🎚️ | Production/Craft Coach (off-pipeline; §13) | `coach_engine.propose_addendum(band_id, direction, …)` | diagnosed production shortfall → markdown coaching addendum (text only) |
 
 **A few critical domain mechanisms:**
 - **Iris's "one #FFD000 beat":** exactly one scene per video carries the `highlighter-FFD000`
@@ -342,8 +398,20 @@ The full transcript lives only in RAM and is distilled into the summary on every
 
 ## 8. APIs / Interfaces
 
-This project has **no public HTTP API**. Its interfaces are CLIs, an optional Chainlit web app,
-the in-process orchestrator tools, and each engine's public functions.
+The project's main interfaces are CLIs, the in-process orchestrator tools, each engine's public
+functions, and two optional web frontends: a Chainlit "meeting room" and a FastAPI "Control Room"
+dashboard. Only the dashboard exposes an HTTP API, and it is **read-mostly** (one sanctioned write).
+
+**Control Room dashboard** (`./yt-atlas` → http://127.0.0.1:8848; or `cd atlas && python -m
+dashboard.server`): an **additive, read-mostly FastAPI service** that reads live system state
+(registry, `project.json`, artifacts, souls, **eval scorecards**) and serves six Control Room screens
+(+ a gate screen) as typed JSON + static assets; the API is browsable at `/api/docs`. The **only**
+mutation is gate approval, delegated unchanged to `session.AtlasSession.approve_gate` →
+`pipeline.produce(slug, approve=<gate>)`. It never reorders stages, edits a contract, touches gate
+logic, or writes `chat_state.json`. The whole deliverable lives in the new `atlas/dashboard/` package;
+the engine, pipeline, contracts, gates, registry, session, and Chainlit UI are all untouched. It turns
+the approved `yt-agents-dashboard.html` prototype into a real, tested service (its own API + security +
+real-gate-write + Playwright E2E suites under `atlas/dashboard/tests/`).
 
 **Web operator UI** (`chainlit run web/app.py -w` → :8000): a browser meeting room over the same
 `session.py` core — streaming chat with Atlas, the two pipeline gates as **Approve / Revise**
@@ -444,11 +512,25 @@ pip install -r requirements-web.txt              # chainlit 2.11.1 (terminal nee
 chainlit run web/app.py -w                        # -> http://localhost:8000
 ```
 
+**Run the Control Room dashboard** (optional FastAPI monitor; read-mostly — §8):
+```bash
+./yt-atlas                                        # one-command launcher -> http://127.0.0.1:8848
+# or, manually:
+cd atlas && pip install -r dashboard/requirements.txt && python -m dashboard.server
+```
+
+**Evaluate a finished project against the rubric** (the self-improvement harness — §13):
+```bash
+cd atlas
+python -m eval.inspector projects/<slug> [--judged] [--no-track]   # -> scorecard
+```
+
 **Test** (per project; pure unit tests, no network/API):
 ```bash
-cd atlas && python -m pytest tests/ -q
-# Atlas core is well over 100 tests green (incl. session/web-session/gate tests); each
-# specialist has its own suite. Counts grow as specialists and the web UI land.
+cd atlas && python -m pytest tests/ -q          # 36 atlas test files (incl. 15 test_eval_* + coaches)
+cd atlas && python -m pytest dashboard/tests/ -q  # the Control Room's own API/security/E2E suite
+# Atlas core is well over 100 tests green (incl. session/web-session/gate/eval tests); each
+# specialist has its own suite.
 ```
 
 ---
@@ -502,6 +584,11 @@ cd atlas && python -m pytest tests/ -q
   resume-on-profile-switch) · **C-v2** Marlow's script job-gate as an approval button (injectable
   approver seam, terminal behavior byte-identical) · **D** inline media (swatches/thumbnails/draft MP4).
   It's additive: orchestrator, pipeline, contracts, registry, and every sibling engine are untouched.
+- **A FastAPI "Control Room" dashboard is built and tested** (`atlas/dashboard/`, launched by `./yt-atlas`
+  → :8848; see §8). It turns the approved `yt-agents-dashboard.html` prototype into a real, read-mostly
+  monitoring service over live state (registry, projects, artifacts, souls, eval scorecards), with the one
+  sanctioned write (gate approval) routed through the existing pipeline seam. It ships its own API/security/
+  real-gate-write/Playwright-E2E suites and touches nothing in the engine, pipeline, contracts, or registry.
 
 **Recently resolved (owner run):**
 - **Issue #2 — "irrelevant footage" — now RESOLVED; both fix directions landed.**
@@ -530,6 +617,21 @@ cd atlas && python -m pytest tests/ -q
   - **Mason render fixes:** font handling, a native data-chart render, a contrast-blocking gate, and
     caption legibility.
 
+**In flight — the self-improvement / evaluation system (uncommitted working diff; full detail in §13):**
+- **Phase 1 (foundation) built and proven:** the frozen, CEO-owned `atlas/rubric/` (read-only, no write path)
+  plus the `atlas/eval/` analyzers + inspector + roll-up + diagnose + loop. A real scorecard runs against a
+  finished project; the loop is write-boundary-safe (can only touch soft-tier persona/prompt markdown).
+- **Phase 2 in progress:** step 1 = band **calibration** from the `ReferanceVideos/` set (`calibrate.py` →
+  `rubric.proposal.json`, never the rubric itself); step 2 = **hardened loop** (holdout split + judged
+  noise-floor gate + held-out verifier) with a real accept demonstrated; step 3 = **split coaching** — the loop
+  now delegates a diagnosed fix to one of two sibling coaches (**Quill 🖋️** editorial / **Flux 🎚️** production)
+  by stage (`coach_for_stage` / `delegate_to_coach` / `use_coaches`); step 4 = **bounded research/self-study
+  has begun** (a `research` flag widens what the coach tries, but a hypothesis is adopted only if it beats
+  the held-out gate). The rubric numbers are still partly placeholders pending the visual CEO interview.
+- This work is **additive and uncommitted** (new `atlas/rubric/`, `atlas/eval/`, two coach adapters, three new
+  sibling projects, `docs/`, and the two root design docs). The pipeline, contracts, and registry-of-7-specialists
+  are untouched; the registry gained only the three off-pipeline agents.
+
 **Known gaps / tech debt:**
 - **The `research` stage now runs Sage's REAL engine** (was a stub when this doc was first written).
   `pipeline.py` wires `sage.produce_research` as the default `research` producer (mirroring how
@@ -553,7 +655,91 @@ cd atlas && python -m pytest tests/ -q
 
 ---
 
-## 13. Glossary
+## 13. The Self-Improvement & Evaluation System
+
+> This is the newest layer (uncommitted working diff). It adds a "self-improvement department" that
+> learns what *good* means from reference videos and continuously tunes the fleet toward that standard —
+> **without ever being able to trade away reliability.** Design docs: `rubric-decomposition.md` and
+> `self-improvement-enhancement-decisions.md` at the repo root; phase reports under `docs/`.
+
+**Two non-negotiables it is built around:**
+1. **Evals are the foundation.** Nothing is "better" unless it moves a measured number against a fixed bar.
+   Without measurement, "improvement" is just two LLMs nodding at each other.
+2. **The improver is LESS privileged than the guarantees.** It can never edit its own success bar (the
+   rubric), the contracts, the pipeline spine, the gates, or the registry. This privilege asymmetry is
+   enforced *structurally* (see the write boundary below), not by convention.
+
+### The rubric — the frozen, CEO-owned standard (`atlas/rubric/`)
+- `rubric/rubric.json` (currently **v0.2.0-phase2-calibrated**) defines **6 globally-weighted quality
+  dimensions** (G1 pacing 0.20 · G2 editorial 0.25 · G3 visual craft 0.20 · G4 asset relevance 0.15 ·
+  G5 audio 0.15 · G6 AV coherence 0.05) **plus one hard floor F** (technical integrity — a pass/fail gate,
+  never averaged). Under those sit **per-stage bands** for each measurable property (e.g. `script:hook_strength`,
+  `audiomix:integrated_loudness`, `compose:motion_energy`), each with an owner, a comparator
+  (`range`/`gte`/`lte`/`eq`/`eq_true`/`info`), min/max/target, and a `kind` of **objective** or **judged**.
+- `rubric/__init__.py` exposes **read-only** accessors that return deeply-immutable `MappingProxyType`
+  (mutation raises) — **there is no write function anywhere.** The eval code reads it; nothing writes it.
+  Many bands are still flagged `placeholder: true` — the *methods/ownership/structure* are stable; the
+  *numbers* are tunable and await reference-derived calibration + a CEO interview.
+
+### The eval subsystem (`atlas/eval/`) — measure → gate → diagnose
+- **Analyzers** turn a finished project's artifacts into `Measurement`s. Three are **deterministic, no LLM**:
+  `analyzers/text.py` (structural JSON over script/style/storyboard/assets/narration), `analyzers/audio.py`
+  (ffmpeg/ffprobe loudness/peak/ducking/SNR), `analyzers/video.py` (ffprobe + frame-diff motion/cut-rhythm/
+  AV-sync). One is LLM-backed: `judged.py` — **ensembled, seeded, pairwise-vs-reference** comparison
+  (default N=5, a per-vote seeded coin flip defeats order bias, variance tracked) for the two holistic
+  properties `script:hook_strength` and `render:overall_polish`. Every analyzer **degrades gracefully**:
+  a missing artifact yields `value=None` + an error string, never a crash.
+- **`inspector.py`** orchestrates the analyzers into a **scorecard**:
+  `python -m eval.inspector projects/<slug> [--judged] [--no-track]`.
+- **`rollup.py`** gates each measurement against its band and rolls local properties up into the global
+  dimensions + floor. `overall_polish` is a holistic **anchor**, not a weighted term — if the locals all pass
+  but the anchor fails, that's a flagged **"decomposition gap"** (the rubric is missing something).
+- **`diagnose.py`** does **credit assignment**: it picks **one** primary failing property to fix — only a
+  soft-tier, single-owner failure (multi-owner/coordination conflicts and hard-floor fails are escalated to
+  the CEO, never auto-fixed), preferring the highest-weight dimension.
+- **`tracking.py`** is an **append-only JSONL** results store (`eval/runs/eval_runs.jsonl`, crash-tolerant)
+  and computes a **noise floor** (run a held-out set K≥5× and measure the natural variance) so a change must
+  beat the noise to count as real. **`holdout.py`** keeps a train/test split and **rejects any change that
+  regresses a property that passed on the held-out set** (overfitting guard). **`validation.py`** is the
+  *eval-of-the-eval*: every gated band must pass a known-good sample and fail a known-bad one.
+  **`calibrate.py`** proposes reference-derived bands into `eval/rubric.proposal.json` — **never** into the
+  rubric (media-measurable bands come from references; structural/editorial bands surface as
+  "needs CEO interview").
+
+### The loop (`atlas/eval/loop.py`) — propose a soft fix, prove it, accept or reject
+- Flow: **inspect → diagnose → propose → re-measure → accept/reject**, bounded by caps and the noise floor.
+- **The write boundary is the safety core.** `apply_soft_change()` will only write **markdown** files that are
+  soft-tier (stem contains `SOUL|STYLE|SKILL|PERSONA|PLAYBOOK|PROMPT|COACH`, or live under a `soul/` dir). It
+  raises `WriteBoundaryError` on any attempt to touch `rubric/`, `contracts/`, `pipeline.py`, `registry.py`,
+  or `adapters/loader.py`. A `can_write_rubric()` self-check asserts the rubric is genuinely unwritable.
+  So a "fix" can only mean **evolving the text an agent runs on** (persona / playbook / prompt) — never its
+  code, its success bar, or the spine. (The fix gradient: **soft** = auto-applied if eval improves · **hard**
+  = proposed for a human to apply · **forbidden** = never.)
+
+### The two domain coaches (Quill 🖋️ + Flux 🎚️)
+- When the loop has a diagnosed target, it **delegates the authoring of the fix to a sibling coach** (Phase-2,
+  step 3). **`coach_for_stage()`** routes by stage: editorial stages (`research`, `script`, `factcheck`,
+  `assets`) → **Quill** (`editorial-coach/`); production stages (`style`, `storyboard`, `narration`, `compose`,
+  `audiomix`, `render`) → **Flux** (`production-coach/`). `delegate_to_coach()` calls the coach adapter's
+  `propose_addendum` job. **Direction is decided by the rubric; the coach only *authors* the persuasive,
+  domain-aware addendum** (markdown text only — a coach never edits project files, the rubric, or pass/fail).
+  Authoring priority in `propose_fix()`: injected `coach_fn` (tests) → delegate to the owning coach →
+  legacy in-loop LLM → a deterministic rule addendum (offline-safe default).
+- **Vera 🔬** (`reference-analyst/`) is the upstream of this whole system: she builds the `reference_rubric`
+  *standard* from the `ReferanceVideos/` set — she defines "good", she does not improve videos.
+
+### The path / current phase
+- **Phase 1** (establish the standard + the basic measurement) — **done**. **Phase 2**: step 1 calibration ·
+  step 2 hardened loop (a real accept was demonstrated end-to-end) · step 3 split coaching — **done/in
+  progress**; **step 4 bounded research/self-study has begun** — a `research` flag threads through to the
+  owning coach to widen what's tried, but a researched hypothesis is **adopted only when it beats the
+  held-out gate** (research widens; the rubric + held-out set prune). See `atlas/tests/test_eval_research.py`.
+- Still ahead: the **visual CEO interview** to replace the placeholder rubric bands with chosen targets; until
+  it lands the bands remain partly placeholders.
+
+---
+
+## 14. Glossary
 
 - **Showrunner / Atlas** — the manager agent the CEO talks to; orchestrates the fleet and the pipeline.
 - **CEO** — the human user; the system's single principal.
@@ -582,4 +768,18 @@ cd atlas && python -m pytest tests/ -q
 - **Distillation** — collapsing a meeting transcript into a single durable summary at each session boundary.
 - **Stub** — an offline, deterministic placeholder producer (`adapters/stubs.py`) that writes a
   schema-valid artifact so the data-flow runs without a real specialist.
-```
+- **Rubric** — `atlas/rubric/`; the frozen, CEO-owned quality standard (weighted dimensions + bands).
+  Read-only with **no write path** — the improver can never edit its own success bar.
+- **Band** — a per-property target in the rubric (owner + comparator + min/max/target + objective|judged).
+- **Objective vs judged** — an objective property is measured by deterministic code (ffmpeg/structural);
+  a judged property is scored by an ensembled, seeded, pairwise-vs-reference LLM vote.
+- **Scorecard** — the inspector's output: every measurement gated against its band + rolled up to dimensions.
+- **Decomposition gap** — locals all pass but the holistic `overall_polish` anchor fails → the rubric is
+  missing a term; escalated to the CEO rather than auto-fixed.
+- **Noise floor** — the natural run-to-run variance of a metric; a change must beat it to count as real.
+- **Holdout** — a held-out project set used to reject changes that overfit (any held-out pass that regresses).
+- **Write boundary / soft-tier** — the structural rule that the loop may only write soft-tier markdown
+  (persona/playbook/prompt/`soul/`), never the rubric, contracts, spine, or registry (`WriteBoundaryError`).
+- **Coach** — Quill 🖋️ (editorial) or Flux 🎚️; authors a coaching addendum for a diagnosed shortfall.
+  The rubric decides the **direction**; the coach only **authors** the text. Not a pipeline stage.
+- **Reference rubric / Vera** — the standard Vera 🔬 derives from reference videos; defines "good".

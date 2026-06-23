@@ -1,0 +1,434 @@
+{
+  "proposal_version": "phase2-step1/1.0",
+  "generated_against_rubric": "0.1.0-phase1-placeholder",
+  "reference_dir": "/home/zain-ali/Documents/YT-AGENTS/ReferanceVideos",
+  "n_references": 8,
+  "reference_durations_sec": {
+    "61383987.mp4": 57.0,
+    "DeepSeek Just Solved AI's Billion Dollar Problem [mG4SmhWyeFA].mp4": 349.6,
+    "YTDown_YouTube_AI-Was-Supposed-to-Replace-Workers-It-s-_Media_thwf0gtZ_pY_002_720p.mp4": 1125.1,
+    "YTDown_YouTube_Best-Pomodoro-Timer-Apps-EVER_Media_Hz6d7du0das_002_720p.mp4": 583.4,
+    "YTDown_YouTube_Google-Flow-Tutorial-How-To-Use-Google-F_Media_5fX2xnWntaw_002_720p (1).mp4": 1406.2,
+    "YTDown_YouTube_Introducing-Google-Spark_Media_9Mi5vpAFgu0_002_720p.mp4": 347.1,
+    "YTDown_YouTube_New-robot-waifus-GLM-5-2-craze-AI-spas-n_Media_kkLlzQqa7MY_002_720p.mp4": 2114.3,
+    "YTDown_YouTube_Nvidias-New-Mini-Datacenter-Pays-You-Eve_Media_vahdFdoK6y4_002_720p.mp4": 645.2
+  },
+  "format_profiles": {
+    "short": {
+      "runtime_band": [
+        60,
+        90
+      ],
+      "note": "current testing format (~60\u201390s explainer)"
+    },
+    "long": {
+      "runtime_band": [
+        300,
+        480
+      ],
+      "note": "future format (~5\u20138 min); proposed, CEO to confirm"
+    }
+  },
+  "reference_format_split": {
+    "short_<=120s": [
+      "61383987.mp4"
+    ],
+    "long_120-480s": [
+      "DeepSeek Just Solved AI's Billion Dollar Problem [mG4SmhWyeFA].mp4",
+      "YTDown_YouTube_Introducing-Google-Spark_Media_9Mi5vpAFgu0_002_720p.mp4"
+    ],
+    "over_long_>480s": [
+      "YTDown_YouTube_AI-Was-Supposed-to-Replace-Workers-It-s-_Media_thwf0gtZ_pY_002_720p.mp4",
+      "YTDown_YouTube_Best-Pomodoro-Timer-Apps-EVER_Media_Hz6d7du0das_002_720p.mp4",
+      "YTDown_YouTube_Google-Flow-Tutorial-How-To-Use-Google-F_Media_5fX2xnWntaw_002_720p (1).mp4",
+      "YTDown_YouTube_New-robot-waifus-GLM-5-2-craze-AI-spas-n_Media_kkLlzQqa7MY_002_720p.mp4",
+      "YTDown_YouTube_Nvidias-New-Mini-Datacenter-Pays-You-Eve_Media_vahdFdoK6y4_002_720p.mp4"
+    ]
+  },
+  "own_output_baseline": {
+    "coffee-vs-tea-which-actually-gives-you-better-ener-20260622-080322-0e8b": {
+      "render:final_loudness": -22.0,
+      "render:final_peak": 0.3,
+      "compose:motion_energy": 0.928,
+      "render:final_runtime": 98.495,
+      "audiomix:integrated_loudness": -22.0,
+      "audiomix:true_peak": 0.3
+    },
+    "gpt-4o-vs-claude-vs-gemini-vs-deepseek-comparison--20260621-013345-67a3": {
+      "render:final_loudness": -21.8,
+      "render:final_peak": -0.5,
+      "compose:motion_energy": 1.692,
+      "render:final_runtime": 72.533,
+      "audiomix:integrated_loudness": -21.8,
+      "audiomix:true_peak": -0.5
+    },
+    "how-noise-cancelling-headphones-actually-work-a-ti-20260622-200052-3ffa": {
+      "render:final_loudness": -21.7,
+      "render:final_peak": -2.6,
+      "compose:motion_energy": 1.163,
+      "render:final_runtime": 73.066,
+      "audiomix:integrated_loudness": -21.7,
+      "audiomix:true_peak": -2.6
+    },
+    "the-first-job-ai-will-destroy-jensen-huang-predict-20260621-190118-3d76": {
+      "render:final_loudness": -21.9,
+      "render:final_peak": -0.2,
+      "compose:motion_energy": 1.077,
+      "render:final_runtime": 90.667,
+      "audiomix:integrated_loudness": -21.9,
+      "audiomix:true_peak": -0.2
+    }
+  },
+  "vera_crosscheck": {
+    "source_videos": [
+      "61383987.mp4",
+      "61383987.mp4"
+    ],
+    "method_note": "Vera uses ffmpeg loudnorm + scene-threshold cut detection (DIFFERENT units than the eval instrument) \u2014 cross-check only.",
+    "pacing_avg_shot_sec": {
+      "value": 4.39,
+      "band": [
+        3.731,
+        5.048
+      ]
+    },
+    "audio_integrated_lufs_loudnorm": {
+      "value": -9.94,
+      "band": [
+        -11.431,
+        -8.449
+      ]
+    },
+    "audio_true_peak_loudnorm": {
+      "value": 0.78,
+      "band": [
+        0.663,
+        0.897
+      ]
+    },
+    "motion_kinetic_score_normalized": {
+      "value": 0.184,
+      "band": [
+        0.157,
+        0.212
+      ]
+    },
+    "color_saturation": {
+      "value": 0.171,
+      "band": [
+        0.145,
+        0.197
+      ]
+    },
+    "color_brightness": {
+      "value": 0.401,
+      "band": [
+        0.341,
+        0.461
+      ]
+    }
+  },
+  "bands": [
+    {
+      "band_id": "render:final_loudness",
+      "comparator": "range",
+      "source": "delivery-standard",
+      "confidence": "keep-current",
+      "current": {
+        "comparator": "range",
+        "min": -15.0,
+        "max": -13.0,
+        "unit": "LUFS",
+        "placeholder": true
+      },
+      "proposed": {
+        "recommendation": "KEEP current standard",
+        "comparator": "range",
+        "min": -15.0,
+        "max": -13.0,
+        "unit": "LUFS",
+        "placeholder": true
+      },
+      "n_refs": 8,
+      "rationale": "DELIVERY STANDARD (-14 LUFS broadcast target). References span -24.8\u2026-9.8 LUFS (spread 15.0 > 4.0) \u2014 raw downloads carry each creator's upload mastering, so there is NO shared loudness DNA to learn. KEEP the standard. Our own output: [-22.0, -21.8, -21.7, -21.9].",
+      "per_video": {
+        "61383987.mp4": -9.8,
+        "DeepSeek Just Solved AI's Billion Dollar Problem [mG4SmhWyeFA].mp4": -17.4,
+        "YTDown_YouTube_AI-Was-Supposed-to-Replace-Workers-It-s-_Media_thwf0gtZ_pY_002_720p.mp4": -18.1,
+        "YTDown_YouTube_Best-Pomodoro-Timer-Apps-EVER_Media_Hz6d7du0das_002_720p.mp4": -24.3,
+        "YTDown_YouTube_Google-Flow-Tutorial-How-To-Use-Google-F_Media_5fX2xnWntaw_002_720p (1).mp4": -24.8,
+        "YTDown_YouTube_Introducing-Google-Spark_Media_9Mi5vpAFgu0_002_720p.mp4": -18.5,
+        "YTDown_YouTube_New-robot-waifus-GLM-5-2-craze-AI-spas-n_Media_kkLlzQqa7MY_002_720p.mp4": -17.1,
+        "YTDown_YouTube_Nvidias-New-Mini-Datacenter-Pays-You-Eve_Media_vahdFdoK6y4_002_720p.mp4": -17.2
+      }
+    },
+    {
+      "band_id": "audiomix:integrated_loudness",
+      "comparator": "range",
+      "source": "delivery-standard",
+      "confidence": "keep-current",
+      "current": {
+        "comparator": "range",
+        "min": -15.0,
+        "max": -13.0,
+        "unit": "LUFS",
+        "placeholder": true
+      },
+      "proposed": {
+        "recommendation": "KEEP current standard",
+        "comparator": "range",
+        "min": -15.0,
+        "max": -13.0,
+        "unit": "LUFS",
+        "placeholder": true
+      },
+      "n_refs": 8,
+      "rationale": "DELIVERY STANDARD (-14 LUFS broadcast target). References span -24.8\u2026-9.8 LUFS (spread 15.0 > 4.0) \u2014 raw downloads carry each creator's upload mastering, so there is NO shared loudness DNA to learn. KEEP the standard. Our own output: [-22.0, -21.8, -21.7, -21.9].",
+      "per_video": {
+        "61383987.mp4": -9.8,
+        "DeepSeek Just Solved AI's Billion Dollar Problem [mG4SmhWyeFA].mp4": -17.4,
+        "YTDown_YouTube_AI-Was-Supposed-to-Replace-Workers-It-s-_Media_thwf0gtZ_pY_002_720p.mp4": -18.1,
+        "YTDown_YouTube_Best-Pomodoro-Timer-Apps-EVER_Media_Hz6d7du0das_002_720p.mp4": -24.3,
+        "YTDown_YouTube_Google-Flow-Tutorial-How-To-Use-Google-F_Media_5fX2xnWntaw_002_720p (1).mp4": -24.8,
+        "YTDown_YouTube_Introducing-Google-Spark_Media_9Mi5vpAFgu0_002_720p.mp4": -18.5,
+        "YTDown_YouTube_New-robot-waifus-GLM-5-2-craze-AI-spas-n_Media_kkLlzQqa7MY_002_720p.mp4": -17.1,
+        "YTDown_YouTube_Nvidias-New-Mini-Datacenter-Pays-You-Eve_Media_vahdFdoK6y4_002_720p.mp4": -17.2
+      }
+    },
+    {
+      "band_id": "render:final_peak",
+      "comparator": "lte",
+      "source": "delivery-standard",
+      "confidence": "keep-current",
+      "current": {
+        "comparator": "lte",
+        "max": -1.0,
+        "unit": "dBTP",
+        "placeholder": true
+      },
+      "proposed": {
+        "recommendation": "KEEP current standard",
+        "comparator": "lte",
+        "max": -1.0,
+        "unit": "dBTP",
+        "placeholder": true
+      },
+      "n_refs": 8,
+      "rationale": "DELIVERY STANDARD (no-clip ceiling \u2264 -1.0 dBTP). 5/8 references actually CLIP (true-peak > -1.0) \u2014 raw-upload mastering artifacts, not a target. A ceiling may never be loosened past the invariant \u2192 KEEP current. Our own output: [0.3, -0.5, -2.6, -0.2].",
+      "per_video": {
+        "61383987.mp4": 0.8,
+        "DeepSeek Just Solved AI's Billion Dollar Problem [mG4SmhWyeFA].mp4": -5.0,
+        "YTDown_YouTube_AI-Was-Supposed-to-Replace-Workers-It-s-_Media_thwf0gtZ_pY_002_720p.mp4": 0.2,
+        "YTDown_YouTube_Best-Pomodoro-Timer-Apps-EVER_Media_Hz6d7du0das_002_720p.mp4": -1.2,
+        "YTDown_YouTube_Google-Flow-Tutorial-How-To-Use-Google-F_Media_5fX2xnWntaw_002_720p (1).mp4": -4.5,
+        "YTDown_YouTube_Introducing-Google-Spark_Media_9Mi5vpAFgu0_002_720p.mp4": 0.1,
+        "YTDown_YouTube_New-robot-waifus-GLM-5-2-craze-AI-spas-n_Media_kkLlzQqa7MY_002_720p.mp4": 0.2,
+        "YTDown_YouTube_Nvidias-New-Mini-Datacenter-Pays-You-Eve_Media_vahdFdoK6y4_002_720p.mp4": 0.3
+      }
+    },
+    {
+      "band_id": "audiomix:true_peak",
+      "comparator": "lte",
+      "source": "delivery-standard",
+      "confidence": "keep-current",
+      "current": {
+        "comparator": "lte",
+        "max": -1.0,
+        "unit": "dBTP",
+        "placeholder": true
+      },
+      "proposed": {
+        "recommendation": "KEEP current standard",
+        "comparator": "lte",
+        "max": -1.0,
+        "unit": "dBTP",
+        "placeholder": true
+      },
+      "n_refs": 8,
+      "rationale": "DELIVERY STANDARD (no-clip ceiling \u2264 -1.0 dBTP). 5/8 references actually CLIP (true-peak > -1.0) \u2014 raw-upload mastering artifacts, not a target. A ceiling may never be loosened past the invariant \u2192 KEEP current. Our own output: [0.3, -0.5, -2.6, -0.2].",
+      "per_video": {
+        "61383987.mp4": 0.8,
+        "DeepSeek Just Solved AI's Billion Dollar Problem [mG4SmhWyeFA].mp4": -5.0,
+        "YTDown_YouTube_AI-Was-Supposed-to-Replace-Workers-It-s-_Media_thwf0gtZ_pY_002_720p.mp4": 0.2,
+        "YTDown_YouTube_Best-Pomodoro-Timer-Apps-EVER_Media_Hz6d7du0das_002_720p.mp4": -1.2,
+        "YTDown_YouTube_Google-Flow-Tutorial-How-To-Use-Google-F_Media_5fX2xnWntaw_002_720p (1).mp4": -4.5,
+        "YTDown_YouTube_Introducing-Google-Spark_Media_9Mi5vpAFgu0_002_720p.mp4": 0.1,
+        "YTDown_YouTube_New-robot-waifus-GLM-5-2-craze-AI-spas-n_Media_kkLlzQqa7MY_002_720p.mp4": 0.2,
+        "YTDown_YouTube_Nvidias-New-Mini-Datacenter-Pays-You-Eve_Media_vahdFdoK6y4_002_720p.mp4": 0.3
+      }
+    },
+    {
+      "band_id": "compose:motion_energy",
+      "comparator": "range",
+      "source": "aesthetic-rate",
+      "confidence": "low",
+      "current": {
+        "comparator": "range",
+        "min": 1.5,
+        "max": 40.0,
+        "unit": "luma",
+        "placeholder": true
+      },
+      "proposed": {
+        "min": 3.328,
+        "max": 14.689,
+        "value": 8.191,
+        "observed_min": 4.275,
+        "observed_max": 13.742
+      },
+      "n_refs": 7,
+      "rationale": "7/8 references @4fps |\u0394luma| in instrument units (1 undecodable, e.g. AV1). CAVEAT: references are stock-footage / screen-recording / long-form \u2014 a HIGHER-motion design space than our restrained motion-graphics. Our own output motion: [0.928, 1.692, 1.163, 1.077]; 4/4 of our renders fall OUTSIDE the proposed band [3.33, 14.69] (ours: [0.928, 1.692, 1.163, 1.077]) \u2014 adopting it would force us toward reference-level motion (a CEO aesthetic decision, not an obvious win).",
+      "per_video": {
+        "61383987.mp4": 10.008,
+        "YTDown_YouTube_AI-Was-Supposed-to-Replace-Workers-It-s-_Media_thwf0gtZ_pY_002_720p.mp4": 4.275,
+        "YTDown_YouTube_Best-Pomodoro-Timer-Apps-EVER_Media_Hz6d7du0das_002_720p.mp4": 9.38,
+        "YTDown_YouTube_Google-Flow-Tutorial-How-To-Use-Google-F_Media_5fX2xnWntaw_002_720p (1).mp4": 4.456,
+        "YTDown_YouTube_Introducing-Google-Spark_Media_9Mi5vpAFgu0_002_720p.mp4": 5.695,
+        "YTDown_YouTube_New-robot-waifus-GLM-5-2-craze-AI-spas-n_Media_kkLlzQqa7MY_002_720p.mp4": 13.742,
+        "YTDown_YouTube_Nvidias-New-Mini-Datacenter-Pays-You-Eve_Media_vahdFdoK6y4_002_720p.mp4": 9.78
+      }
+    },
+    {
+      "band_id": "render:final_runtime",
+      "comparator": "range",
+      "source": "format-profile",
+      "confidence": "medium",
+      "current": {
+        "comparator": "range",
+        "min": 60,
+        "max": 90,
+        "unit": "sec",
+        "placeholder": true
+      },
+      "proposed": {
+        "short": [
+          60,
+          90
+        ],
+        "long": [
+          300,
+          480
+        ],
+        "recommendation": "keep SHORT band active for current testing; add LONG profile when 5\u20138 min testing begins"
+      },
+      "n_refs": 3,
+      "rationale": "Length is a target-format choice, not a reference artifact. References split: 1 short(\u2264120s), 2 long(120\u2013480s), 5 over-long(>480s, style refs whose LENGTH is out of target). Do not learn a single runtime band from a mixed-length set.",
+      "per_video": {
+        "61383987.mp4": 57.0,
+        "DeepSeek Just Solved AI's Billion Dollar Problem [mG4SmhWyeFA].mp4": 349.6,
+        "YTDown_YouTube_AI-Was-Supposed-to-Replace-Workers-It-s-_Media_thwf0gtZ_pY_002_720p.mp4": 1125.1,
+        "YTDown_YouTube_Best-Pomodoro-Timer-Apps-EVER_Media_Hz6d7du0das_002_720p.mp4": 583.4,
+        "YTDown_YouTube_Google-Flow-Tutorial-How-To-Use-Google-F_Media_5fX2xnWntaw_002_720p (1).mp4": 1406.2,
+        "YTDown_YouTube_Introducing-Google-Spark_Media_9Mi5vpAFgu0_002_720p.mp4": 347.1,
+        "YTDown_YouTube_New-robot-waifus-GLM-5-2-craze-AI-spas-n_Media_kkLlzQqa7MY_002_720p.mp4": 2114.3,
+        "YTDown_YouTube_Nvidias-New-Mini-Datacenter-Pays-You-Eve_Media_vahdFdoK6y4_002_720p.mp4": 645.2
+      }
+    },
+    {
+      "band_id": "script:runtime_fit",
+      "comparator": "range",
+      "source": "format-profile",
+      "confidence": "medium",
+      "current": {
+        "comparator": "range",
+        "min": 60,
+        "max": 90,
+        "unit": "sec",
+        "placeholder": true
+      },
+      "proposed": {
+        "short": [
+          60,
+          90
+        ],
+        "long": [
+          300,
+          480
+        ],
+        "recommendation": "keep SHORT band active for current testing; add LONG profile when 5\u20138 min testing begins"
+      },
+      "n_refs": 3,
+      "rationale": "Length is a target-format choice, not a reference artifact. References split: 1 short(\u2264120s), 2 long(120\u2013480s), 5 over-long(>480s, style refs whose LENGTH is out of target). Do not learn a single runtime band from a mixed-length set.",
+      "per_video": {
+        "61383987.mp4": 57.0,
+        "DeepSeek Just Solved AI's Billion Dollar Problem [mG4SmhWyeFA].mp4": 349.6,
+        "YTDown_YouTube_AI-Was-Supposed-to-Replace-Workers-It-s-_Media_thwf0gtZ_pY_002_720p.mp4": 1125.1,
+        "YTDown_YouTube_Best-Pomodoro-Timer-Apps-EVER_Media_Hz6d7du0das_002_720p.mp4": 583.4,
+        "YTDown_YouTube_Google-Flow-Tutorial-How-To-Use-Google-F_Media_5fX2xnWntaw_002_720p (1).mp4": 1406.2,
+        "YTDown_YouTube_Introducing-Google-Spark_Media_9Mi5vpAFgu0_002_720p.mp4": 347.1,
+        "YTDown_YouTube_New-robot-waifus-GLM-5-2-craze-AI-spas-n_Media_kkLlzQqa7MY_002_720p.mp4": 2114.3,
+        "YTDown_YouTube_Nvidias-New-Mini-Datacenter-Pays-You-Eve_Media_vahdFdoK6y4_002_720p.mp4": 645.2
+      }
+    },
+    {
+      "band_id": "narration:total_duration_fit",
+      "comparator": "range",
+      "source": "format-profile",
+      "confidence": "medium",
+      "current": {
+        "comparator": "range",
+        "min": 60,
+        "max": 90,
+        "unit": "sec",
+        "placeholder": true
+      },
+      "proposed": {
+        "short": [
+          60,
+          90
+        ],
+        "long": [
+          300,
+          480
+        ],
+        "recommendation": "keep SHORT band active for current testing; add LONG profile when 5\u20138 min testing begins"
+      },
+      "n_refs": 3,
+      "rationale": "Length is a target-format choice, not a reference artifact. References split: 1 short(\u2264120s), 2 long(120\u2013480s), 5 over-long(>480s, style refs whose LENGTH is out of target). Do not learn a single runtime band from a mixed-length set.",
+      "per_video": {
+        "61383987.mp4": 57.0,
+        "DeepSeek Just Solved AI's Billion Dollar Problem [mG4SmhWyeFA].mp4": 349.6,
+        "YTDown_YouTube_AI-Was-Supposed-to-Replace-Workers-It-s-_Media_thwf0gtZ_pY_002_720p.mp4": 1125.1,
+        "YTDown_YouTube_Best-Pomodoro-Timer-Apps-EVER_Media_Hz6d7du0das_002_720p.mp4": 583.4,
+        "YTDown_YouTube_Google-Flow-Tutorial-How-To-Use-Google-F_Media_5fX2xnWntaw_002_720p (1).mp4": 1406.2,
+        "YTDown_YouTube_Introducing-Google-Spark_Media_9Mi5vpAFgu0_002_720p.mp4": 347.1,
+        "YTDown_YouTube_New-robot-waifus-GLM-5-2-craze-AI-spas-n_Media_kkLlzQqa7MY_002_720p.mp4": 2114.3,
+        "YTDown_YouTube_Nvidias-New-Mini-Datacenter-Pays-You-Eve_Media_vahdFdoK6y4_002_720p.mp4": 645.2
+      }
+    }
+  ],
+  "not_calibrated_needs_ceo_interview": [
+    "assets:min_resolution",
+    "assets:placeholder_rate",
+    "audiomix:ducking_depth",
+    "audiomix:sfx_on_beat",
+    "audiomix:vo_intelligibility",
+    "compose:cut_rhythm",
+    "narration:pause_structure",
+    "narration:scene_timing_fit",
+    "narration:speech_cadence",
+    "narration:total_duration_fit",
+    "script:claim_support_ratio",
+    "script:cta_quality",
+    "script:hook_strength",
+    "script:info_density",
+    "script:narrative_arc",
+    "script:on_screen_text_density",
+    "script:one_point_adherence",
+    "script:runtime_fit",
+    "script:scene_count",
+    "script:words_per_scene",
+    "storyboard:layout_variety",
+    "storyboard:shot_specificity",
+    "storyboard:signature_beat_placement",
+    "storyboard:transition_character",
+    "style:motion_budget_sane",
+    "style:palette_distance",
+    "style:type_in_system"
+  ],
+  "notes": [
+    "READ-ONLY proposal. Applying any band is a CEO-owned human edit to atlas/rubric/rubric.json (flip placeholder:false on calibrated bands).",
+    "Every media band is in the scoring instrument's own units (the eval analyzers were run directly on the references).",
+    "Structural/editorial bands are NOT proposed from references (you cannot read a script/storyboard/manifest out of a finished mp4) \u2014 they need the CEO visual interview + the completed-project distribution as a prior."
+  ]
+}

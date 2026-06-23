@@ -21,3 +21,14 @@ venv/
 
 ReferanceVideos/
 reference-analyst/standards/
+
+# eval foundation generated data
+atlas/eval/runs/
+atlas/projects/_eval_loop_tmp/
+**/eval_scorecard.json
+scriptwriter/COACH_ADDENDUM.md
+atlas/projects/_eval_holdout_tmp/
+
+# coach soft-tier addenda (written to the owning specialist on accept) + coach test caches
+**/COACH_ADDENDUM.md
+*/.pytest_cache/

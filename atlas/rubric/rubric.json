@@ -1,0 +1,109 @@
+{
+  "schema_version": "1.0",
+  "rubric_version": "0.2.0-phase2-calibrated",
+  "owner": "CEO",
+  "frozen": true,
+  "note": "CEO-OWNED, READ-ONLY to all improvement code. Bands flagged \"placeholder\": true are starting points to be REPLACED by reference-derived values in step 1 of the path (Vera the Reference Analyst). The METHODS, ownership, types, comparators and roll-up structure are the stable part; the NUMBERS are tunable. The improver (atlas/eval/loop.py) imports this file and has no write path to it.",
+  "global_weights": {
+    "G1": 0.20,
+    "G2": 0.25,
+    "G3": 0.20,
+    "G4": 0.15,
+    "G5": 0.15,
+    "G6": 0.05
+  },
+  "global_dimensions": {
+    "G1": {"name": "Pacing & rhythm", "captures": "cut rhythm, scene length, speech cadence, pauses"},
+    "G2": {"name": "Editorial quality", "captures": "hook, one-point clarity, arc, density, CTA"},
+    "G3": {"name": "Visual craft", "captures": "palette, layout variety, effect discipline, type"},
+    "G4": {"name": "Asset relevance", "captures": "visuals match narration; quality; placeholder rate"},
+    "G5": {"name": "Audio quality", "captures": "loudness, VO/music balance, intelligibility, SFX"},
+    "G6": {"name": "AV coherence", "captures": "visual boundaries align to narration; transition feel"}
+  },
+  "floor": {
+    "id": "F",
+    "name": "Technical integrity",
+    "note": "Pass/fail floor, NOT a weighted term. Any hard floor failure means the run has no quality score (consistent with how a fact-check block can't be averaged away).",
+    "properties": [
+      "assets:clearance_rate",
+      "compose:auto_gate_first_pass",
+      "compose:layout_integrity",
+      "render:final_loudness",
+      "render:final_peak",
+      "render:caption_sync"
+    ]
+  },
+  "bands": {
+    "script:hook_strength":        {"artifact": "script.json", "stage": "script", "owner": "Marlow", "kind": "judged", "rolls_up_to": ["G2"], "comparator": "gte", "min": 0.55, "unit": "prefrate", "placeholder": true, "note": "preference rate vs reference-hook pool, ensembled N>=5"},
+    "script:scene_count":          {"artifact": "script.json", "stage": "script", "owner": "Marlow", "kind": "objective", "rolls_up_to": ["G1"], "comparator": "range", "min": 8, "max": 14, "unit": "count", "placeholder": true},
+    "script:runtime_fit":          {"artifact": "script.json", "stage": "script", "owner": "Marlow", "kind": "objective", "rolls_up_to": ["G1"], "comparator": "range", "min": 60, "max": 90, "unit": "sec", "placeholder": false, "note": "est_runtime_sec (SHORT-format standard; plan-proxy for render:final_runtime; LONG profile [300,480] future)"},
+    "script:words_per_scene":      {"artifact": "script.json", "stage": "script", "owner": "Marlow", "kind": "objective", "rolls_up_to": ["G1"], "comparator": "range", "min": 18, "max": 32, "unit": "words", "placeholder": true, "note": "value=mean; detail flags any scene >45 or <8"},
+    "script:one_point_adherence":  {"artifact": "script.json", "stage": "script", "owner": "Marlow", "kind": "objective", "rolls_up_to": ["G2"], "comparator": "eq", "target": 1.0, "unit": "ratio", "placeholder": true, "note": "structural: fraction of scenes with exactly one point"},
+    "script:claim_support_ratio":  {"artifact": "script.json", "stage": "script", "owner": "Marlow", "kind": "objective", "rolls_up_to": ["G2"], "comparator": "gte", "min": 0.9, "unit": "ratio", "placeholder": true, "note": "fraction of claims[] with a source_ref"},
+    "script:info_density":         {"artifact": "script.json", "stage": "script", "owner": "Marlow", "kind": "objective", "rolls_up_to": ["G2"], "comparator": "range", "min": 1.5, "max": 4.0, "unit": "per_min", "placeholder": true, "note": "claims per minute"},
+    "script:narrative_arc":        {"artifact": "script.json", "stage": "script", "owner": "Marlow", "kind": "objective", "rolls_up_to": ["G2"], "comparator": "eq_true", "unit": "bool", "placeholder": true, "note": "hook AND cta present"},
+    "script:cta_quality":          {"artifact": "script.json", "stage": "script", "owner": "Marlow", "kind": "objective", "rolls_up_to": ["G2"], "comparator": "eq_true", "unit": "bool", "placeholder": true, "note": "cta present"},
+    "script:on_screen_text_density": {"artifact": "script.json", "stage": "script", "owner": "Marlow", "kind": "objective", "rolls_up_to": ["G3"], "comparator": "lte", "max": 45, "unit": "chars", "placeholder": true, "note": "value=max chars across on_screen_text"},
+
+    "style:signature_present":     {"artifact": "style_guide.json", "stage": "style", "owner": "Iris", "kind": "objective", "rolls_up_to": ["G3"], "comparator": "eq_true", "hard": true, "unit": "bool", "placeholder": false, "note": "palette.signature_highlight == #FFD000"},
+    "style:type_in_system":        {"artifact": "style_guide.json", "stage": "style", "owner": "Iris", "kind": "objective", "rolls_up_to": ["G3"], "comparator": "eq", "target": 1.0, "unit": "ratio", "placeholder": true, "note": "declared fonts within allowed set (phase-1: presence check)"},
+    "style:motion_budget_sane":    {"artifact": "style_guide.json", "stage": "style", "owner": "Iris", "kind": "objective", "rolls_up_to": ["G1"], "comparator": "eq_true", "unit": "bool", "placeholder": true, "note": "declared motion budget present and within bounds"},
+    "style:palette_distance":      {"artifact": "style_guide.json", "stage": "style", "owner": "Iris", "kind": "objective", "rolls_up_to": ["G3"], "comparator": "info", "unit": "deltaE", "placeholder": true, "note": "recorded only in phase 1 (no reference-palette centroid yet)"},
+
+    "storyboard:layout_variety":   {"artifact": "storyboard.json", "stage": "storyboard", "owner": "Iris", "kind": "objective", "rolls_up_to": ["G3"], "comparator": "range", "min": 0.45, "max": 0.85, "unit": "entropy", "placeholder": true, "note": "normalized Shannon entropy; detail.max_share must be <=0.60"},
+    "storyboard:effect_discipline": {"artifact": "storyboard.json", "stage": "storyboard", "owner": "Iris", "kind": "objective", "rolls_up_to": ["G3"], "comparator": "eq", "target": 1.0, "hard": true, "unit": "count", "placeholder": false, "note": "EXACTLY ONE highlighter-FFD000 across the whole video"},
+    "storyboard:transition_character": {"artifact": "storyboard.json", "stage": "storyboard", "owner": "Iris", "kind": "objective", "rolls_up_to": ["G6"], "comparator": "lte", "max": 0.85, "unit": "ratio", "placeholder": true, "note": "hard-cut fraction; detail.match_cut_count should be >=1"},
+    "storyboard:shot_specificity": {"artifact": "storyboard.json", "stage": "storyboard", "owner": "Iris", "kind": "objective", "rolls_up_to": ["G4"], "comparator": "gte", "min": 0.8, "unit": "ratio", "placeholder": true, "note": "fraction of shots with concrete asset_ref/content"},
+    "storyboard:signature_beat_placement": {"artifact": "storyboard.json", "stage": "storyboard", "owner": "Iris", "kind": "objective", "rolls_up_to": ["G3"], "comparator": "eq_true", "unit": "bool", "placeholder": true, "note": "signature_beat present and not first or last scene"},
+
+    "assets:relevance_score":      {"artifact": "asset_manifest.json", "stage": "assets", "owner": "Magpie", "kind": "objective", "rolls_up_to": ["G4"], "comparator": "gte", "min": 0.50, "unit": "ratio", "placeholder": false, "note": "anchored on source_engine RELEVANCE_WEAK=0.50 / RELEVANCE_FLOOR=0.20"},
+    "assets:placeholder_rate":     {"artifact": "asset_manifest.json", "stage": "assets", "owner": "Magpie", "kind": "objective", "rolls_up_to": ["G4"], "comparator": "lte", "max": 0.15, "unit": "ratio", "placeholder": true, "note": "fraction of assets with status placeholder"},
+    "assets:clearance_rate":       {"artifact": "asset_manifest.json", "stage": "assets", "owner": "Magpie", "kind": "objective", "rolls_up_to": ["F"], "comparator": "eq", "target": 1.0, "hard": true, "unit": "ratio", "placeholder": false, "note": "legal floor: fraction of assets that are not flagged as unclearable"},
+    "assets:min_resolution":       {"artifact": "asset_manifest.json", "stage": "assets", "owner": "Magpie", "kind": "objective", "rolls_up_to": ["G3"], "comparator": "gte", "min": 720, "unit": "px", "placeholder": true, "note": "value = smallest short-side (min(w,h)) across downloaded raster assets; >=720"},
+
+    "narration:speech_cadence":    {"artifact": "audio/narration.transcript.json", "stage": "narration", "owner": "Cadence", "kind": "objective", "rolls_up_to": ["G1"], "comparator": "range", "min": 140, "max": 165, "unit": "wpm", "placeholder": true, "note": "overall wpm; detail flags per-scene >185 or <110"},
+    "narration:pause_structure":   {"artifact": "audio/narration.transcript.json", "stage": "narration", "owner": "Cadence", "kind": "objective", "rolls_up_to": ["G1"], "comparator": "range", "min": 0.0, "max": 1.2, "unit": "sec", "placeholder": true, "note": "mean inter-scene pause (0.0 floor tolerant of back-to-back TTS)"},
+    "narration:scene_timing_fit":  {"artifact": "audio/narration.transcript.json", "stage": "narration", "owner": "Cadence", "kind": "objective", "rolls_up_to": ["G1"], "comparator": "lte", "max": 3.0, "unit": "sec", "placeholder": true, "note": "value = max |narrated scene dur - script duration_est_sec|"},
+    "narration:total_duration_fit": {"artifact": "audio/narration.transcript.json", "stage": "narration", "owner": "Cadence", "kind": "objective", "rolls_up_to": ["G1"], "comparator": "range", "min": 60, "max": 90, "unit": "sec", "placeholder": false, "note": "total_duration_sec target (SHORT-format standard; LONG profile [300,480] is a future CEO addition)"},
+
+    "compose:auto_gate_first_pass": {"artifact": "composition_manifest.json", "stage": "compose", "owner": "Mason", "kind": "objective", "rolls_up_to": ["F"], "comparator": "eq", "target": 1.0, "hard": true, "unit": "ratio", "placeholder": false, "note": "gated_ok / total scenes; required 1.0 to ship"},
+    "compose:motion_energy":       {"artifact": "video.mp4", "stage": "compose", "owner": "Mason", "kind": "objective", "rolls_up_to": ["G3"], "comparator": "range", "min": 2.5, "max": 18.0, "unit": "luma", "placeholder": false, "note": "CEO middle-ground (2026-06-23): nudge motion up from our ~1.0 toward references (4-14) without chasing stock-footage levels; ceiling 18 < refs-max-with-headroom. mean |delta-luma| @4fps"},
+    "compose:cut_rhythm":          {"artifact": "composition_manifest.json", "stage": "compose", "owner": "Mason", "kind": "objective", "rolls_up_to": ["G1"], "comparator": "range", "min": 1.5, "max": 12.0, "unit": "sec", "placeholder": true, "note": "value=median shot duration; detail flags shots <1.5 or >12s"},
+    "compose:layout_integrity":    {"artifact": "composition_manifest.json", "stage": "compose", "owner": "Mason", "kind": "objective", "rolls_up_to": ["F"], "comparator": "lte", "max": 0, "hard": true, "unit": "count", "placeholder": false, "note": "overflow/clipping integrity flags; must be zero"},
+    "compose:av_sync":             {"artifact": "composition_manifest.json", "stage": "compose", "owner": "Mason", "kind": "objective", "rolls_up_to": ["G6"], "comparator": "gte", "min": 0.9, "unit": "ratio", "placeholder": true, "note": "fraction of scenes whose visual boundary is within 0.25s of the narration segment boundary"},
+
+    "audiomix:integrated_loudness": {"artifact": "audio/master.wav", "stage": "audiomix", "owner": "Cadence", "kind": "objective", "rolls_up_to": ["G5"], "comparator": "range", "min": -15.0, "max": -13.0, "unit": "LUFS", "placeholder": false, "note": "-14 LUFS +/- 1.0 (broadcast delivery standard, confirmed step-1: references are noise, keep the standard)"},
+    "audiomix:true_peak":          {"artifact": "audio/master.wav", "stage": "audiomix", "owner": "Cadence", "kind": "objective", "rolls_up_to": ["G5"], "comparator": "lte", "max": -1.0, "unit": "dBTP", "placeholder": false, "note": "no-clip ceiling (delivery standard, confirmed step-1)"},
+    "audiomix:ducking_depth":      {"artifact": "audio/audio_manifest.json", "stage": "audiomix", "owner": "Cadence", "kind": "objective", "rolls_up_to": ["G5"], "comparator": "range", "min": 12.0, "max": 18.0, "unit": "dB", "placeholder": true, "note": "bed-level reduction during VO"},
+    "audiomix:vo_intelligibility": {"artifact": "audio/master.wav", "stage": "audiomix", "owner": "Cadence", "kind": "objective", "rolls_up_to": ["G5"], "comparator": "gte", "min": 15.0, "unit": "dB", "placeholder": true, "note": "VO-to-bed SNR during VO segments"},
+    "audiomix:sfx_on_beat":        {"artifact": "audio/audio_manifest.json", "stage": "audiomix", "owner": "Cadence", "kind": "objective", "rolls_up_to": ["G6"], "comparator": "lte", "max": 0.1, "unit": "sec", "placeholder": true, "note": "|signature SFX onset - cut into #FFD000 scene|"},
+
+    "render:overall_polish":       {"artifact": "video.mp4", "stage": "render", "owner": "holistic", "kind": "judged", "rolls_up_to": ["ANCHOR"], "comparator": "gte", "min": 0.5, "unit": "prefrate", "placeholder": true, "note": "pairwise vs reference videos (phase-1: textual digest proxy), ensembled, CEO-anchored"},
+    "render:final_loudness":       {"artifact": "video.mp4", "stage": "render", "owner": "holistic", "kind": "objective", "rolls_up_to": ["F"], "comparator": "range", "min": -15.0, "max": -13.0, "unit": "LUFS", "placeholder": false, "note": "end-to-end backstop on the muxed video (delivery standard, confirmed step-1)"},
+    "render:final_peak":           {"artifact": "video.mp4", "stage": "render", "owner": "holistic", "kind": "objective", "rolls_up_to": ["F"], "comparator": "lte", "max": -1.0, "unit": "dBTP", "placeholder": false},
+    "render:final_runtime":        {"artifact": "video.mp4", "stage": "render", "owner": "holistic", "kind": "objective", "rolls_up_to": ["G1"], "comparator": "range", "min": 60, "max": 90, "unit": "sec", "placeholder": false, "note": "SHORT-format standard (current testing). LONG format (~5-8 min) = a future profile [300,480] the CEO adds when long-form testing begins."},
+    "render:caption_sync":         {"artifact": "video.mp4", "stage": "render", "owner": "holistic", "kind": "objective", "rolls_up_to": ["F"], "comparator": "lte", "max": 0.2, "unit": "sec", "placeholder": true, "note": "only measured if whisper word-timing present; else skipped"}
+  },
+  "judged_pool": {
+    "hook_strength": {
+      "note": "PLACEHOLDER reference-hook pool. Replace with real reference-video hooks in step 1.",
+      "references": [
+        "What if everything you've been told about this was backwards? Here's the part nobody mentions.",
+        "There's a hidden reason this keeps happening — and once you see it, you can't unsee it.",
+        "Most people get this completely wrong. The truth is stranger, and simpler, than you think.",
+        "This one decision quietly shapes everything downstream. Let me show you exactly how."
+      ]
+    },
+    "overall_polish": {
+      "note": "PLACEHOLDER reference digests (textual proxy for finished-video comparison in phase 1).",
+      "references": [
+        "A tight 70-second explainer: a punchy hook, one clear idea per scene, restrained motion, a single signature highlight beat, clean typography, audio mixed to broadcast loudness with the music ducked under a confident voiceover, and a crisp call to action."
+      ]
+    }
+  },
+  "ceo_anchor": {
+    "path": "ceo_labels.json",
+    "stubbed": true,
+    "note": "When present, holds CEO pairwise labels used to re-anchor the judged ensemble each cycle. Stubbed in phase 1 (the file is optional; absence means 'not yet anchored')."
+  }
+}
