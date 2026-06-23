@@ -5,40 +5,71 @@
 
 ---
 
-## PROMPT TO START THE NEW SESSION (copy this)
+## PROMPT TO START THE NEW SESSION (copy this) — Slice 5
 
 ```
 We're continuing to build the YT-Agents Control Room — a fully functional operating console
 for an autonomous multi-agent video agency, wired to the real FastAPI backend in atlas/dashboard/.
 
-READ THESE THREE FILES END TO END BEFORE WRITING ANY CODE:
-1. docs/superpowers/specs/2026-06-23-control-room-design.md   (the hardened master spec — §4 write
-   tiers, §5 Echo, §6 the assembly line, §8 chat, §9 YouTube, §10 SSE, §13 edge cases E1–E15)
+READ THESE FILES END TO END BEFORE WRITING ANY CODE:
+1. docs/superpowers/specs/2026-06-23-control-room-design.md   (the hardened master spec — esp. §4
+   write tiers, §8 agentic chat, §9 YouTube/T3 publish, §10 SSE, §13 edge cases E7/E8/E12)
 2. docs/superpowers/specs/2026-06-23-control-room-HANDOFF.md  (THIS doc — current state + file map +
    gotchas + the remaining slice plan)
 3. PROJECT_CONTEXT.md                                          (system overview)
+ALSO STUDY (the reference implementation of chat-over-session + gate buttons):
+   atlas/web/app.py (the Chainlit web UI — streaming chat on session.send + Approve/Revise gate
+   buttons + per-agent persona chat), atlas/session.py (AtlasSession.send / approve_gate /
+   latest_blocked_project / AgentSession), atlas/orchestrator.py (the SDK query() loop), and the
+   existing dashboard gate-approve path (app.py `_approve_gate` / `_get_session`).
 
-STATE: Slices 0–2 are DONE and verified (304 unit + 20 e2e green). The dashboard now has a working
-live "belt" (assembly line): you can drop a topic → it runs down 10 stations → gates pause it →
-you approve. Backend dispatcher + SSE + trigger/cancel all built and tested.
+STATE: Slices 0–4 + 1.5 are DONE and verified (333 unit + 33 e2e green) on branch `control-room`.
+The dashboard is a working operating console: the live belt (drop a topic / pick a niche → Scout
+finds topics → it runs down 10 stations → gates pause it → you approve), depth-2 Stage Inspector,
+Fleet, a live Activity audit feed, and a Settings page (niches/defaults/channels shell + quota).
+Dispatcher exposes trigger/cancel/retry/resume; resume() is BUILT+TESTED but the gate-approve UI
+still calls session.approve_gate SYNCHRONOUSLY (does NOT yet go through dispatcher.resume()).
 
-YOUR TASK: build Slice 3 — the Video Detail page (depth 1) + Stage/Agent Inspector (depth 2) +
-Roster/Fleet view + Live Activity Feed. Most of the READ data already exists
-(data.project_detail / fleet / agent_detail / provider_for) — this slice is mostly frontend over
-existing endpoints. Follow the original brief's surfaces D, E, F, G and its UX principles
-(progressive disclosure, modal-vs-panel-vs-page discipline, the ONE status language, no dead ends,
-honest fix vocabulary = UNDERSTAND + RETRY + CANCEL).
+YOUR TASK: build Slice 5 (#3 chat + the T2/T3 gate surfaces):
+  (a) AGENTIC CHAT panel — bottom-right launcher → panel, streaming over the SAME session core
+      (session.AtlasSession.send), agentic via the existing Agent SDK tool loop. Chat may initiate
+      ONLY T1 reversible actions (trigger a production, change a setting, cancel/park a run) with a
+      light confirm. Chat may SURFACE/SUMMARIZE/NAVIGATE-TO a gate or publish, but MUST NEVER be able
+      to satisfy a T2 gate or a T3 publish (§4/§8 — the LLM plane never drives a guarantee). Add an
+      INJECTABLE chat seam (app.state.chat_fn / send_fn) so e2e fakes it — NEVER run the real LLM in
+      tests (ANTHROPIC_API_KEY is never set).
+  (b) T2 GATE-REVIEW side-panel — the deterministic surface where the authorizing APPROVE click lives;
+      wire it through dispatcher.resume() (the method exists) so the resumed render shares the belt's
+      station locks instead of the current synchronous produce. A factcheck `block` can NEVER be
+      approved away (unchanged spine rule).
+  (c) T3 PUBLISH-CONFIRM modal SHELL — a HARD structured confirm (no stray Escape/backdrop close) that
+      reviews the EXACT final package (title/description/tags/thumbnail/visibility/schedule); scheduling
+      only sets go-live AFTER approval. Real publishing is #6 Herald — this is the review SHELL +
+      the enforced checkpoint, with the fire action disabled/"arrives with Herald".
 
-HOW TO WORK: use the frontend-design skill for the visual layer; ADDITIVE only (extend
-atlas/dashboard/, never touch pipeline/contracts/gates/registry/session except via existing seams);
-wire everything to real endpoints (no mock data); keep all 324 tests green and add Playwright tests
-for the new surfaces. After a BACKEND change, restart the server (no --reload); after a static
-change just refresh. Deliver in tested slices and report what you built + what you shelled.
+HOW TO WORK: use the frontend-design skill for the visual layer; ADDITIVE only (extend atlas/dashboard/;
+touch pipeline/contracts/gates/registry/session ONLY via existing seams — the chat uses session.send
+unchanged, like web/app.py does). Tiered write authority §4: tag every action's initiator; the SSE
+event log already records the plane. Keep all 333 unit + 33 e2e green and ADD tests incl. NEGATIVE
+SAFETY ones (chat cannot reach any control that satisfies T2/T3; no auto-publish-unreviewed path).
+e2e: inject fakes (produce_fn / find_topics_fn / the new chat seam), navigate with
+wait_until="domcontentloaded" (NEVER load/networkidle — see gotchas), restart the server after any
+backend change (no --reload). Deliver in tested slices; report what you built + what you shelled.
 ```
 
 ---
 
-## Current state — what is DONE (Slices 0–2)
+## Current state — what is DONE (Slices 0–4 + 1.5) — 333 unit + 33 e2e green, branch `control-room`
+
+> Per-slice detail is in the "Remaining slices" list below (each shipped slice is marked **DONE** with
+> its files). Quick map of what exists now: **#0** fluid shell + status tokens · **#2** the belt
+> (`dispatcher.py` + `data.belt` + trigger/cancel/SSE) · **#3** Video Detail + Stage Inspector drawer +
+> Fleet "now on" + Activity audit feed (`data.stage_detail`, `/api/activity`, `/api/retry`,
+> `dispatcher.retry`) · **#4** Settings (`settings_store.py` + `/api/settings` + channels/quota shell +
+> launch niche pills) · **#1.5** niche intake (`intake.py` + `/api/intake/topics` + launch candidate
+> cards). The original Slice 0/2 build notes are retained below for reference.
+
+### Original Slice 0–2 build notes (reference)
 
 **Slice 0 — foundation (shipped).** Fixed the 4k right-side empty-space bug (the mock capped content
 at `max-width:1320px` left-aligned); the shell is now fluid + centered (`.main`, cap 2200,
@@ -136,13 +167,19 @@ CSS tokens** (`--st-queued/running/blocked/failed/done/cancelled`). **Retired** 
 
 ## SHELLED / deferred (wire these in their slices)
 
-- Launch modal's **niche-pill → Scout auto-pick** path (needs intake #1.5); the type-a-topic path is
-  live.
-- **Gate-approve still resumes synchronously** via `session.approve_gate` (existing tested path), NOT
-  `dispatcher.resume()` — so a resumed render doesn't yet share the belt's station locks. Wire
-  `dispatcher.resume()` when building the T2 gate panel (Slice 5). The method already exists.
-- **Chat FAB / agentic chat** not started (Slice 5).
-- **Settings (niches/channels), Herald publish shell, Echo/coaches proposal cards** not started.
+- **Gate-approve still resumes SYNCHRONOUSLY** via `session.approve_gate` (existing tested path), NOT
+  `dispatcher.resume()` — so a resumed render doesn't yet share the belt's station locks. **Wire
+  `dispatcher.resume()` in Slice 5's T2 gate panel.** The method exists + is tested.
+- **Chat FAB / agentic chat** not started → **Slice 5**. Needs an injectable chat seam
+  (`app.state.chat_fn`/`send_fn`) so e2e never runs the real LLM. Mirror `atlas/web/app.py` (Chainlit),
+  which already streams chat over `session.send` and renders the gates as Approve/Revise buttons.
+- **T3 publish-confirm modal** not started → **Slice 5** (the review SHELL; real publish = #6 Herald).
+- **Channel OAuth connect/reconnect** (the Settings channels shell renders state but does no OAuth) →
+  **#6 Herald**. **Niche → Scout AUTO-PICK** beyond candidate cards (the cards + you-pick/auto-pick
+  toggle are live; the toggle currently auto-selects the top candidate client-side) — deeper auto-run
+  policy can come with chat/#6. **Herald publish stage, Echo/coaches proposal cards** → #6/#7.
+- **#8 Glint (thumbnail artist)** + **#9 motion stack (d3/GSAP/Lottie + Loop)** — scoped as their own
+  specs (`2026-06-23-thumbnail-artist-Glint.md`, `2026-06-23-motion-stack-d3-gsap-lottie.md`), not built.
 
 ## Remaining slices (recommended order)
 
@@ -226,14 +263,16 @@ CSS tokens** (`--st-queued/running/blocked/failed/done/cancelled`). **Retired** 
 cd atlas && ../venv/bin/python -m dashboard.server --host 127.0.0.1 --port 8848   # -> :8848
 # or ./yt-atlas from repo root
 
-# unit tests
+# unit tests (atlas core + all dashboard non-e2e)
 cd atlas && ../venv/bin/python -m pytest tests/ -q
-cd atlas && ../venv/bin/python -m pytest dashboard/tests/test_api.py dashboard/tests/test_security.py \
-  dashboard/tests/test_gate_write_real.py dashboard/tests/test_belt_api.py -q
-# e2e (Playwright + chromium already installed in the venv)
+cd atlas && ../venv/bin/python -m pytest dashboard/tests/ --ignore=dashboard/tests/e2e -q
+# e2e (Playwright + chromium already installed in the venv). Heavy ~33-test single-process run;
+# if the sandbox is contended, run in two batches (read-heavy files, then the belt-trigger files).
 cd atlas && ../venv/bin/python -m pytest dashboard/tests/e2e/ -q
 ```
 
-Current totals: **315 unit + 27 e2e = 342 green** (Slice 3 added stage/activity/retry unit tests +
-7 e2e). Run the new ones: `../venv/bin/python -m pytest dashboard/tests/test_stage_api.py
-dashboard/tests/e2e/test_slice3_e2e.py -q`.
+Current totals: **333 unit + 33 e2e green** (branch `control-room`, through Slice 1.5). New-since-Slice-3
+suites: `test_stage_api.py` (11) · `test_settings_api.py` (11) · `test_intake_api.py` (7) · e2e
+`test_slice3_e2e.py` (7) · `test_settings_e2e.py` (4) · `test_intake_e2e.py` (2). **Known timing flake:**
+`test_cancel_running_video_{from_belt,stops}` (cooperative-cancel timing) intermittently fails under
+heavy concurrency but passes isolated/retried — not a regression.
