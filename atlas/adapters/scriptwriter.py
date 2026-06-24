@@ -44,6 +44,12 @@ def run_write(pdir: pathlib.Path) -> dict:
     from contracts import CONTRACT_VERSION
     pdir = pathlib.Path(pdir)
     brief = chat_state.load_json(pdir / "research_brief.json", {})
+    # Atlas's fix re-run leaves a revision hint in project.json; fold it into the brief so
+    # Marlow re-grounds/drops the flagged claims instead of regenerating the same script.
+    revision = chat_state.load_json(pdir / "project.json", {}).get("revision") or {}
+    hint = revision.get("hint")
+    if hint:
+        brief = {**brief, "revision_hint": hint}
     script = _script_engine().write_script(brief)
     script = {"schema_version": CONTRACT_VERSION, **script}
     chat_state.atomic_write_json(pdir / "script.json", script)

@@ -676,3 +676,46 @@ def test_kill_abandons_the_video(tmp_path):
     assert _wait_status(tmp_path, slug, "cancelled", timeout=12), _status(tmp_path, slug)
     kinds = [e["kind"] for e in d.events.since(0)]
     assert "killed" in kinds
+
+
+# ---------------------------------------------------------------- Task 7: rich decision context
+def _wait_for(pred, timeout=5.0):
+    import time as _t
+    end = _t.time() + timeout
+    while _t.time() < end:
+        if pred():
+            return True
+        _t.sleep(0.02)
+    return False
+
+
+def test_decider_receives_flagged_claims_in_context(tmp_path):
+    """On a factcheck block, the context handed to the decider carries the flagged claims
+    read off the factcheck report — so Atlas can name them in its fix instructions."""
+    import json as _json
+    from supervisor import Decision
+    seen = {}
+
+    def capture(slug, result, context):
+        seen.update(context)
+        return Decision("ESCALATE", gate="factcheck", payload={"blocked": True})
+
+    # produce a factcheck block AND write a factcheck_report.json the dispatcher can read
+    def fake(slug=None, approve=None, root=None, progress=None, station_locks=None,
+             should_cancel=None):
+        pdir = root / slug
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "factcheck_report.json").write_text(_json.dumps({
+            "verdict": "block",
+            "claims": [{"claim_id": "s5c2", "status": "flagged", "claim_text": "42% of X",
+                        "note": "no source"}]}))
+        proj = {"slug": slug, "status": "blocked_at_factcheck", "stages": {}, "history": []}
+        (pdir / "project.json").write_text(_json.dumps(proj))
+        return {"status": "blocked", "gate": "factcheck", "stage": "factcheck",
+                "reason": "unverified", "details": {"flagged": [{"claim_id": "s5c2"}]}}
+
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, decide_fn=capture, max_in_flight=2)
+    slug = d.trigger(topic="claims-please")["slug"]
+    assert _wait_status(tmp_path, slug, "blocked_at_factcheck", timeout=12) or \
+        _wait_for(lambda: "flagged_claims" in seen, timeout=5)
+    assert any(c.get("claim_id") == "s5c2" for c in seen.get("flagged_claims", []))

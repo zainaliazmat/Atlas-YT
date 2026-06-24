@@ -376,8 +376,7 @@ class Dispatcher:
         # An exception (failed / blocked) is a DECISION POINT. Ask the decider (the safe
         # default reproduces today's policy), then execute its Decision. This runs AFTER
         # produce() returned, i.e. outside every station lock (spec §1).
-        context = {"attempts": self._retries.get(slug, 0),
-                   "max_retries": self.max_retries}
+        context = self._build_context(slug, result)
         decision = self._decide(slug, result, context)
         self._execute_decision(slug, result, decision)
 
@@ -537,6 +536,23 @@ class Dispatcher:
             proj["status"] = "queued"
             proj["updated"] = time.time()
             chat_state.atomic_write_json(p, proj)
+
+    def _build_context(self, slug: str, result: dict) -> dict:
+        """Full decision state for the decider (spec §1): counters + the flagged claims and
+        contract errors that let Atlas write specific fix instructions instead of guessing."""
+        ctx = {"attempts": self._retries.get(slug, 0), "max_retries": self.max_retries,
+               "fix_attempts": {}, "decisions": 0, "flagged_claims": [], "history": []}
+        proj = self._load_project(slug)
+        if proj is not None:
+            ctx["fix_attempts"] = supervisor.ensure_supervisor_block(proj)["fix_attempts"]
+            ctx["decisions"] = supervisor.decisions_count(proj)
+            ctx["history"] = (proj.get("history") or [])[-6:]
+        if result.get("gate") == "factcheck":
+            report = chat_state.load_json(
+                self._project_path(slug).parent / "factcheck_report.json", {})
+            ctx["flagged_claims"] = [c for c in (report.get("claims") or [])
+                                     if c.get("status") in ("flagged", "unverifiable")]
+        return ctx
 
     def _patch_config(self, slug: str, **kv) -> None:
         p = self._project_path(slug)
