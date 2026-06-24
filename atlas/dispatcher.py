@@ -609,6 +609,11 @@ class Dispatcher:
                 self._project_path(slug).parent / "factcheck_report.json", {})
             ctx["flagged_claims"] = [c for c in (report.get("claims") or [])
                                      if c.get("status") in ("flagged", "unverifiable")]
+        if result.get("gate") == "final_render":
+            proj2 = proj if proj is not None else {}
+            details = (proj2.get("gates", {}).get("final_render", {}) or {}).get("details") or {}
+            ctx["render_plan"] = details
+            ctx["render_budget_sec"] = float(self.render_budget_sec)
         return ctx
 
     def _patch_config(self, slug: str, **kv) -> None:

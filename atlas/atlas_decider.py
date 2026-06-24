@@ -37,6 +37,7 @@ Reply with ONE JSON object: {"kind": "...", "stage": "...", "gate": "...",
 "instructions": "...", "reason": "..."} — include only the fields the kind needs.
 NEVER approve a fact-check block: a video that fails fact-check must never ship. If you
 cannot fix it within the attempts left, ESCALATE.
+For a final_render block: APPROVE_GATE(final_render) only when the render plan's est_runtime_sec is within the stated render budget; otherwise ESCALATE so the CEO sees the draft-preview card.
 """
 
 
@@ -59,6 +60,8 @@ def build_decision_prompt(slug: str, result: dict, context: dict) -> tuple[str, 
             "decisions_so_far": context.get("decisions", 0),
         },
         "recent_history": (context.get("history") or [])[-6:],
+        "render_plan": context.get("render_plan") or {},
+        "render_budget_sec": context.get("render_budget_sec"),
     }
     user = "DECIDE on this exception:\n" + json.dumps(brief, indent=2, default=str)
     return _SYSTEM, user

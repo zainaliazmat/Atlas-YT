@@ -67,3 +67,13 @@ def test_build_prompt_includes_flagged_claims_and_counters():
     system, user = atlas_decider.build_decision_prompt("vid", _result_block(), _ctx())
     assert "factcheck" in user and "s5c2" in user
     assert "PROCEED" in system and "FIX_AND_RERUN" in system  # the legal vocabulary
+
+
+def test_build_prompt_surfaces_render_budget():
+    result = {"status": "blocked", "gate": "final_render", "stage": "render"}
+    ctx = {"attempts": 0, "max_retries": 1, "fix_attempts": {}, "decisions": 0,
+           "flagged_claims": [], "history": [],
+           "render_plan": {"scenes": 5, "est_runtime_sec": 200}, "render_budget_sec": 450.0}
+    system, user = atlas_decider.build_decision_prompt("vid", result, ctx)
+    assert "200" in user and "450" in user
+    assert "budget" in system.lower()

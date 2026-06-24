@@ -882,3 +882,13 @@ def test_approve_factcheck_still_escalates_unchanged(tmp_path):
     _wait_proj_cond(tmp_path, slug, lambda _p, k: "blocked" in k, timeout=5, dispatcher=d)
     blocked = [e for e in d.events.since(0) if e["kind"] == "blocked"]
     assert blocked and blocked[-1]["gate"] == "factcheck"
+
+
+# ---------------------------------------------------------------- Task 4: render-gate decision context
+def test_build_context_includes_render_plan_for_render_gate(tmp_path):
+    fake, _ = make_fake_produce()
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, render_budget_sec=450.0)
+    _write_final_render_project(tmp_path, "vid", est_runtime_sec=200)
+    ctx = d._build_context("vid", {"status": "blocked", "gate": "final_render"})
+    assert ctx["render_plan"]["est_runtime_sec"] == 200
+    assert ctx["render_budget_sec"] == 450.0
