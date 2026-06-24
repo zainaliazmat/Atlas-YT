@@ -74,18 +74,24 @@ decision is due. This keeps cost/latency bounded (no ~10 LLM calls per video jus
 "PROCEED") and keeps the dashboard responsive. `PROCEED` still exists as a legal decision
 for the exception cases where Atlas judges "this is fine, continue."
 
-**Runs outside the station lock (Eng review).** `atlas_decide` can take seconds (an LLM
-call), so it MUST run only after the video's station semaphore is released — the video is
-parked / between stations during a decision. This preserves single-occupancy: one video's
-*decision* never blocks a station for other videos. Today `_on_result` already runs after
-`_run` releases the in-flight slot; the seam keeps that ordering, and a test asserts a slow
-decider does not stall other videos' stations.
+**Runs outside the station lock; release the in-flight slot before an LLM decision
+(autoplan review).** `atlas_decide` can take seconds (an LLM call), so it must not hold any
+lock that blocks other videos. The station semaphores are already released by the time
+`produce()` returns, so the decision never blocks a *station*. BUT — correcting an earlier
+claim — today `_on_result` runs INSIDE `_run`'s `try` block, i.e. while the worker still
+holds the global **in-flight slot** (`_inflight.release()` is in the `finally`, after).
+That is harmless for the Slice-1 safe-default decider (instant), but the Slice-2 LLM
+decider MUST release the in-flight slot before deciding, or a slow decision burns an
+in-flight slot and throttles `max_in_flight`. A concurrency test asserts a slow decider
+does not stall other videos' stations.
 
 **The `context` passed to Atlas** (Eng review — underspecified input is where an LLM
 hallucinates) is the full decision state: the project.json, the failing stage's artifact +
 its contract errors (or the factcheck report for a block, or the render plan for a render
-gate), the prior **decision/attempt counters**, and the **attempt history** (what Atlas
-already tried, and the before/after of earlier fixes).
+gate), the prior **decision/attempt counters**, and the **attempt history**. That persisted
+history in `project.json` is the **single source of truth** for "what has Atlas already
+decided about this video" — BOTH call-shapes (chat orchestrator and `atlas_decide`) read
+and append to it, so they cannot drift into contradictory decisions (autoplan review).
 
 Atlas returns **one Decision from a bounded, validated set** — the LLM proposes, but may
 only pick a legal move:
@@ -118,6 +124,14 @@ escalate, never ship junk / overspend / loop:
 
 - **A fact-check block can never be approved away.** `APPROVE_GATE(factcheck)` is not a
   legal decision; the only moves on a block are `FIX_AND_RERUN` / `ESCALATE` / `KILL`.
+  IMPORTANT (autoplan review): this guard is **executor logic**, NOT the vocabulary — the
+  `DECISION_KINDS` set still contains a generic `APPROVE_GATE`. The Slice-2 executor MUST
+  gate-scope it (reject `APPROVE_GATE` when `gate == factcheck`); the bounded vocabulary
+  alone does not enforce the never-ship-unverified guarantee.
+- **Gate-detection must be robust (autoplan review).** When executing an `ESCALATE`/gate
+  decision, the executor must not emit a `blocked` event with `gate=None` for a malformed
+  LLM decision (e.g. `payload.blocked=True` but no `gate`). Validate the gate is a real
+  gate key before emitting.
 - **Auto-fix is counted.** A per-video counter caps fact-check `FIX_AND_RERUN` at 2
   (configurable); the 3rd block forces `ESCALATE` regardless of the LLM's choice.
 - **Render budget is enforced in code.** `APPROVE_GATE(render)` is honored only if the

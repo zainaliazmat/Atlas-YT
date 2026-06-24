@@ -8,13 +8,20 @@
 
 **Tech Stack:** Python 3.12, pytest, stdlib `dataclasses`. No new dependencies.
 
+> **Autoplan review (2026-06-24):** stress-tested by two independent voices (Codex was
+> unavailable — sandbox limitation). Applied: `PROCEED` is now an explicit no-op (was a
+> spurious `failed` event); a spy-decider test proves the exceptions-only invariant. D1 —
+> dropped the speculative `supervisor.decisions` counter (its semantics contradicted the
+> spec's per-gate budget); it moves to Slice 2 with its reader. D2 — Slice 1 stays pure
+> plumbing, time-boxed ~1 day. Five items flagged for Slice 2 (see "Deferred to Slice 2").
+
 ## Global Constraints
 
 - **Zero behavior change.** Every existing test in `atlas/tests/test_dispatcher.py` must pass **unchanged** — that is the proof the seam is behaviour-identical to today.
 - **Decider is injectable** like `produce_fn`: `Dispatcher(..., decide_fn=None)`, default `supervisor.safe_default_decider`.
-- **Exceptions-only invocation** (spec D1): a `done` / `cancelled` result never calls the decider; only `failed` / `blocked` do.
-- **Decision runs outside the station lock** (spec §1): `_on_result` already runs after `pipeline.produce` returns (all station locks released), so this holds structurally — do not move the call back inside a lock.
-- **Counters persist before acting** (spec §2): the decision counter is incremented + written to `project.json` before the chosen action runs.
+- **Exceptions-only invocation** (spec D1): a `done` / `cancelled` result never calls the decider; only `failed` / `blocked` do. The decider must also never *see* a terminal outcome — proven by a spy-decider test (Task 2).
+- **Decision runs outside the station lock** (spec §1): `_on_result` runs after `pipeline.produce` returns (all station locks released), so this holds structurally — do not move the call back inside a lock. NOTE (review, Slice-2 constraint): `_on_result` still runs while the worker holds the global **in-flight semaphore** (`_run`'s `finally: _inflight.release()` runs after it). Harmless in Slice 1 (the safe-default decider is instant), but a slow LLM decider in Slice 2 must release the in-flight slot *before* deciding, or it throttles the belt. Flagged in the spec; not Slice 1 work.
+- **Time-boxed, pure plumbing (review D2).** Slice 1 is ~1 day CC: the seam + safe-default decider only. No LLM, no new persisted schema. The per-gate attempt/decision counter is **deferred to Slice 2** (review D1) where its reader exists, so Slice 1 ships no state nothing reads.
 - Run all commands from the `atlas/` directory. `atlas/` is on `sys.path` for tests (existing tests do `import pipeline`, `import chat_state`).
 - No new dependencies.
 
@@ -211,12 +218,41 @@ def test_injected_decider_overrides_default_policy(tmp_path):
     assert _wait_status(tmp_path, slug, "failed", timeout=12), _status(tmp_path, slug)
     kinds = [e["kind"] for e in d.events.since(0)]
     assert "failed" in kinds and "retry" not in kinds
+
+
+def test_execute_decision_proceed_emits_nothing(tmp_path):
+    """A PROCEED decision is a pure no-op — NOT a spurious 'failed' event (review fix #1).
+    Tested directly so it's deterministic (no threading)."""
+    from supervisor import Decision
+    fake, probe = make_fake_produce()
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake)
+    before = d.events.last_id
+    d._execute_decision("any-slug", {"status": "failed", "stage": "script"},
+                        Decision("PROCEED"))
+    assert d.events.last_id == before          # nothing emitted
+
+
+def test_decider_is_not_called_for_terminal_outcomes(tmp_path):
+    """Exceptions-only seam (D1): the decider must NEVER see a done/cancelled result —
+    those are emitted directly by _on_result. A spy decider proves it."""
+    from supervisor import safe_default_decider
+    seen = []
+
+    def spy(slug, result, context):
+        seen.append(result.get("status"))
+        return safe_default_decider(slug, result, context)
+
+    fake, probe = make_fake_produce()          # clean run to done
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, decide_fn=spy, max_in_flight=2)
+    slug = d.trigger(topic="clean-run")["slug"]
+    assert _wait_status(tmp_path, slug, "done", timeout=12), _status(tmp_path, slug)
+    assert "done" not in seen and "cancelled" not in seen
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python3 -m pytest tests/test_dispatcher.py::test_injected_decider_overrides_default_policy -v`
-Expected: FAIL with `TypeError: __init__() got an unexpected keyword argument 'decide_fn'`.
+Run: `python3 -m pytest tests/test_dispatcher.py -k "injected_decider or proceed_emits or not_called_for_terminal" -v`
+Expected: all three FAIL — the `decide_fn`/spy tests with `TypeError: __init__() got an unexpected keyword argument 'decide_fn'`, and `test_execute_decision_proceed_emits_nothing` with `AttributeError: 'Dispatcher' object has no attribute '_execute_decision'`.
 
 - [ ] **Step 3a: Add the supervisor import**
 
@@ -278,6 +314,8 @@ In `atlas/dispatcher.py`, replace the whole `_on_result` method (`dispatcher.py:
         coerced to a deterministic escalation (forward-safe until a later slice implements
         it)."""
         kind = getattr(decision, "kind", "ESCALATE")
+        if kind == "PROCEED":
+            return  # the decider judged the exception benign — do nothing (NOT a failure)
         if kind == "RETRY_STAGE":
             attempts = self._retries.get(slug, 0)
             self._retries[slug] = attempts + 1
@@ -307,7 +345,7 @@ In `atlas/dispatcher.py`, replace the whole `_on_result` method (`dispatcher.py:
 - [ ] **Step 4: Run the new test, then the FULL dispatcher suite (zero-behavior-change proof)**
 
 Run: `python3 -m pytest tests/test_dispatcher.py -q`
-Expected: PASS — the new test passes AND every pre-existing dispatcher test passes unchanged (this is the zero-behavior-change proof).
+Expected: PASS — the three new tests pass AND every pre-existing dispatcher test passes unchanged (this is the zero-behavior-change proof).
 
 - [ ] **Step 5: Commit**
 
@@ -318,83 +356,13 @@ git commit -m "feat(control-room): route dispatcher failures through the supervi
 
 ---
 
-### Task 3: Persist the decision counter (before acting)
+> **The decision/attempt counter is intentionally NOT in Slice 1** (review D1). The
+> earlier draft persisted a generic `supervisor.decisions` counter that nothing read and
+> whose semantics (total decisions) contradicted the spec's per-gate fix-attempt budget
+> (§2). It is deferred to Slice 2, where it lands as the **per-gate attempt counter** with
+> its actual reader (the bounded `FIX_AND_RERUN` cap). Slice 1 ships no persisted schema.
 
-Every executed decision increments a per-video counter written to `project.json` **before** the action runs — the persistence the bounded-autonomy budget will rely on in Slice 2, and a property that survives a crash mid-decision.
-
-**Files:**
-- Modify: `atlas/dispatcher.py` (add `_bump_decision_count`; call it at the top of `_execute_decision`)
-- Test: `atlas/tests/test_dispatcher.py` (append a new test)
-
-**Interfaces:**
-- Consumes: `chat_state.load_json`, `chat_state.atomic_write_json`, `self._project_path` (existing).
-- Produces: `Dispatcher._bump_decision_count(slug: str) -> int`. Adds a `project.json` key `supervisor: {"decisions": int}` (additive; nothing reads it yet).
-
-- [ ] **Step 1: Write the failing test**
-
-Append to `atlas/tests/test_dispatcher.py`:
-
-```python
-def test_each_decision_persists_a_counter(tmp_path):
-    """Every executed decision bumps a persisted per-video counter (the budget Slice 2
-    relies on). One transient failure → one RETRY_STAGE decision recorded."""
-    fake, probe = make_fake_produce(outcomes={"script": "transient"}, transient_fails=1)
-    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, max_in_flight=2, max_retries=1)
-    slug = d.trigger(topic="count-decisions")["slug"]
-    assert _wait_status(tmp_path, slug, "done", timeout=12), _status(tmp_path, slug)
-    proj = chat_state.load_json(tmp_path / slug / "project.json", {})
-    assert proj.get("supervisor", {}).get("decisions", 0) >= 1
-```
-
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `python3 -m pytest tests/test_dispatcher.py::test_each_decision_persists_a_counter -v`
-Expected: FAIL — `assert 0 >= 1` (no `supervisor.decisions` key written yet).
-
-- [ ] **Step 3a: Add the `_bump_decision_count` helper**
-
-In `atlas/dispatcher.py`, add this method in the helpers block (next to `_reset_failed_stage`):
-
-```python
-    def _bump_decision_count(self, slug: str) -> int:
-        """Increment + persist this video's supervisor decision count (project.json).
-        Counters persist BEFORE the action runs so a crash mid-decision cannot reset the
-        budget and loop (spec §2). Additive: nothing reads `supervisor` until Slice 2."""
-        p = self._project_path(slug)
-        proj = chat_state.load_json(p, None)
-        if not isinstance(proj, dict):
-            return 0
-        sup = proj.setdefault("supervisor", {})
-        sup["decisions"] = int(sup.get("decisions", 0)) + 1
-        proj["updated"] = time.time()
-        chat_state.atomic_write_json(p, proj)
-        return sup["decisions"]
-```
-
-- [ ] **Step 3b: Call it before acting in `_execute_decision`**
-
-In `atlas/dispatcher.py`, add the bump as the FIRST line of `_execute_decision` (immediately after the docstring, before `kind = getattr(...)`):
-
-```python
-        self._bump_decision_count(slug)   # persist the counter BEFORE acting (spec §2)
-        kind = getattr(decision, "kind", "ESCALATE")
-```
-
-- [ ] **Step 4: Run the new test, then the full dispatcher suite**
-
-Run: `python3 -m pytest tests/test_dispatcher.py -q`
-Expected: PASS (the counter test passes; all others still pass).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add atlas/dispatcher.py atlas/tests/test_dispatcher.py
-git commit -m "feat(control-room): persist supervisor decision counter before acting"
-```
-
----
-
-### Task 4: Full-suite regression gate
+### Task 3: Full-suite regression gate
 
 Prove the seam changed nothing across the whole project (the slice's headline guarantee).
 
@@ -412,23 +380,33 @@ Expected: PASS (all of `test_belt_api.py` green in isolation → the full-suite 
 
 - [ ] **Step 3: Done — report**
 
-State: Slice 1 complete. The supervisor seam is live and injectable; the safe-default decider reproduces today's behavior (proven by the unchanged dispatcher suite); decision counters persist. Ready for Slice 2 (the real LLM decider + bounded fact-check auto-fix).
+State: Slice 1 complete. The supervisor seam is live and injectable; the safe-default decider reproduces today's behavior (proven by the unchanged dispatcher suite); a `PROCEED` decision is a clean no-op and the decider is never called for terminal outcomes. No persisted schema added. Ready for Slice 2 (the real LLM decider + bounded fact-check auto-fix + the per-gate attempt counter).
 
 ---
+
+## Deferred to Slice 2 (flagged by the autoplan review)
+
+These are explicitly NOT Slice 1 work — recorded so Slice 2's plan inherits them:
+- **Release the in-flight semaphore before an LLM decision.** A slow decider must not hold an in-flight slot (would throttle the belt). Slice 1's instant decider makes this moot.
+- **The per-gate fix-attempt counter + its reader** (the bounded `FIX_AND_RERUN` cap). Spec §2 semantics: per-gate, not total decisions.
+- **Gate-scope `APPROVE_GATE` in the executor** so `APPROVE_GATE(factcheck)` is structurally illegal (the real never-ship-unverified guard is executor logic, not the vocabulary alone).
+- **Harden gate-detection** in `_execute_decision`: `decision.gate or payload["blocked"]` must not emit a `blocked` event with `gate=None` for a malformed LLM decision.
+- **Both Atlas call-shapes read/append the project.json decision history** as the single source of truth (anti-drift between chat-Atlas and `atlas_decide`).
 
 ## Self-Review
 
 **Spec coverage (Slice 1 scope):**
 - `atlas_decide` seam replacing `_on_result` → Task 2. ✓
 - Safe-default decider, behaviour-identical to today → Task 1 (logic) + Task 2 (proven by unchanged suite). ✓
-- Exceptions-only invocation (done/cancelled bypass) → Task 2 `_on_result`. ✓
+- Exceptions-only invocation (done/cancelled bypass) → Task 2 `_on_result` + the spy-decider test. ✓
 - Decider injectable like `produce_fn` → Task 2 `decide_fn`. ✓
-- Decision runs outside the station lock → structurally preserved (Global Constraints) + Task 2 comment. ✓
-- Persist decision/attempt counters before acting → Task 3. ✓
+- Decision runs outside the station lock → structurally preserved (Global Constraints); in-flight-slot nuance flagged for Slice 2. ✓
+- `PROCEED` is a no-op, not a spurious failure (review fix #1) → Task 2 `_execute_decision` + `test_execute_decision_proceed_emits_nothing`. ✓
 - Schema-validate / coerce illegal decision → Task 2 `_execute_decision` forward-safe fallback (full validation lands in Slice 2 with the LLM). ✓ (noted)
+- Persisted counter → **deferred to Slice 2** (review D1), so Slice 1 ships no unread schema. ✓
 
-**Out of Slice 1 (deferred to later slices, correctly):** the real LLM decider, FIX_AND_RERUN/APPROVE_GATE/RERUN_FROM/KILL executor branches, the render budget, the escalation cards, the unified request path. Slice 1 is pure plumbing.
+**Out of Slice 1 (deferred to later slices, correctly):** the real LLM decider, FIX_AND_RERUN/APPROVE_GATE/RERUN_FROM/KILL executor branches, the per-gate counter, the render budget, the escalation cards, the unified request path. Slice 1 is pure plumbing.
 
 **Placeholder scan:** none — every step has exact code, exact commands, exact expected output.
 
-**Type consistency:** `decide_fn`/`self._decide`, `Decision(kind, stage, gate, reason, instructions, payload)`, `_execute_decision(slug, result, decision)`, `_bump_decision_count(slug)` are consistent across Tasks 1–3 and match the dispatcher's existing helpers (`_reset_failed_stage`, `_start_worker`, `_project_path`).
+**Type consistency:** `decide_fn`/`self._decide`, `Decision(kind, stage, gate, reason, instructions, payload)`, `_execute_decision(slug, result, decision)` are consistent across Tasks 1–2 and match the dispatcher's existing helpers (`_reset_failed_stage`, `_start_worker`, `_project_path`).
