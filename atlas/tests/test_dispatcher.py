@@ -752,3 +752,55 @@ def test_decider_receives_flagged_claims_in_context(tmp_path):
     # (set by the fake before produce() returns) while _on_result is still in flight
     assert _wait_for(lambda: "flagged_claims" in seen, timeout=12)
     assert any(c.get("claim_id") == "s5c2" for c in seen.get("flagged_claims", []))
+
+
+# ---------------------------------------------------------------- Task 2: render-budget helpers
+def _write_final_render_project(tmp_path, slug, est_runtime_sec, n_drafts=0):
+    import json as _json
+    pdir = tmp_path / slug
+    pdir.mkdir(parents=True, exist_ok=True)
+    proj = {"slug": slug, "status": "blocked_at_final_render", "stages": {},
+            "history": [], "gates": {"final_render": {"status": "blocked", "details": {
+                "working_title": "T", "scenes": 5, "est_runtime_sec": est_runtime_sec,
+                "audio_duration_sec": est_runtime_sec}}}}
+    (pdir / "project.json").write_text(_json.dumps(proj))
+    for i in range(1, n_drafts + 1):
+        d = pdir / "scenes" / f"scene-{i:02d}" / "renders"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "draft.mp4").write_text("x")
+    return pdir
+
+
+def test_render_under_budget_true_when_runtime_below_ceiling(tmp_path):
+    fake, _ = make_fake_produce()
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, render_budget_sec=600.0)
+    _write_final_render_project(tmp_path, "vid", est_runtime_sec=120)
+    assert d._render_under_budget("vid") is True
+
+
+def test_render_over_budget_when_runtime_above_ceiling(tmp_path):
+    fake, _ = make_fake_produce()
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, render_budget_sec=300.0)
+    _write_final_render_project(tmp_path, "vid", est_runtime_sec=900)
+    assert d._render_under_budget("vid") is False
+
+
+def test_render_missing_runtime_is_over_budget(tmp_path):
+    import json as _json
+    fake, _ = make_fake_produce()
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, render_budget_sec=600.0)
+    pdir = tmp_path / "vid"; pdir.mkdir()
+    (pdir / "project.json").write_text(_json.dumps(
+        {"slug": "vid", "gates": {"final_render": {"details": {}}}}))
+    assert d._render_under_budget("vid") is False     # cannot size → escalate
+
+
+def test_render_plan_payload_includes_drafts(tmp_path):
+    fake, _ = make_fake_produce()
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, render_budget_sec=600.0)
+    _write_final_render_project(tmp_path, "vid", est_runtime_sec=120, n_drafts=3)
+    payload = d._render_plan_payload("vid")
+    assert payload["render_plan"]["scenes"] == 5
+    assert payload["budget_sec"] == 600.0
+    assert "scenes/scene-01/renders/draft.mp4" in payload["draft_renders"]
+    assert len(payload["draft_renders"]) == 3

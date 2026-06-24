@@ -94,7 +94,8 @@ class Dispatcher:
                  produce_fn: Callable | None = None, max_in_flight: int = 2,
                  max_retries: int = 1, decide_fn: Callable | None = None,
                  max_fix_attempts: int = 2, max_decisions: int = 12,
-                 decider_model: str | None = None):
+                 decider_model: str | None = None,
+                 render_budget_sec: float = 600.0):
         self.projects_dir = pathlib.Path(projects_dir) if projects_dir else PROJECTS_DIR
         self._produce = produce_fn or pipeline.produce
         # the supervisor seam: every failure/gate decision routes through this. The default
@@ -105,6 +106,7 @@ class Dispatcher:
         self.max_fix_attempts = max_fix_attempts
         self.max_decisions = max_decisions
         self.decider_model = decider_model
+        self.render_budget_sec = render_budget_sec
         # one single-occupancy station per stage (§6.3)
         self._station_locks = {s.key: threading.Semaphore(1) for s in STAGES}
         # global in-flight cap; over-cap videos wait as `queued` on disk (§6.6)
@@ -551,6 +553,28 @@ class Dispatcher:
             proj["status"] = "queued"
             proj["updated"] = time.time()
             chat_state.atomic_write_json(p, proj)
+
+    def _render_under_budget(self, slug: str) -> bool:
+        """True only when the render plan's estimated runtime is at/under the budget ceiling.
+        Any missing/invalid size → False (we never auto-approve a render we cannot size)."""
+        proj = self._load_project(slug)
+        if proj is None:
+            return False
+        details = (proj.get("gates", {}).get("final_render", {}) or {}).get("details") or {}
+        rt = details.get("est_runtime_sec")
+        if not isinstance(rt, (int, float)):
+            return False
+        return float(rt) <= float(self.render_budget_sec)
+
+    def _render_plan_payload(self, slug: str) -> dict:
+        """The over-budget escalation card: render plan + per-scene HyperFrames draft frames."""
+        proj = self._load_project(slug) or {}
+        details = (proj.get("gates", {}).get("final_render", {}) or {}).get("details") or {}
+        pdir = self._project_path(slug).parent
+        drafts = sorted(p.relative_to(pdir).as_posix()
+                        for p in pdir.glob("scenes/scene-*/renders/draft.mp4"))
+        return {"render_plan": details, "draft_renders": drafts,
+                "budget_sec": float(self.render_budget_sec)}
 
     def _build_context(self, slug: str, result: dict) -> dict:
         """Full decision state for the decider (spec §1): counters + the flagged claims and
