@@ -864,6 +864,28 @@ def test_big_number_carries_signature_tint_on_the_beat():
     assert engine.scan_determinism(html) == []
 
 
+def test_motion_sidecar_only_asserts_selectors_present_in_the_scene(tmp_path):
+    # A big-number signature scene has NO .scene-title (its hero is .big-number-value)
+    # and shows the signature via the gold number, so the highlighter sweep is never
+    # injected. The motion sidecar must assert ONLY selectors that exist in the DOM —
+    # asserting .scene-title/.hl-sweep makes `inspect --strict` fail with
+    # motion_selector_missing and hard-blocks the whole video.
+    ctx = _ctx(layout="big-number", signature=True,
+               effects=[{"name": engine.SIGNATURE_EFFECT, "params": {}}],
+               hero_stat={"value": 40, "unit": "%", "label": "fewer"})
+    html = engine.compose_scene_html(ctx)
+    engine._emit_motion_sidecar(tmp_path, ctx)
+    sidecar = engine.chat_state.load_json(tmp_path / "index.motion.json", {})
+    selectors = [a["selector"] for a in sidecar.get("assertions", [])]
+    assert selectors, "a signature scene must still emit a motion sidecar"
+    body = html.split("<body>", 1)[1]
+    for sel in selectors:
+        assert f'class="{sel.lstrip(".")}' in body, \
+            f"motion sidecar asserts {sel} but no such element exists in the big-number DOM"
+    assert ".scene-title" not in selectors
+    assert ".hl-sweep" not in selectors
+
+
 def test_timeline_emits_one_svg_node_per_parsed_entry():
     entries = [{"date": "1969", "label": "Moon"}, {"date": "1991", "label": "Web"},
                {"date": "2007", "label": "iPhone"}]

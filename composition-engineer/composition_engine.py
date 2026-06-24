@@ -1585,6 +1585,19 @@ def _motion_strict(ctx: dict) -> bool:
     return ctx["signature"] or bool(names & {"map-draw", SIGNATURE_EFFECT})
 
 
+# Layouts whose primary text element is NOT `.scene-title`. The motion sidecar (and the
+# highlighter sweep, injected behind a `.scene-title`) assume one exists; these carry the
+# beat on a different hero element instead — asserting `.scene-title`/`.hl-sweep` on them
+# makes `inspect --strict` fail with motion_selector_missing and blocks the whole video.
+_HERO_SELECTOR = {"big-number": ".big-number-value", "timeline": ".tl-title"}
+
+
+def _hero_selector(ctx: dict) -> str:
+    """The scene's primary on-screen text element — `.scene-title` for most layouts,
+    the layout's own hero element for the ones that have no `.scene-title`."""
+    return _HERO_SELECTOR.get(ctx.get("layout"), ".scene-title")
+
+
 def _emit_motion_sidecar(scene_dir: pathlib.Path, ctx: dict) -> None:
     """Emit a *.motion.json sidecar asserting the signature motion endpoints so
     `inspect` can machine-verify them. Only for scenes worth asserting."""
@@ -1593,9 +1606,12 @@ def _emit_motion_sidecar(scene_dir: pathlib.Path, ctx: dict) -> None:
     dur = round(ctx["duration"], 3)
     names = {e["name"] for e in ctx["effects"]}
     # Assertion kinds verified against the HyperFrames inspect motion-spec surface:
-    # appearsBy {selector, bySec}, staysInFrame {selector}.
-    assertions = [{"kind": "staysInFrame", "selector": ".scene-title"}]
-    if SIGNATURE_EFFECT in names:
+    # appearsBy {selector, bySec}, staysInFrame {selector}. Assert ONLY selectors that
+    # actually render: the hero text for staysInFrame, and the sweep only where it was
+    # injected (a layout with a `.scene-title`; big-number/timeline carry the signature
+    # via their gold hero, not a text sweep).
+    assertions = [{"kind": "staysInFrame", "selector": _hero_selector(ctx)}]
+    if SIGNATURE_EFFECT in names and ctx.get("layout") not in _HERO_SELECTOR:
         # the #FFD000 sweep grows from scaleX 0 -> it must be visible by scene end
         assertions.append({"kind": "appearsBy", "selector": ".hl-sweep", "bySec": dur})
     if "map-draw" in names:
