@@ -37,7 +37,10 @@ def test_belt_includes_atlas_activity(tmp_path):
     proj_path.write_text(json.dumps(proj))
     body = c.get("/api/belt").json()
     vid = next(v for v in body["videos"] if v["slug"] == slug)
-    assert vid["atlas_activity"]["text"].startswith("Atlas: FIX_AND_RERUN")
+    txt = vid["atlas_activity"]["text"]
+    # Humanized live line: starts with "Atlas: ", carries the reason, never the raw enum.
+    assert txt.startswith("Atlas: ") and "FIX_AND_RERUN" not in txt
+    assert "fix 1/2" in txt
 
 
 def test_guide_endpoint_reruns(tmp_path):

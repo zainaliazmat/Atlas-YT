@@ -966,4 +966,6 @@ def test_atlas_activity_returns_latest_supervisor_line(tmp_path):
                     reason="fix 1/2")
     (pdir / "project.json").write_text(_json.dumps(proj))
     act = d._atlas_activity("vid")
-    assert act and "FIX_AND_RERUN" in act["text"]
+    # The live line is humanized: the engine enum never leaks; the stage + reason do.
+    assert act and "FIX_AND_RERUN" not in act["text"]
+    assert "script" in act["text"] and "fix 1/2" in act["text"]

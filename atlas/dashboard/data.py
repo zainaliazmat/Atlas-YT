@@ -25,6 +25,7 @@ import time
 
 import contracts
 import registry
+import supervisor
 
 HERE = pathlib.Path(__file__).resolve().parent
 DEFAULT_PROJECTS_DIR = HERE.parent / "projects"
@@ -287,10 +288,8 @@ def belt(projects_dir: pathlib.Path) -> dict:
         atlas_activity = None
         if sup_log:
             last = sup_log[-1]
-            txt = f"Atlas: {last.get('kind', '')}"
-            if last.get("reason"):
-                txt += f" — {last['reason']}"
-            atlas_activity = {"text": txt, "ts": last.get("ts", 0)}
+            atlas_activity = {"text": supervisor.humanize_atlas_activity(last),
+                              "ts": last.get("ts", 0)}
         videos.append({
             "slug": summ["slug"], "label": summ["label"], "topic": summ["topic"],
             "belt_state": _belt_state(proj), "status": summ["status"],

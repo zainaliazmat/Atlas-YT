@@ -159,3 +159,35 @@ def test_fix_history_is_separate_from_fix_attempts_counter():
     assert fix_attempts(p, "factcheck") == 2          # the int cap counter is intact
     assert isinstance(p["supervisor"]["fix_attempts"]["factcheck"], int)
     assert len(fix_history(p, "factcheck")) == 1       # parallel list, unrelated to the int
+
+
+# ---------------------------------------------------------------------------
+# Live "Atlas is doing X" line — engine decision kinds must read as plain
+# English, never raw enum tokens leaking into the CEO's face.
+# ---------------------------------------------------------------------------
+def test_humanize_maps_kind_to_plain_phrase():
+    from supervisor import humanize_atlas_activity
+    txt = humanize_atlas_activity({"kind": "RETRY_STAGE", "stage": "script"})
+    assert "RETRY_STAGE" not in txt          # no raw enum token
+    assert txt.startswith("Atlas: ")
+    assert "script" in txt
+
+
+def test_humanize_appends_reason_verbatim():
+    from supervisor import humanize_atlas_activity
+    txt = humanize_atlas_activity({"kind": "ESCALATE", "reason": "needs your call"})
+    assert "Escalat" in txt and "needs your call" in txt
+
+
+def test_humanize_handles_every_decision_kind_without_leaking_enum():
+    from supervisor import humanize_atlas_activity, DECISION_KINDS
+    for k in DECISION_KINDS:
+        txt = humanize_atlas_activity({"kind": k, "stage": "render", "gate": "factcheck"})
+        assert k not in txt, f"{k} leaked as raw token: {txt}"
+        assert txt.startswith("Atlas: ")
+
+
+def test_humanize_empty_or_unknown_is_safe():
+    from supervisor import humanize_atlas_activity
+    assert humanize_atlas_activity({}).startswith("Atlas:")
+    assert humanize_atlas_activity({"kind": "WAT"}).startswith("Atlas:")

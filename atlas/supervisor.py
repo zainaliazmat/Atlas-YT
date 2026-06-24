@@ -139,6 +139,43 @@ def fix_attempts(project: dict, gate: str) -> int:
     return ensure_supervisor_block(project)["fix_attempts"].get(gate, 0)
 
 
+# Engine decision vocabulary → plain-English phrases for the live "Atlas is doing X"
+# line. The dashboard must never show a raw enum token (RETRY_STAGE) to the CEO.
+# {stage} is filled from the log entry when present.
+_ATLAS_PHRASES = {
+    "PROCEED": "Proceeding to the next stage",
+    "RETRY_STAGE": "Retrying {stage} after a transient hiccup",
+    "FIX_AND_RERUN": "Auto-fixing and re-running {stage}",
+    "RERUN_FROM": "Re-running from {stage}",
+    "APPROVE_GATE": "Approved the gate — continuing",
+    "ESCALATE": "Escalated to you",
+    "KILL": "Stopped this video",
+}
+
+
+def humanize_atlas_activity(entry: dict) -> str:
+    """Turn one supervisor.log entry into a plain-English 'Atlas is doing X' line.
+
+    Maps the decision `kind` (engine vocabulary) to a human phrase and appends the
+    free-text reason verbatim. Unknown/empty kinds degrade safely to a neutral line
+    rather than leaking a bare token."""
+    entry = entry or {}
+    kind = entry.get("kind") or ""
+    stage = entry.get("stage") or "the stage"
+    phrase = _ATLAS_PHRASES.get(kind)
+    if phrase:
+        phrase = phrase.format(stage=stage)
+    elif kind:
+        phrase = "Working"          # known-shaped but unmapped kind — never echo the token
+    else:
+        phrase = "Working"
+    text = f"Atlas: {phrase}"
+    reason = entry.get("reason")
+    if reason:
+        text += f" — {reason}"
+    return text
+
+
 def record_decision(project: dict, *, trigger: str, stage, kind: str, reason: str = "",
                     latency_ms: int | None = None, model: str | None = None) -> dict:
     """Append the decision to BOTH supervisor.log (rich) and project.history (the shared

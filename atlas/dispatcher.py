@@ -301,10 +301,7 @@ class Dispatcher:
         if not log:
             return None
         last = log[-1]
-        text = f"Atlas: {last.get('kind', '')}"
-        if last.get("reason"):
-            text += f" — {last['reason']}"
-        return {"text": text, "ts": last.get("ts", 0)}
+        return {"text": supervisor.humanize_atlas_activity(last), "ts": last.get("ts", 0)}
 
     def guide(self, slug: str, instructions: str, *, initiator: str = "ceo") -> dict:
         """CEO guidance on a parked fact-check block: feed instructions to the next fix and
