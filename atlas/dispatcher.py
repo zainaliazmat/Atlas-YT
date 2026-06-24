@@ -92,7 +92,8 @@ class Dispatcher:
 
     def __init__(self, projects_dir: pathlib.Path | str | None = None,
                  produce_fn: Callable | None = None, max_in_flight: int = 2,
-                 max_retries: int = 1, decide_fn: Callable | None = None):
+                 max_retries: int = 1, decide_fn: Callable | None = None,
+                 max_fix_attempts: int = 2, max_decisions: int = 12):
         self.projects_dir = pathlib.Path(projects_dir) if projects_dir else PROJECTS_DIR
         self._produce = produce_fn or pipeline.produce
         # the supervisor seam: every failure/gate decision routes through this. The default
@@ -100,6 +101,8 @@ class Dispatcher:
         self._decide = decide_fn or supervisor.safe_default_decider
         self.max_in_flight = max_in_flight
         self.max_retries = max_retries
+        self.max_fix_attempts = max_fix_attempts
+        self.max_decisions = max_decisions
         # one single-occupancy station per stage (§6.3)
         self._station_locks = {s.key: threading.Semaphore(1) for s in STAGES}
         # global in-flight cap; over-cap videos wait as `queued` on disk (§6.6)
@@ -381,36 +384,85 @@ class Dispatcher:
     def _execute_decision(self, slug: str, result: dict,
                           decision: "supervisor.Decision") -> None:
         """Execute a Decision with the belt's reliable mechanics. Slice 1 handles
-        RETRY_STAGE and ESCALATE (all the safe-default decider emits); any other kind is
-        coerced to a deterministic escalation (forward-safe until a later slice implements
-        it)."""
+        RETRY_STAGE and ESCALATE; Slice 2 (Task 5) adds FIX_AND_RERUN + caps. Any other
+        kind is coerced to a deterministic escalation (forward-safe until a later slice
+        implements it)."""
         kind = getattr(decision, "kind", "ESCALATE")
         if kind == "PROCEED":
             return  # the decider judged the exception benign — do nothing (NOT a failure)
         if kind == "RETRY_STAGE":
             attempts = self._retries.get(slug, 0)
             self._retries[slug] = attempts + 1
-            self.events.emit("retry", slug=slug, stage=decision.stage,
+            if self._over_decision_budget(slug):
+                return self._escalate(slug, result, decision,
+                                      reason="decision budget exhausted — escalating")
+            self.events.emit("retry", slug=slug, stage=decision.stage, initiator="atlas",
                              message=f"transient failure — retry {attempts + 1}")
             self._reset_failed_stage(slug, decision.stage)
             self._start_worker(slug, backoff=min(2.0 ** attempts, 5.0))
             return
+        if kind == "FIX_AND_RERUN":
+            return self._do_fix_and_rerun(slug, result, decision)
+        # (RERUN_FROM / APPROVE_GATE / KILL land in Task 6; until then they fall through to
+        # the safe ESCALATE handling below.)
+        self._retries.pop(slug, None)
+        return self._escalate(slug, result, decision)
+
+    def _over_decision_budget(self, slug: str) -> bool:
+        """Count this decision; True once the per-video budget is exhausted (counter
+        persisted BEFORE the action runs, so a crash can't reset the budget and loop)."""
+        proj = self._load_project(slug)
+        if proj is None:
+            return False
+        n = supervisor.bump_decision(proj)
+        self._save_project(slug, proj)
+        return n > self.max_decisions
+
+    def _do_fix_and_rerun(self, slug: str, result: dict,
+                          decision: "supervisor.Decision") -> None:
+        gate = decision.gate or result.get("gate")
+        proj = self._load_project(slug)
+        if proj is None:
+            return self._escalate(slug, result, decision)
+        # HARD GUARANTEE: a factcheck block can be fixed at most `max_fix_attempts` times;
+        # the next block escalates (never approved, never looping). Counter persists first.
+        if gate == "factcheck" and supervisor.fix_attempts(proj, gate) >= self.max_fix_attempts:
+            return self._escalate(slug, result,
+                supervisor.Decision("ESCALATE", gate="factcheck", payload={"blocked": True},
+                    reason=decision.reason or "fact-check unresolved after auto-fix"))
+        if gate:
+            supervisor.bump_fix_attempt(proj, gate)
+        n = supervisor.bump_decision(proj)
+        self._save_project(slug, proj)
+        if n > self.max_decisions:
+            return self._escalate(slug, result, decision,
+                                  reason="decision budget exhausted — escalating")
+        attempt_no = supervisor.fix_attempts(proj, gate) if gate else 0
+        self._persist_revision_hint(slug, decision.stage, decision.instructions)
+        self.events.emit("fixing", slug=slug, stage=decision.stage, initiator="atlas",
+                         message=(f"re-running {decision.stage} "
+                                  f"(fix {attempt_no}/{self.max_fix_attempts})"
+                                  if gate == "factcheck"
+                                  else f"re-running {decision.stage}"))
+        self._retries.pop(slug, None)
+        self.rerun(slug, from_stage=decision.stage, initiator="atlas")
+
+    def _escalate(self, slug: str, result: dict, decision: "supervisor.Decision",
+                  *, reason: str | None = None) -> None:
+        """Emit the park-for-human event (gate → blocked, else failed). Hardened gate
+        detection: only emit `blocked` for a REAL gate key (Task 6 reuses this)."""
         self._retries.pop(slug, None)
         payload = decision.payload or {}
-        if kind == "ESCALATE" and (decision.gate or payload.get("blocked")):
-            self.events.emit("blocked", slug=slug, gate=decision.gate,
-                             message=decision.reason or "awaiting your sign-off")
+        why = reason or decision.reason
+        gate = decision.gate if decision.gate in supervisor.LEGAL_GATES else None
+        if gate or payload.get("blocked"):
+            self.events.emit("blocked", slug=slug, gate=gate, initiator="atlas",
+                             message=why or "awaiting your sign-off")
             return
-        if kind == "ESCALATE":
-            self.events.emit("failed", slug=slug,
-                             stage=decision.stage or result.get("stage"),
-                             failure_kind=payload.get("failure_kind", "transient"),
-                             message=decision.reason or "stage failed")
-            return
-        # A kind not implemented in this slice → forward-safe deterministic escalation.
-        self.events.emit("failed", slug=slug, stage=result.get("stage"),
-                         failure_kind="deterministic",
-                         message=f"decision {kind!r} not handled in this slice; escalating")
+        self.events.emit("failed", slug=slug,
+                         stage=decision.stage or result.get("stage"), initiator="atlas",
+                         failure_kind=payload.get("failure_kind", "transient"),
+                         message=why or "stage failed")
 
     # ------------------------------------------------------------------ helpers
     def _is_cancelled(self, slug: str) -> bool:
@@ -419,6 +471,23 @@ class Dispatcher:
 
     def _project_path(self, slug: str) -> pathlib.Path:
         return self.projects_dir / slug / "project.json"
+
+    def _load_project(self, slug: str) -> dict | None:
+        proj = chat_state.load_json(self._project_path(slug), None)
+        return proj if isinstance(proj, dict) else None
+
+    def _save_project(self, slug: str, proj: dict) -> None:
+        proj["updated"] = time.time()
+        chat_state.atomic_write_json(self._project_path(slug), proj)
+
+    def _persist_revision_hint(self, slug: str, stage: str, instructions: str) -> None:
+        """Record Atlas's fix instructions so the re-run of `stage` picks them up (Marlow
+        reads project['revision'] in adapters/scriptwriter.run_write)."""
+        proj = self._load_project(slug)
+        if proj is None:
+            return
+        proj["revision"] = {"stage": stage, "hint": instructions or "", "ts": time.time()}
+        self._save_project(slug, proj)
 
     def _mark_cancelled(self, slug: str) -> None:
         p = self._project_path(slug)

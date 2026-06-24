@@ -38,6 +38,9 @@ def make_fake_produce(stages=("research", "script", "render"), hold=0.02,
         proj = chat_state.load_json(pdir / "project.json", {})
         proj["status"] = "running"
         chat_state.atomic_write_json(pdir / "project.json", proj)
+        # track which stages completed successfully so we can persist them on failure
+        # (rerun(from_stage=X) needs X to be non-pending on disk)
+        completed: dict[str, dict] = {}
         for key in stages:
             if should_cancel is not None and should_cancel():
                 proj["status"] = "cancelled"
@@ -61,10 +64,26 @@ def make_fake_produce(stages=("research", "script", "render"), hold=0.02,
                     fail_counts[ck] = prior + 1
                 fail = kind == "deterministic" or prior < transient_fails
                 if fail:
+                    # Re-read to preserve supervisor/revision data the dispatcher wrote;
+                    # also flush any upstream stages completed in this run.
+                    proj = chat_state.load_json(pdir / "project.json", {})
                     proj["status"] = "failed"
+                    for ck2, cv in completed.items():
+                        proj.setdefault("stages", {})[ck2] = cv
+                    proj.setdefault("stages", {})[key] = {
+                        "status": "failed", "artifact": None, "validated": False}
                     chat_state.atomic_write_json(pdir / "project.json", proj)
                     return {"status": "failed", "stage": key, "failure_kind": kind,
                             "errors": [f"boom at {key}"]}
+            # record in-memory; written to disk only when a downstream stage fails or
+            # when the run ends — avoids an extra atomic_write between stages that would
+            # break timing-sensitive cancel tests.
+            completed[key] = {"status": "done", "artifact": f"{key}.artifact",
+                              "validated": True}
+        # clean run — persist all stage statuses + final "done"
+        proj = chat_state.load_json(pdir / "project.json", {})
+        for ck2, cv in completed.items():
+            proj.setdefault("stages", {})[ck2] = cv
         proj["status"] = "done"
         chat_state.atomic_write_json(pdir / "project.json", proj)
         return {"status": "done", "video": "video.mp4"}
@@ -496,3 +515,103 @@ def test_slow_decision_does_not_hold_an_inflight_slot(tmp_path):
     assert _wait_status(tmp_path, b, "failed", timeout=12), _status(tmp_path, b)
     release_a.set()
     assert _wait_status(tmp_path, a, "failed", timeout=12), _status(tmp_path, a)
+
+
+# ---------------------------------------------------------------- helpers (Task 5)
+def _proj(projects_dir, slug):
+    """Load and return the full project dict from disk."""
+    return chat_state.load_json(pathlib.Path(projects_dir) / slug / "project.json", {})
+
+
+def _wait_proj_cond(projects_dir, slug, cond, timeout=20.0, dispatcher=None):
+    """Poll until `cond(proj, events) is True` or timeout. Returns the final project dict.
+    `dispatcher` is optional — when given, events are passed to `cond` as a list of kinds."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        proj = _proj(projects_dir, slug)
+        kinds = [e["kind"] for e in dispatcher.events.since(0)] if dispatcher else []
+        if cond(proj, kinds):
+            return proj
+        time.sleep(0.05)
+    proj = _proj(projects_dir, slug)
+    return proj
+
+
+# ---------------------------------------------------------------- Task 5: FIX_AND_RERUN + caps
+def test_fix_and_rerun_persists_hint_and_reruns_from_stage(tmp_path):
+    """FIX_AND_RERUN persists a revision hint and re-runs from the named stage."""
+    from supervisor import Decision
+    fake, probe = make_fake_produce(outcomes={"script": "deterministic"})
+
+    calls = {"n": 0}
+    def fixer(slug, result, context):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return Decision("FIX_AND_RERUN", stage="script", gate="factcheck",
+                            instructions="drop the unsourced stat", reason="unsupported")
+        return Decision("ESCALATE", stage="script", payload={"failure_kind": "deterministic"})
+
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, decide_fn=fixer,
+                   max_in_flight=2, max_retries=0)
+    slug = d.trigger(topic="needs-a-fix")["slug"]
+    # Wait for STABLE final: "failed" + "fixing" emitted (FIX_AND_RERUN ran) + fix_attempts==1.
+    # The second ESCALATE parks it permanently as "failed".
+    proj = _wait_proj_cond(tmp_path, slug,
+        lambda p, k: (p.get("status") == "failed"
+                      and p.get("supervisor", {}).get("fix_attempts", {}).get("factcheck") == 1
+                      and "revision" in p
+                      and "fixing" in k),
+        timeout=12, dispatcher=d)
+    assert proj.get("status") == "failed", _status(tmp_path, slug)
+    assert proj["revision"]["hint"] == "drop the unsourced stat"
+    assert proj["revision"]["stage"] == "script"
+    assert proj["supervisor"]["fix_attempts"]["factcheck"] == 1
+    kinds = [e["kind"] for e in d.events.since(0)]
+    assert "fixing" in kinds
+
+
+def test_factcheck_fix_capped_then_escalates(tmp_path):
+    """The 3rd factcheck FIX_AND_RERUN is forced to ESCALATE regardless of the decider —
+    the bounded auto-fix never loops and never approves the block."""
+    from supervisor import Decision
+    # Always blocks at factcheck; decider always wants to keep fixing.
+    fake, probe = make_fake_produce(stages=("research", "script", "factcheck"),
+                                    outcomes={"factcheck": "deterministic"})
+
+    def always_fix(slug, result, context):
+        return Decision("FIX_AND_RERUN", stage="script", gate="factcheck",
+                        instructions="try again", reason="still flagged")
+
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, decide_fn=always_fix,
+                   max_in_flight=2, max_retries=0, max_fix_attempts=2)
+    slug = d.trigger(topic="unfixable")["slug"]
+    # Wait for the fully-settled state: fix_attempts == 2 (both fix runs done) AND
+    # "blocked" in events (the 3rd call hit the cap and _escalate emitted "blocked").
+    proj = _wait_proj_cond(tmp_path, slug,
+        lambda p, k: (p.get("supervisor", {}).get("fix_attempts", {}).get("factcheck") == 2
+                      and "blocked" in k),
+        timeout=20, dispatcher=d)
+    assert proj.get("supervisor", {}).get("fix_attempts", {}).get("factcheck") == 2, \
+        f"fix_attempts not 2: {proj.get('supervisor')}"
+    kinds = [e["kind"] for e in d.events.since(0)]
+    assert kinds.count("fixing") == 2 and "blocked" in kinds      # 2 fixes, then escalate
+
+
+def test_decision_budget_forces_escalation(tmp_path):
+    """A per-video decision budget caps belt-re-running actions; over budget → escalate."""
+    from supervisor import Decision
+    fake, probe = make_fake_produce(outcomes={"script": "transient"}, transient_fails=999)
+
+    def always_retry(slug, result, context):
+        return Decision("RETRY_STAGE", stage="script", reason="keep trying")
+
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, decide_fn=always_retry,
+                   max_in_flight=2, max_retries=999, max_decisions=3)
+    slug = d.trigger(topic="loopy")["slug"]
+    # Wait for the final failed state: decisions >= max_decisions (budget exhausted).
+    proj = _wait_proj_cond(tmp_path, slug,
+        lambda p, k: (p.get("status") == "failed"
+                      and p.get("supervisor", {}).get("decisions", 0) >= 3),
+        timeout=20, dispatcher=d)
+    assert _wait_status(tmp_path, slug, "failed", timeout=5), _status(tmp_path, slug)
+    assert proj["supervisor"]["decisions"] >= 3
