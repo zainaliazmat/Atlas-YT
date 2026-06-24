@@ -1805,13 +1805,22 @@
 
   // A PROPOSED T1 action — rendered as a reversible proposal you confirm (the light confirm
   // of §4). The kinds are fixed (trigger/cancel/update_setting); there is no approve/publish.
+  // engine setting keys → plain-English labels for the proposal card (no snake_case
+  // in the CEO's face); values get title-cased so "long" reads "Long".
+  var SETTING_LABELS = { target_length: "default length", voice: "default voice",
+    style_preset: "default style preset", gates: "human gates", niche: "niche" };
+  function _settingValue(v) {
+    var s = String(v);
+    return /^(short|long)$/i.test(s) ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  }
   function renderProposal(log, action) {
     var kind = action.kind, args = action.args || {};
+    var fieldLabel = SETTING_LABELS[args.field] || String(args.field || "").replace(/_/g, " ");
     var label = kind === "trigger"
       ? 'Start a production' + (args.topic ? ' — <b>' + esc(ellip(args.topic, 60)) + '</b>' : '')
       : kind === "cancel"
         ? 'Cancel / park <b>' + esc(ellip(args.slug || "", 40)) + '</b>'
-        : 'Set <b>' + esc(args.field || "") + '</b> to <b>' + esc(String(args.value)) + '</b>';
+        : 'Set <b>' + esc(fieldLabel) + '</b> to <b>' + esc(_settingValue(args.value)) + '</b>';
     var box = document.createElement("div");
     box.className = "proposal";
     box.innerHTML =
