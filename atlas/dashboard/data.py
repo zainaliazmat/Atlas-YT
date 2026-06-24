@@ -253,7 +253,7 @@ def _belt_state(proj: dict) -> str:
         return "blocked"
     if s == "created":
         return "queued"
-    if s in ("queued", "running", "failed", "cancelled", "done"):
+    if s in ("queued", "running", "failed", "cancelled", "done", "interrupted"):
         return s
     return s
 
@@ -283,6 +283,14 @@ def belt(projects_dir: pathlib.Path) -> dict:
     for d, proj in iter_projects(projects_dir):
         summ = _project_summary(d, proj)
         pstages = proj.get("stages", {}) or {}
+        sup_log = (proj.get("supervisor", {}) or {}).get("log") or []
+        atlas_activity = None
+        if sup_log:
+            last = sup_log[-1]
+            txt = f"Atlas: {last.get('kind', '')}"
+            if last.get("reason"):
+                txt += f" — {last['reason']}"
+            atlas_activity = {"text": txt, "ts": last.get("ts", 0)}
         videos.append({
             "slug": summ["slug"], "label": summ["label"], "topic": summ["topic"],
             "belt_state": _belt_state(proj), "status": summ["status"],
@@ -292,12 +300,14 @@ def belt(projects_dir: pathlib.Path) -> dict:
             "updated": summ["updated"], "updated_rel": summ["updated_rel"],
             "hard_block": _is_hard_block(d) if summ["status"] == "blocked_at_factcheck"
             else False,
+            "atlas_activity": atlas_activity,
         })
     videos.sort(key=lambda v: v["updated"], reverse=True)
     occupancy = {v["station"]: {"slug": v["slug"], "label": v["label"]}
                  for v in videos if v["belt_state"] == "running" and v["station"]}
     counts = {st: sum(1 for v in videos if v["belt_state"] == st) for st in
-              ("queued", "running", "blocked", "failed", "cancelled", "done")}
+              ("queued", "running", "blocked", "failed", "cancelled", "done",
+               "interrupted")}
     return {"stations": stations, "videos": videos, "occupancy": occupancy,
             "counts": counts}
 
@@ -912,6 +922,7 @@ def gate_detail(projects_dir: pathlib.Path, slug: str) -> dict | None:
     if gate == "factcheck":
         prev = _gate1_preview(pdir)
         hard = prev.get("verdict") == "block"
+        sup = (proj.get("supervisor", {}) or {})
         base.update({
             "kind": "factcheck", "preview": prev,
             "verdict": prev.get("verdict"),
@@ -920,6 +931,7 @@ def gate_detail(projects_dir: pathlib.Path, slug: str) -> dict | None:
             "approvable": (not hard) and gate is not None,
             "hard_block": hard,
             "verified_claims": _verified_claims(pdir),
+            "fix_history": (sup.get("fix_history", {}) or {}).get("factcheck", []),
         })
         return base
     if gate == "final_render":

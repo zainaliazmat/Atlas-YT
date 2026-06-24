@@ -1,0 +1,40 @@
+"""Slice 4 — the escalation surface data: fix_history on the gate card, atlas_activity on belt."""
+import json
+from fastapi.testclient import TestClient
+from dashboard.app import create_app
+from dashboard.tests import fixtures
+
+
+def _client(tmp_path):
+    pdir, slugs = fixtures.build_projects(tmp_path)
+    app = create_app(projects_dir=pdir)
+    c = TestClient(app); c._app = app
+    return c, pdir, slugs
+
+
+def test_gate_detail_includes_fix_history(tmp_path):
+    c, pdir, slugs = _client(tmp_path)
+    slug = slugs["hard_block"]
+    proj_path = pdir / slug / "project.json"
+    proj = json.loads(proj_path.read_text())
+    proj.setdefault("supervisor", {})["fix_history"] = {"factcheck": [
+        {"n": 1, "ts": 1.0, "flagged_before": [{"claim_id": "s5c2", "claim_text": "42%"}],
+         "instructions": "drop s5c2"}]}
+    proj_path.write_text(json.dumps(proj))
+    body = c.get(f"/api/gate/{slug}").json()
+    assert body["kind"] == "factcheck"
+    assert body["fix_history"][0]["instructions"] == "drop s5c2"
+    assert body["fix_history"][0]["flagged_before"][0]["claim_id"] == "s5c2"
+
+
+def test_belt_includes_atlas_activity(tmp_path):
+    c, pdir, slugs = _client(tmp_path)
+    slug = slugs["hard_block"]
+    proj_path = pdir / slug / "project.json"
+    proj = json.loads(proj_path.read_text())
+    proj.setdefault("supervisor", {})["log"] = [
+        {"ts": 2.0, "kind": "FIX_AND_RERUN", "reason": "fix 1/2"}]
+    proj_path.write_text(json.dumps(proj))
+    body = c.get("/api/belt").json()
+    vid = next(v for v in body["videos"] if v["slug"] == slug)
+    assert vid["atlas_activity"]["text"].startswith("Atlas: FIX_AND_RERUN")
