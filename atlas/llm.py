@@ -72,7 +72,7 @@ def effective_provider() -> str:
 # ----------------------------------------------------------------------
 # Provider 1 (DEFAULT) — Claude via the Agent SDK (subscription auth, no API key)
 # ----------------------------------------------------------------------
-def _chat_claude(system: str, user: str) -> str:
+def _chat_claude(system: str, user: str, *, model: str | None = None) -> str:
     _warn_if_metered()
     # Retry transient API hiccups (server_error/overloaded/5xx/connection) with backoff
     # so one blip doesn't fail a whole pipeline stage. Rate-limit caps are NOT retried
@@ -82,7 +82,7 @@ def _chat_claude(system: str, user: str) -> str:
     last = None
     for attempt in range(4):
         try:
-            return asyncio.run(_claude_chat_async(system, user))
+            return asyncio.run(_claude_chat_async(system, user, model=model))
         except Exception as e:  # noqa: BLE001 — classify, retry transient, else re-raise
             last = e
             if attempt == 3 or not any(t in str(e).lower() for t in _TRANSIENT):
@@ -91,11 +91,11 @@ def _chat_claude(system: str, user: str) -> str:
     raise last  # pragma: no cover
 
 
-async def _claude_chat_async(system: str, user: str) -> str:
+async def _claude_chat_async(system: str, user: str, model: str | None = None) -> str:
     from claude_agent_sdk import query, ClaudeAgentOptions
     from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage
 
-    options = ClaudeAgentOptions(model=CLAUDE_MODEL, system_prompt=system, tools=[])
+    options = ClaudeAgentOptions(model=model or CLAUDE_MODEL, system_prompt=system, tools=[])
     parts: list[str] = []
     result = None
     async for message in query(prompt=user, options=options):
@@ -118,7 +118,8 @@ async def _claude_chat_async(system: str, user: str) -> str:
 # ----------------------------------------------------------------------
 # Provider 2 — Google Gemini, free tier
 # ----------------------------------------------------------------------
-def _chat_gemini(system: str, user: str) -> str:
+def _chat_gemini(system: str, user: str, *, model: str | None = None) -> str:
+    # model is claude-only for now; Gemini uses its own GEMINI_MODEL constant
     import google.generativeai as genai  # lazy: other providers don't need it
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
@@ -138,7 +139,8 @@ def _chat_gemini(system: str, user: str) -> str:
 # ----------------------------------------------------------------------
 # Provider 3 — DeepSeek (OpenAI-compatible chat completions, raw requests)
 # ----------------------------------------------------------------------
-def _chat_deepseek(system: str, user: str) -> str:
+def _chat_deepseek(system: str, user: str, *, model: str | None = None) -> str:
+    # model is claude-only for now; DeepSeek uses its own DEEPSEEK_MODEL constant
     import requests
     key = os.environ.get("DEEPSEEK_API_KEY")
     if not key:
@@ -164,15 +166,19 @@ def _chat_deepseek(system: str, user: str) -> str:
 _PROVIDERS = {"claude": _chat_claude, "gemini": _chat_gemini, "deepseek": _chat_deepseek}
 
 
-def chat(system: str, user: str) -> str:
+def chat(system: str, user: str, *, model: str | None = None) -> str:
     """Send a system + user prompt to the LLM and return its text reply.
 
     The single seam for Atlas's persona `ask` and distillation. Provider is chosen
     by PROVIDER (one place), defaulting to Claude. Signature is identical across
     providers so it stays a true drop-in swap.
+
+    `model` overrides the Claude model (claude-only; other providers ignore it).
+    Defaults to None → CLAUDE_MODEL, keeping byte-identical behaviour for all
+    existing callers.
     """
     fn = _PROVIDERS.get(PROVIDER, _chat_claude)
-    return fn(system, user)
+    return fn(system, user, model=model)
 
 
 if __name__ == "__main__":
