@@ -93,7 +93,8 @@ class Dispatcher:
     def __init__(self, projects_dir: pathlib.Path | str | None = None,
                  produce_fn: Callable | None = None, max_in_flight: int = 2,
                  max_retries: int = 1, decide_fn: Callable | None = None,
-                 max_fix_attempts: int = 2, max_decisions: int = 12):
+                 max_fix_attempts: int = 2, max_decisions: int = 12,
+                 decider_model: str | None = None):
         self.projects_dir = pathlib.Path(projects_dir) if projects_dir else PROJECTS_DIR
         self._produce = produce_fn or pipeline.produce
         # the supervisor seam: every failure/gate decision routes through this. The default
@@ -103,6 +104,7 @@ class Dispatcher:
         self.max_retries = max_retries
         self.max_fix_attempts = max_fix_attempts
         self.max_decisions = max_decisions
+        self.decider_model = decider_model
         # one single-occupancy station per stage (§6.3)
         self._station_locks = {s.key: threading.Semaphore(1) for s in STAGES}
         # global in-flight cap; over-cap videos wait as `queued` on disk (§6.6)
@@ -377,7 +379,20 @@ class Dispatcher:
         # default reproduces today's policy), then execute its Decision. This runs AFTER
         # produce() returned, i.e. outside every station lock (spec §1).
         context = self._build_context(slug, result)
+        t0 = time.time()
         decision = self._decide(slug, result, context)
+        latency_ms = int((time.time() - t0) * 1000)
+        proj = self._load_project(slug)
+        if proj is not None:
+            supervisor.record_decision(
+                proj, trigger=status, stage=result.get("stage"), kind=decision.kind,
+                reason=decision.reason, latency_ms=latency_ms,
+                model=self.decider_model)
+            self._save_project(slug, proj)
+        self.events.emit("decision", slug=slug, initiator="atlas",
+                         decision_kind=decision.kind,
+                         stage=result.get("stage"), latency_ms=latency_ms,
+                         message=f"Atlas decided {decision.kind}")
         self._execute_decision(slug, result, decision)
 
     def _execute_decision(self, slug: str, result: dict,

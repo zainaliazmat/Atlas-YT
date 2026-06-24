@@ -176,6 +176,9 @@ def test_deterministic_failure_is_not_retried(tmp_path):
     d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, max_in_flight=2, max_retries=3)
     slug = d.trigger(topic="bad-contract")["slug"]
     assert _wait_status(tmp_path, slug, "failed", timeout=12)
+    # wait for the "failed" event too — _on_result runs after produce() returns (disk is
+    # already "failed" from the fake), so the event may arrive slightly after disk status
+    _wait_proj_cond(tmp_path, slug, lambda _p, k: "failed" in k, timeout=5, dispatcher=d)
     kinds = [e["kind"] for e in d.events.since(0)]
     assert "failed" in kinds and "retry" not in kinds
 
@@ -453,6 +456,9 @@ def test_injected_decider_overrides_default_policy(tmp_path):
                    max_in_flight=2, max_retries=3)
     slug = d.trigger(topic="no-retry-please")["slug"]
     assert _wait_status(tmp_path, slug, "failed", timeout=12), _status(tmp_path, slug)
+    # wait for the "failed" event too — _on_result runs after produce() returns (disk is
+    # already "failed" from the fake), so the event may arrive slightly after disk status
+    _wait_proj_cond(tmp_path, slug, lambda _p, k: "failed" in k, timeout=5, dispatcher=d)
     kinds = [e["kind"] for e in d.events.since(0)]
     assert "failed" in kinds and "retry" not in kinds
 
@@ -617,6 +623,28 @@ def test_decision_budget_forces_escalation(tmp_path):
     assert proj["supervisor"]["decisions"] >= 3
 
 
+def test_decision_is_logged_to_project_and_event_ring(tmp_path):
+    """Every Atlas decision lands in project['supervisor']['log'] + history with initiator
+    'atlas' (the audit plane the live feed + digest read in Slice 4)."""
+    from supervisor import Decision
+    fake, probe = make_fake_produce(outcomes={"script": "deterministic"})
+
+    def decider(slug, result, context):
+        return Decision("ESCALATE", stage="script", reason="needs a human",
+                        payload={"failure_kind": "deterministic"})
+
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, decide_fn=decider, max_retries=0)
+    slug = d.trigger(topic="log-me")["slug"]
+    # wait for the supervisor block to be written to disk (record_decision runs inside
+    # _on_result, which runs AFTER produce() returns — disk may show "failed" before it)
+    proj = _wait_proj_cond(tmp_path, slug,
+        lambda p, _k: bool(p.get("supervisor", {}).get("log")),
+        timeout=12, dispatcher=d)
+    log = proj["supervisor"]["log"]
+    assert log and log[-1]["kind"] == "ESCALATE" and log[-1]["reason"] == "needs a human"
+    assert any(h.get("initiator") == "atlas" for h in proj["history"])
+
+
 # ---------------------------------------------------------------- Task 6: APPROVE_GATE / RERUN_FROM / KILL
 def test_approve_gate_factcheck_is_illegal_and_escalates(tmp_path):
     """HARD GUARANTEE: APPROVE_GATE(factcheck) is rejected by the EXECUTOR — a video that
@@ -632,6 +660,10 @@ def test_approve_gate_factcheck_is_illegal_and_escalates(tmp_path):
                    max_in_flight=2, max_retries=0)
     slug = d.trigger(topic="cannot-approve")["slug"]
     assert _wait_status(tmp_path, slug, "failed", timeout=12), _status(tmp_path, slug)
+    # wait for the "blocked" event — _execute_decision runs after record_decision in
+    # _on_result, which runs after produce() returns (disk may show "failed" first)
+    _wait_proj_cond(tmp_path, slug,
+        lambda _p, k: "blocked" in k, timeout=5, dispatcher=d)
     evs = [e for e in d.events.since(0) if e["kind"] == "blocked"]
     assert evs and evs[-1]["gate"] == "factcheck"     # escalated as a gate, NOT approved
     # the video never advanced past the gate
@@ -716,6 +748,7 @@ def test_decider_receives_flagged_claims_in_context(tmp_path):
 
     d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, decide_fn=capture, max_in_flight=2)
     slug = d.trigger(topic="claims-please")["slug"]
-    assert _wait_status(tmp_path, slug, "blocked_at_factcheck", timeout=12) or \
-        _wait_for(lambda: "flagged_claims" in seen, timeout=5)
+    # wait unconditionally for the decider to run — disk may already show blocked_at_factcheck
+    # (set by the fake before produce() returns) while _on_result is still in flight
+    assert _wait_for(lambda: "flagged_claims" in seen, timeout=12)
     assert any(c.get("claim_id") == "s5c2" for c in seen.get("flagged_claims", []))
