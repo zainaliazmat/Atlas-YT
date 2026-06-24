@@ -18,7 +18,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from dashboard import data, intake, media, security, settings_store
+from dashboard import chat, data, intake, media, publish, security, settings_store
 
 HERE = pathlib.Path(__file__).resolve().parent
 STATIC = HERE / "static"
@@ -35,10 +35,10 @@ def create_app(projects_dir: pathlib.Path | str | None = None) -> FastAPI:
                   openapi_url="/api/openapi.json")
     app.state.projects_dir = pathlib.Path(
         projects_dir) if projects_dir else data.DEFAULT_PROJECTS_DIR
-    # the AtlasSession used for the sanctioned gate write; built lazily (heavy import)
-    app.state.session = None
     app.state.produce_fn = None  # tests inject a fake pipeline.produce here
+    app.state.decide_fn = None   # tests inject a fake decider here; None → the real LLM decider
     app.state.find_topics_fn = None  # tests inject a fake Scout find_topics here (#1.5)
+    app.state.chat_fn = None  # tests inject a fake agentic chat here — never the real LLM
     # the assembly-line dispatcher (the belt); built lazily, injectable for tests
     app.state.dispatcher = None
     app.state.max_in_flight = 2  # spec §6.6 honest target: ~2–3 videos in flight
@@ -143,6 +143,46 @@ def create_app(projects_dir: pathlib.Path | str | None = None) -> FastAPI:
     async def approve(slug: str, request: Request):
         return _approve_gate(app, slug, await _json_body(request))
 
+    @app.post("/api/gate/{slug}/guide")
+    async def gate_guide(slug: str, request: Request):
+        try:
+            security.resolve_project_dir(_projects_dir(app), slug)
+        except security.UnsafePathError:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        body = await _json_body(request)
+        instructions = (body.get("instructions") or "").strip()
+        if not instructions:
+            return JSONResponse({"error": "instructions required"}, status_code=400)
+        out = _get_dispatcher(app).guide(slug, instructions, initiator="ceo")
+        return JSONResponse({"result": "guided", "slug": slug, **out})
+
+    @app.post("/api/gate/{slug}/kill")
+    async def gate_kill(slug: str, request: Request):
+        try:
+            security.resolve_project_dir(_projects_dir(app), slug)
+        except security.UnsafePathError:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        body = await _json_body(request)
+        out = _get_dispatcher(app).kill(slug, (body.get("reason") or "").strip(),
+                                        initiator="ceo")
+        return JSONResponse({"result": "killed", "slug": slug, **out})
+
+    # ---------------- T3 publish package (read-only review shell — NO fire path) -------
+    @app.get("/api/publish/{slug}")
+    def publish_package(slug: str):
+        """The exact final package for the T3 review modal (title/description/tags/
+        thumbnail/visibility/schedule + routed channel + blockers). Read-only: there is NO
+        endpoint that fires a publish — real publishing arrives with Herald (#6), so the
+        'no auto-fire-unreviewed' property (§4 T3 / E8) holds by construction here."""
+        try:
+            security.resolve_project_dir(_projects_dir(app), slug)
+        except security.UnsafePathError:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        pkg = publish.publish_package(_projects_dir(app), slug, app.state.settings_path)
+        if pkg is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return J(pkg)
+
     # ---------------- the belt: trigger / cancel / live state (T1 — reversible) ----
     @app.get("/api/belt")
     def belt():
@@ -190,6 +230,26 @@ def create_app(projects_dir: pathlib.Path | str | None = None) -> FastAPI:
         if data.project_detail(_projects_dir(app), slug) is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         return J(_get_dispatcher(app).retry(slug, initiator="ceo"))
+
+    @app.post("/api/rerun/{slug}")
+    async def rerun(slug: str, request: Request):
+        # T1 reversible: re-run an existing video. No body (or {}) → from the start;
+        # {"from_stage": "<stage>"} → that stage + everything downstream (only a stage
+        # that already ran). The dispatcher validates from_stage against the spine.
+        try:
+            security.resolve_project_dir(_projects_dir(app), slug)
+        except security.UnsafePathError:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if data.project_detail(_projects_dir(app), slug) is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        body = await _json_body(request)
+        from_stage = body.get("from_stage")
+        if from_stage is not None and not security.safe_segment(str(from_stage)):
+            return JSONResponse({"error": "bad from_stage"}, status_code=400)
+        out = _get_dispatcher(app).rerun(slug, from_stage=from_stage, initiator="ceo")
+        if not out.get("rerunning"):
+            return JSONResponse(out, status_code=409)
+        return J(out)
 
     # ---------------- the live activity feed: a snapshot of the event ring (§4 audit) ----
     @app.get("/api/activity")
@@ -249,6 +309,87 @@ def create_app(projects_dir: pathlib.Path | str | None = None) -> FastAPI:
                   "candidates": intake.normalize_candidates(res.get("ideas")),
                   "intake_mode": mode, "auto_pick": mode == "auto"})
 
+    # ---------------- agentic chat: read-grounded, T1-ONLY (spec §4/§8) ---------------
+    @app.post("/api/chat")
+    async def chat_turn(request: Request):
+        """Stream one agentic chat turn (SSE frames). The chat lives on the LLM plane: it
+        answers grounded questions and may PROPOSE a T1 reversible action, but the final
+        frame only ever carries a T1 action — anything else is dropped here as a defence in
+        depth, so the LLM plane can never even SURFACE a control that satisfies T2/T3."""
+        import asyncio
+        body = await _json_body(request)
+        message = (body.get("message") or "").strip()
+        history = body.get("history") if isinstance(body.get("history"), list) else []
+        if not message:
+            return JSONResponse({"error": "a message is required"}, status_code=400)
+        fn = app.state.chat_fn or _default_chat_fn(app)
+
+        async def gen():
+            loop = asyncio.get_running_loop()
+            q: asyncio.Queue = asyncio.Queue()
+            box = {"result": None}
+
+            def on_text(t: str) -> None:
+                loop.call_soon_threadsafe(q.put_nowait, ("text", t))
+
+            async def run():
+                try:
+                    box["result"] = await asyncio.to_thread(
+                        fn, message, history=history, on_text=on_text)
+                except Exception as exc:  # noqa: BLE001 — containment; never crash the stream
+                    loop.call_soon_threadsafe(q.put_nowait, ("error", str(exc)))
+                finally:
+                    loop.call_soon_threadsafe(q.put_nowait, ("done", None))
+
+            worker = asyncio.create_task(run())
+            err = None
+            while True:
+                kind, payload = await q.get()
+                if kind == "done":
+                    break
+                if kind == "error":
+                    err = payload
+                elif kind == "text":
+                    yield f"data: {json.dumps({'type': 'text', 't': payload})}\n\n"
+            await worker
+            res = box["result"] or {}
+            if err:
+                yield f"data: {json.dumps({'type': 'error', 'error': err})}\n\n"
+                return
+            action = res.get("action")
+            # SAFETY (defence in depth): only a T1 action may ever reach the UI.
+            if not (isinstance(action, dict) and chat.is_t1_action(action.get("kind"))):
+                action = None
+            frame = {"type": "done", "reply": res.get("reply") or "", "action": action}
+            yield f"data: {json.dumps(security.redact(frame))}\n\n"
+
+        return StreamingResponse(
+            gen(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/chat/act")
+    async def chat_act(request: Request):
+        """Execute a CEO-CONFIRMED T1 action the chat proposed (the light confirm of §4).
+        REJECTS anything outside the T1 set — there is no `approve`/`publish` kind, so this
+        endpoint structurally cannot satisfy a T2 gate or a T3 publish. Tagged
+        initiator='chat' for the §4 audit (E7)."""
+        body = await _json_body(request)
+        kind = body.get("kind")
+        args = body.get("args") if isinstance(body.get("args"), dict) else {}
+        if not chat.is_t1_action(kind):
+            return JSONResponse(
+                {"error": "the chat can only initiate reversible (T1) actions — approving a "
+                          "gate or publishing must happen on the deterministic UI",
+                 "kind": kind}, status_code=400)
+        if kind == "cancel" and not security.safe_segment((args.get("slug") or "").strip()):
+            return JSONResponse({"error": "bad slug"}, status_code=400)
+        try:
+            out = chat.execute_action(_get_dispatcher(app), app.state.settings_path,
+                                      kind, args, initiator="chat")
+        except (chat.NotReversibleError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return J(out)
+
     # ---------------- settings: niches / defaults / channels (T1 reversible) ----------
     @app.get("/api/settings")
     def get_settings():
@@ -294,15 +435,40 @@ async def _json_body(request: Request) -> dict:
 def _get_dispatcher(app: FastAPI):
     """Lazily build the assembly-line dispatcher (the belt). Uses the test-injected
     `produce_fn` when present (so e2e never runs a real engine), else the real spine.
-    One dispatcher per process; its belt state is rebuildable from disk on restart."""
+    Uses the test-injected `decide_fn` when present (so tests stay offline), else the
+    real LLM decider. One dispatcher per process; rebuildable from disk on restart."""
     if app.state.dispatcher is None:
         import dispatcher as dmod
+        import atlas_decider
+        decide_fn = getattr(app.state, "decide_fn", None)
+        if decide_fn is None:
+            decide_fn = atlas_decider.make_llm_decider()
+        try:
+            import dashboard.settings_store as _ss
+            _budget = float(_ss.load_settings(app.state.settings_path)["defaults"]
+                            .get("render_budget_sec", 600.0))
+        except Exception:  # noqa: BLE001 — settings unreadable → safe default
+            _budget = 600.0
         app.state.dispatcher = dmod.Dispatcher(
             projects_dir=app.state.projects_dir,
             produce_fn=app.state.produce_fn,
             max_in_flight=app.state.max_in_flight,
-            max_retries=getattr(app.state, "max_retries", 1))
+            max_retries=getattr(app.state, "max_retries", 1),
+            decide_fn=decide_fn,
+            decider_model=atlas_decider.DECIDER_MODEL,
+            render_budget_sec=_budget)
     return app.state.dispatcher
+
+
+def _default_chat_fn(app: FastAPI):
+    """The real agentic chat seam (Claude Agent SDK, T1-only tool surface). Bound to this
+    app's projects dir + settings so the chat reads the live belt/gates/settings. Injectable
+    via app.state.chat_fn so e2e/unit fake it — the real LLM never runs under test."""
+    def fn(message: str, *, history=None, on_text=None):
+        return chat.default_send(
+            message, history=history, on_text=on_text,
+            projects_dir=app.state.projects_dir, settings_path=app.state.settings_path)
+    return fn
 
 
 async def _event_stream(disp, start: int, request: Request):
@@ -323,45 +489,14 @@ async def _event_stream(disp, start: int, request: Request):
         await asyncio.sleep(1.0)
 
 
-def _get_session(app: FastAPI):
-    """Lazily build the AtlasSession used for the sanctioned gate write.
-
-    We construct it DIRECTLY (not via .start()) so the dashboard NEVER touches the
-    real chat_state.json and never boots the heavy Orchestrator:
-      * state_path → a throwaway temp file (approve_gate only appends to an in-memory
-        state dict; nothing is distilled here, so even that temp file stays untouched),
-      * build_orch → a no-op (approve_gate uses only `produce_fn`, never the orch),
-      * produce_fn → the real pipeline.produce by default (the sanctioned write path),
-        or a test-injected fake via app.state.produce_fn.
-    The constraint "never touch chat_state.json" is honoured structurally here.
-    """
-    if app.state.session is None:
-        import os
-        import tempfile
-        import session as session_mod
-        # a per-process unique scratch path (never the real chat_state.json, never a
-        # shared/predictable temp name). approve_gate only appends to the in-memory
-        # state dict, so nothing is actually written here — but if that ever changes
-        # it stays isolated to this process.
-        scratch = (pathlib.Path(tempfile.gettempdir())
-                   / f"atlas_dashboard_session.{os.getpid()}.json")
-        app.state.session = session_mod.AtlasSession(
-            state={"summary": "", "transcript": [], "pending": None},
-            distiller=lambda summary, transcript: summary,
-            state_path=scratch,
-            build_orch=lambda progress: None,
-            projects_dir=app.state.projects_dir,
-            produce_fn=app.state.produce_fn,
-        )
-    return app.state.session
-
-
 def _approve_gate(app: FastAPI, slug: str, body: dict) -> JSONResponse:
-    """Delegate to session.approve_gate. We REFUSE to call approve for a hard
-    fact-check `block` (the spine would reject it and route back) — we surface the
-    routed-back truth instead. For every approvable gate we relay the spine's result
-    verbatim (idempotent: a second approve on an already-advanced project is a no-op
-    resume in the spine)."""
+    """The T2 authorizing surface (spec §4): this is the ONE deterministic place a spine
+    gate is satisfied, and the authorizing click reaches it ONLY from the deterministic UI
+    (never the chat/LLM plane — `initiator="ceo"`). We resume through the BELT
+    (`dispatcher.resume`) so the resumed render shares the belt's station single-occupancy
+    instead of running a second, lock-less synchronous produce. We REFUSE a hard fact-check
+    `block` (the spine would re-block + route back) and surface that truth instead. Idempotent:
+    a second approve on an already-advanced project is `not at a gate` (409), never a re-run."""
     projects_dir = app.state.projects_dir
     try:
         security.resolve_project_dir(projects_dir, slug)
@@ -383,13 +518,13 @@ def _approve_gate(app: FastAPI, slug: str, body: dict) -> JSONResponse:
                       "away. The script must be revised and re-checked.",
         }, status_code=409)
 
-    sess = _get_session(app)
-    statuses: list[str] = []
-    result = sess.approve_gate(slug, gate, on_status=statuses.append) or {}
+    # Resume on the belt (shares station locks); wait for the spine's on-disk outcome so the
+    # deterministic surface relays a synchronous result. initiator="ceo" — the §4 audit shows
+    # no T2 write ever originated from the LLM plane.
+    result = _get_dispatcher(app).resume(slug, gate, initiator="ceo", wait=True) or {}
     payload = {"result": "approved", "gate": gate, "slug": slug,
                "status": result.get("status"), "next_gate": result.get("gate"),
-               "reason": result.get("reason"), "video": result.get("video"),
-               "errors": result.get("errors"), "progress": statuses[-6:]}
+               "reason": result.get("reason"), "video": result.get("video")}
     return JSONResponse(security.redact(payload))
 
 

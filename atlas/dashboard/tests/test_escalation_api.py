@@ -38,3 +38,25 @@ def test_belt_includes_atlas_activity(tmp_path):
     body = c.get("/api/belt").json()
     vid = next(v for v in body["videos"] if v["slug"] == slug)
     assert vid["atlas_activity"]["text"].startswith("Atlas: FIX_AND_RERUN")
+
+
+def test_guide_endpoint_reruns(tmp_path):
+    import supervisor
+    c, pdir, slugs = _client(tmp_path)
+    c._app.state.produce_fn = None      # guide reruns through the belt; keep it offline:
+    c._app.state.decide_fn = supervisor.safe_default_decider
+    r = c.post(f"/api/gate/{slugs['hard_block']}/guide",
+               json={"instructions": "tighten scene 5 stat"})
+    assert r.status_code == 200 and r.json()["result"] == "guided"
+
+
+def test_guide_rejects_empty_instructions(tmp_path):
+    c, pdir, slugs = _client(tmp_path)
+    r = c.post(f"/api/gate/{slugs['hard_block']}/guide", json={"instructions": "  "})
+    assert r.status_code == 400
+
+
+def test_kill_endpoint(tmp_path):
+    c, pdir, slugs = _client(tmp_path)
+    r = c.post(f"/api/gate/{slugs['hard_block']}/kill", json={"reason": "unworkable"})
+    assert r.status_code == 200 and r.json()["result"] == "killed"
