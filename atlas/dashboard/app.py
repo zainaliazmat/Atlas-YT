@@ -18,7 +18,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from dashboard import chat, data, intake, media, publish, security, settings_store
+from dashboard import atlas_request, chat, data, intake, media, publish, security, settings_store
 
 HERE = pathlib.Path(__file__).resolve().parent
 STATIC = HERE / "static"
@@ -166,6 +166,21 @@ def create_app(projects_dir: pathlib.Path | str | None = None) -> FastAPI:
         out = _get_dispatcher(app).kill(slug, (body.get("reason") or "").strip(),
                                         initiator="ceo")
         return JSONResponse({"result": "killed", "slug": slug, **out})
+
+    # ---------------- the single front door: atlas supervisor request (T1 only) ---------
+    @app.post("/api/atlas/request")
+    async def atlas_request_route(request: Request):
+        body = await _json_body(request)
+        intent = body.get("intent")
+        args = body.get("args") or {}
+        try:
+            out = atlas_request.handle_request(_get_dispatcher(app),
+                                               app.state.settings_path, intent, args)
+            return JSONResponse({"ok": True, **out})
+        except atlas_request.UnknownIntent as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except KeyError as e:
+            return JSONResponse({"ok": False, "error": f"missing arg {e}"}, status_code=400)
 
     # ---------------- T3 publish package (read-only review shell — NO fire path) -------
     @app.get("/api/publish/{slug}")

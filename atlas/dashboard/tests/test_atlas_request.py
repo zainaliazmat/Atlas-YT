@@ -59,3 +59,43 @@ def test_unknown_intent_raises():
 def test_unknown_escalation_action_raises():
     with pytest.raises(UnknownIntent):
         handle_request(FakeDispatcher(), None, "answer_escalation", {"action": "bogus", "slug": "x"})
+
+
+from fastapi.testclient import TestClient
+from dashboard.app import create_app
+from dashboard.tests import fixtures
+import supervisor
+
+
+def _client(tmp_path):
+    pdir, slugs = fixtures.build_projects(tmp_path)
+    app = create_app(projects_dir=pdir)
+    app.state.decide_fn = supervisor.safe_default_decider   # offline
+    # a fast fake belt so make_video/rerun don't run a real engine
+    def fake(slug=None, approve=None, root=None, progress=None, station_locks=None,
+             should_cancel=None):
+        return {"status": "done"}
+    app.state.produce_fn = fake
+    c = TestClient(app); c._app = app
+    return c, pdir, slugs
+
+
+def test_atlas_request_make_video(tmp_path):
+    c, pdir, slugs = _client(tmp_path)
+    r = c.post("/api/atlas/request", json={"intent": "make_video",
+                                           "args": {"topic": "AI tools", "length": "short"}})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert r.json()["result"]["slug"]
+
+
+def test_atlas_request_unknown_intent_400(tmp_path):
+    c, pdir, slugs = _client(tmp_path)
+    r = c.post("/api/atlas/request", json={"intent": "nope", "args": {}})
+    assert r.status_code == 400 and r.json()["ok"] is False
+
+
+def test_atlas_request_cancel(tmp_path):
+    c, pdir, slugs = _client(tmp_path)
+    r = c.post("/api/atlas/request",
+               json={"intent": "cancel", "args": {"slug": slugs["queued"]}})
+    assert r.status_code == 200 and r.json()["result"]["cancelling"] is True
