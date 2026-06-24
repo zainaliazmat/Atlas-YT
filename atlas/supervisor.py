@@ -55,3 +55,47 @@ def safe_default_decider(slug: str, result: dict, context: dict) -> Decision:
                         reason=result.get("reason") or "awaiting your sign-off",
                         payload={"blocked": True})
     return Decision("PROCEED")
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 — Task 1: parsing + schema validation
+# ---------------------------------------------------------------------------
+
+LEGAL_GATES = ("factcheck", "final_render")
+_STAGE_REQUIRED = ("RETRY_STAGE", "RERUN_FROM", "FIX_AND_RERUN")
+
+
+def decision_from_dict(d) -> "Decision | None":
+    """Build a Decision from an untrusted parsed dict (the LLM's JSON). Returns None when
+    `d` is not a dict or carries no string `kind` — the caller treats None as malformed."""
+    if not isinstance(d, dict):
+        return None
+    kind = d.get("kind")
+    if not isinstance(kind, str) or not kind:
+        return None
+    payload = d.get("payload")
+    return Decision(
+        kind=kind,
+        stage=d.get("stage"),
+        gate=d.get("gate"),
+        reason=d.get("reason") or "",
+        instructions=d.get("instructions") or "",
+        payload=payload if isinstance(payload, dict) else {},
+    )
+
+
+def validate_decision(decision: "Decision") -> "Decision":
+    """Coerce an illegal/malformed Decision to ESCALATE (schema legality only — the
+    factcheck-approve prohibition + budget caps are EXECUTOR logic, not here). Returns the
+    original object unchanged when legal, so callers can identity-check in tests."""
+    kind = getattr(decision, "kind", None)
+    if kind not in DECISION_KINDS:
+        return Decision("ESCALATE", reason=f"illegal decision kind {kind!r}",
+                        payload={"illegal_kind": kind})
+    if kind in _STAGE_REQUIRED and not decision.stage:
+        return Decision("ESCALATE", reason=f"illegal {kind}: missing stage",
+                        payload={"illegal_kind": kind})
+    if kind == "APPROVE_GATE" and decision.gate not in LEGAL_GATES:
+        return Decision("ESCALATE", reason=f"illegal APPROVE_GATE: gate {decision.gate!r}",
+                        payload={"illegal_kind": kind})
+    return decision
