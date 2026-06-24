@@ -90,3 +90,43 @@ def test_validate_requires_real_gate_for_approve():
     assert validate_decision(Decision("APPROVE_GATE", gate="bogus")).kind == "ESCALATE"
     assert validate_decision(Decision("APPROVE_GATE", gate="factcheck")).kind == "APPROVE_GATE"
     assert tuple(LEGAL_GATES) == ("factcheck", "final_render")
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 — Task 2: persisted supervisor counters
+# ---------------------------------------------------------------------------
+from supervisor import (ensure_supervisor_block, bump_decision, decisions_count,
+                        bump_fix_attempt, fix_attempts, record_decision)
+
+
+def test_ensure_block_is_idempotent():
+    p = {}
+    b = ensure_supervisor_block(p)
+    assert b == {"decisions": 0, "fix_attempts": {}, "log": []}
+    b["decisions"] = 5
+    assert ensure_supervisor_block(p)["decisions"] == 5  # does not clobber
+
+
+def test_bump_decision_counts_up():
+    p = {}
+    assert bump_decision(p) == 1 and bump_decision(p) == 2
+    assert decisions_count(p) == 2
+
+
+def test_fix_attempts_are_per_gate():
+    p = {}
+    assert bump_fix_attempt(p, "factcheck") == 1
+    assert bump_fix_attempt(p, "factcheck") == 2
+    assert bump_fix_attempt(p, "final_render") == 1
+    assert fix_attempts(p, "factcheck") == 2 and fix_attempts(p, "final_render") == 1
+    assert fix_attempts(p, "never") == 0
+
+
+def test_record_decision_appends_to_log_and_history():
+    p = {"history": []}
+    entry = record_decision(p, trigger="blocked", stage="script", kind="FIX_AND_RERUN",
+                            reason="fix s5c2", latency_ms=1200, model="claude-opus-4-8")
+    assert entry["kind"] == "FIX_AND_RERUN" and entry["latency_ms"] == 1200
+    assert p["supervisor"]["log"][-1]["kind"] == "FIX_AND_RERUN"
+    assert p["history"][-1]["decision"].startswith("atlas: FIX_AND_RERUN")
+    assert p["history"][-1].get("initiator") == "atlas"

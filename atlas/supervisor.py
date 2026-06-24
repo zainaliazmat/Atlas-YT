@@ -11,6 +11,7 @@ belt directly.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 # The full legal decision vocabulary (spec §1). Slice 1's executor handles RETRY_STAGE +
@@ -99,3 +100,53 @@ def validate_decision(decision: "Decision") -> "Decision":
         return Decision("ESCALATE", reason=f"illegal APPROVE_GATE: gate {decision.gate!r}",
                         payload={"illegal_kind": kind})
     return decision
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 — Task 2: persisted supervisor counters (pure dict transforms)
+# ---------------------------------------------------------------------------
+
+def ensure_supervisor_block(project: dict) -> dict:
+    """Return project['supervisor'], creating the zero-state block if absent (idempotent)."""
+    blk = project.get("supervisor")
+    if not isinstance(blk, dict):
+        blk = {"decisions": 0, "fix_attempts": {}, "log": []}
+        project["supervisor"] = blk
+    blk.setdefault("decisions", 0)
+    blk.setdefault("fix_attempts", {})
+    blk.setdefault("log", [])
+    return blk
+
+
+def bump_decision(project: dict) -> int:
+    blk = ensure_supervisor_block(project)
+    blk["decisions"] += 1
+    return blk["decisions"]
+
+
+def decisions_count(project: dict) -> int:
+    return ensure_supervisor_block(project)["decisions"]
+
+
+def bump_fix_attempt(project: dict, gate: str) -> int:
+    blk = ensure_supervisor_block(project)
+    blk["fix_attempts"][gate] = blk["fix_attempts"].get(gate, 0) + 1
+    return blk["fix_attempts"][gate]
+
+
+def fix_attempts(project: dict, gate: str) -> int:
+    return ensure_supervisor_block(project)["fix_attempts"].get(gate, 0)
+
+
+def record_decision(project: dict, *, trigger: str, stage, kind: str, reason: str = "",
+                    latency_ms: int | None = None, model: str | None = None) -> dict:
+    """Append the decision to BOTH supervisor.log (rich) and project.history (the shared
+    audit feed both Atlas call-shapes read). Returns the log entry."""
+    blk = ensure_supervisor_block(project)
+    entry = {"ts": time.time(), "trigger": trigger, "stage": stage, "kind": kind,
+             "reason": reason, "latency_ms": latency_ms, "model": model}
+    blk["log"].append(entry)
+    project.setdefault("history", []).append(
+        {"ts": entry["ts"], "stage": stage, "initiator": "atlas",
+         "decision": f"atlas: {kind}", "why": reason})
+    return entry
