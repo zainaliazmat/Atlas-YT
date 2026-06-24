@@ -429,12 +429,30 @@ class Dispatcher:
             self.rerun(slug, from_stage=decision.stage, initiator="atlas")
             return
         if kind == "APPROVE_GATE":
-            # HARD GUARANTEE: never approve a fact-check block. Render auto-approval is
-            # gated on the budget rule (Slice 3); until then it also escalates. So in
-            # Slice 2 every APPROVE_GATE escalates the gate for a human.
+            gate = decision.gate
+            # HARD GUARANTEE: factcheck (and any non-render gate) is never approved away.
+            if gate == "final_render":
+                if self._render_under_budget(slug):
+                    if self._over_decision_budget(slug):
+                        return self._escalate(slug, result,
+                            supervisor.Decision("ESCALATE", gate="final_render",
+                                payload={"blocked": True},
+                                reason="decision budget exhausted — escalating"))
+                    self.events.emit("approving", slug=slug, gate="final_render",
+                                     initiator="atlas",
+                                     message="render under budget — self-approving")
+                    self._retries.pop(slug, None)
+                    self.resume(slug, "final_render", initiator="atlas")
+                    return
+                # over budget → escalate with the HyperFrames draft-preview card payload
+                payload = {"blocked": True, **self._render_plan_payload(slug)}
+                return self._escalate(slug, result,
+                    supervisor.Decision("ESCALATE", gate="final_render", payload=payload,
+                        reason=decision.reason or "render over budget — your call"))
+            # every other gate (factcheck) escalates, exactly as Slice 2.
             return self._escalate(slug, result,
                 supervisor.Decision("ESCALATE", gate=decision.gate, payload={"blocked": True},
-                    reason=(decision.reason or "gate needs your sign-off")))
+                    reason=decision.reason or "gate needs your sign-off"))
         if kind == "KILL":
             self._retries.pop(slug, None)
             proj = self._load_project(slug)
@@ -499,7 +517,7 @@ class Dispatcher:
         gate = decision.gate if decision.gate in supervisor.LEGAL_GATES else None
         if gate or payload.get("blocked"):
             self.events.emit("blocked", slug=slug, gate=gate, initiator="atlas",
-                             message=why or "awaiting your sign-off")
+                             message=why or "awaiting your sign-off", payload=payload)
             return
         self.events.emit("failed", slug=slug,
                          stage=decision.stage or result.get("stage"), initiator="atlas",

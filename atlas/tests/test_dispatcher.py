@@ -18,14 +18,17 @@ from dispatcher import Dispatcher
 
 # ---------------------------------------------------------------- a fake spine
 def make_fake_produce(stages=("research", "script", "render"), hold=0.02,
-                      outcomes=None, transient_fails=1):
+                      outcomes=None, transient_fails=1, final_runtime_sec=120):
     """Return (fake_produce, probe). The fake walks `stages`, honouring station_locks +
     should_cancel exactly like the real produce(). `probe["seen"][stage]` records the MAX
     concurrent occupants per station (must stay <= 1 under single-occupancy).
 
-    outcomes: {stage_key: 'transient'|'deterministic'} injects a failure at that stage.
+    outcomes: {stage_key: 'transient'|'deterministic'|'blocked_final'} injects a failure
+      at that stage.
       'deterministic' always fails; 'transient' fails the first `transient_fails`
       attempts at that stage (per slug) then succeeds — to test retry-then-recover.
+      'blocked_final' writes a blocked_at_final_render project with a render plan
+      carrying est_runtime_sec=final_runtime_sec and returns the gate-blocked result.
     """
     outcomes = outcomes or {}
     probe = {"seen": {}, "cur": {}, "ran": []}
@@ -58,6 +61,24 @@ def make_fake_produce(stages=("research", "script", "render"), hold=0.02,
                     probe["cur"][key] -= 1
             if key in outcomes:
                 kind = outcomes[key]
+                if kind == "blocked_final":
+                    # Re-read to preserve supervisor data the dispatcher wrote; flush
+                    # upstream stage completions so the project is consistent on disk.
+                    proj = chat_state.load_json(pdir / "project.json", {})
+                    proj["status"] = "blocked_at_final_render"
+                    for ck2, cv in completed.items():
+                        proj.setdefault("stages", {})[ck2] = cv
+                    proj.setdefault("gates", {})["final_render"] = {
+                        "status": "blocked",
+                        "details": {
+                            "working_title": "T", "scenes": 3,
+                            "est_runtime_sec": final_runtime_sec,
+                            "audio_duration_sec": final_runtime_sec,
+                        },
+                    }
+                    chat_state.atomic_write_json(pdir / "project.json", proj)
+                    return {"status": "blocked", "gate": "final_render", "stage": key,
+                            "reason": "awaiting render sign-off", "slug": slug}
                 ck = f"{slug}:{key}"
                 with m:
                     prior = fail_counts.get(ck, 0)
@@ -804,3 +825,60 @@ def test_render_plan_payload_includes_drafts(tmp_path):
     assert payload["budget_sec"] == 600.0
     assert "scenes/scene-01/renders/draft.mp4" in payload["draft_renders"]
     assert len(payload["draft_renders"]) == 3
+
+
+# ---------------------------------------------------------------- Task 3: render gate autonomous
+def test_approve_render_under_budget_self_approves(tmp_path):
+    """Under budget, APPROVE_GATE(render) is honored — Atlas resumes the gate itself."""
+    from supervisor import Decision
+    resumed = {}
+
+    fake, probe = make_fake_produce(stages=("research", "render"),
+                                    outcomes={"render": "blocked_final"})
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, render_budget_sec=600.0,
+                   decide_fn=lambda s, r, c: Decision("APPROVE_GATE", gate="final_render",
+                                                      reason="cheap render"))
+    orig_resume = d.resume
+    d.resume = lambda slug, gate, **kw: resumed.update({"slug": slug, "gate": gate}) or \
+        orig_resume(slug, gate, **kw)
+    slug = d.trigger(topic="cheap-render")["slug"]
+    assert _wait_for(lambda: resumed.get("gate") == "final_render", timeout=12), resumed
+
+
+def test_approve_render_over_budget_escalates_with_card(tmp_path):
+    """Over budget, APPROVE_GATE(render) is converted to an escalation carrying the render
+    plan + draft frames — the executor enforces the budget, not the LLM."""
+    from supervisor import Decision
+    fake, probe = make_fake_produce(stages=("research", "render"),
+                                    outcomes={"render": "blocked_final"},
+                                    final_runtime_sec=900)
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, render_budget_sec=300.0,
+                   decide_fn=lambda s, r, c: Decision("APPROVE_GATE", gate="final_render",
+                                                      reason="ship it"))
+    slug = d.trigger(topic="expensive-render")["slug"]
+    assert _wait_status(tmp_path, slug, "blocked_at_final_render", timeout=12) or \
+        _wait_for(lambda: any(e["kind"] == "blocked" and e.get("gate") == "final_render"
+                              for e in d.events.since(0)), timeout=8)
+    # wait for the blocked event itself — _on_result runs after produce() returns
+    assert _wait_for(lambda: any(e["kind"] == "blocked" and e.get("gate") == "final_render"
+                                 for e in d.events.since(0)), timeout=8), \
+        "blocked event with gate=final_render not emitted"
+    ev = [e for e in d.events.since(0) if e["kind"] == "blocked"][-1]
+    assert ev["gate"] == "final_render"
+    assert "render_plan" in (ev.get("payload") or {})
+
+
+def test_approve_factcheck_still_escalates_unchanged(tmp_path):
+    """The render budget path must NOT weaken the factcheck prohibition."""
+    from supervisor import Decision
+    fake, probe = make_fake_produce(stages=("research", "script", "factcheck"),
+                                    outcomes={"factcheck": "deterministic"})
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, render_budget_sec=600.0,
+                   decide_fn=lambda s, r, c: Decision("APPROVE_GATE", gate="factcheck"),
+                   max_retries=0)
+    slug = d.trigger(topic="no-approve")["slug"]
+    assert _wait_status(tmp_path, slug, "failed", timeout=12), _status(tmp_path, slug)
+    # wait for the blocked event — _on_result runs after produce() returns in the worker
+    _wait_proj_cond(tmp_path, slug, lambda _p, k: "blocked" in k, timeout=5, dispatcher=d)
+    blocked = [e for e in d.events.since(0) if e["kind"] == "blocked"]
+    assert blocked and blocked[-1]["gate"] == "factcheck"
