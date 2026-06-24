@@ -165,9 +165,11 @@ def _fast_fail_then_done(root):
 
 
 def test_retry_endpoint_restarts_a_failed_video(tmp_path):
+    import supervisor as _sup
     pdir = fixtures.build_empty(tmp_path)
     app = create_app(projects_dir=pdir)
     app.state.produce_fn = _fast_fail_then_done(pdir)
+    app.state.decide_fn = _sup.safe_default_decider   # keep tests offline — no real LLM
     app.state.max_retries = 0                        # no auto-retry; the UI drives it
     c = TestClient(app)
     c._app = app

@@ -35,3 +35,4 @@ atlas/projects/_eval_holdout_tmp/
 
 # Control Room runtime settings (dashboard-owned, not source)
 atlas/dashboard/control_room_settings.json
+.gstack/

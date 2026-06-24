@@ -25,7 +25,6 @@ NEVER approved in the UI (that would re-run Sage's real engine/LLM). Only
 from __future__ import annotations
 
 import contextlib
-import functools
 import json
 import pathlib
 import shutil
@@ -80,12 +79,12 @@ def live_server(tmp_path_factory):
     slugs = dict(slugs)
     slugs["final_render"] = _make_final_render_blocked(projects_dir)
 
-    import pipeline  # lazy, mirrors the real dashboard write path
-
     app = create_app(projects_dir=projects_dir)
     app.state.settings_path = projects_dir / "control_room_settings.json"  # isolate from real
-    # the ONE sanctioned mutation runs the REAL spine, pinned to the disposable dir
-    app.state.produce_fn = functools.partial(pipeline.produce, root=projects_dir)
+    # produce_fn stays None → the T2 gate approve resumes through the belt dispatcher, which
+    # runs the REAL pipeline.produce pinned to the disposable dir (it passes root=projects_dir;
+    # binding root here too would double-pass it). The only approved project (e2e-final-render)
+    # has every stage `done`, so the resume skips all producers/LLM (§ conftest safety note).
 
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
@@ -163,6 +162,24 @@ def _fake_belt_produce(root, hold: float = 0.05):
     return fake
 
 
+def _fake_chat(message, *, history=None, on_text=None):
+    """A deterministic fake agentic turn (no LLM). Streams two chunks, then proposes a T1
+    action keyed on the message: 'rogue' returns a FORBIDDEN approve action (the endpoint
+    must drop it); a start/make request proposes a trigger; otherwise no action."""
+    if on_text:
+        for t in ("On ", "it."):
+            on_text(t)
+    low = (message or "").lower()
+    if "rogue" in low:
+        return {"reply": "(attempting a forbidden action)",
+                "action": {"kind": "approve", "args": {"slug": "x", "gate": "factcheck"}}}
+    if any(k in low for k in ("start", "make", "produce", "video")):
+        return {"reply": "On it — here's the move.",
+                "action": {"kind": "trigger",
+                           "args": {"topic": "chat-made video", "gates": True}}}
+    return {"reply": "The belt's flowing — nothing needs you.", "action": None}
+
+
 @pytest.fixture
 def belt_server(tmp_path):
     """Function-scoped server whose produce_fn is the fast fake above — so trigger/cancel
@@ -180,6 +197,10 @@ def belt_server(tmp_path):
          "why": "evergreen + high search"},
         {"titles": [f"The {niche} mistake everyone makes"], "confidence": "med",
          "why": "controversy hook"}]}
+    # a FAKE agentic chat (never the real LLM): streams a short reply and proposes a T1
+    # action keyed on the message. A "rogue" message returns a FORBIDDEN approve action — the
+    # endpoint must DROP it (defence in depth: the chat plane can't even surface a T2/T3 control).
+    app.state.chat_fn = _fake_chat
 
     port = _free_port()
     base = f"http://127.0.0.1:{port}"
@@ -255,10 +276,12 @@ def _fake_fail_then_done_produce(root, fail_stage="script", hold: float = 0.05):
 def belt_fail_server(tmp_path):
     """Like `belt_server`, but the fake spine parks one transient failure (auto-retry OFF)
     so the Stage Inspector's failure surface + RETRY can be driven without a real engine."""
+    import supervisor as _sup
     projects_dir = tmp_path / "belt_fail_projects"
     projects_dir.mkdir()
     app = create_app(projects_dir=projects_dir)
     app.state.produce_fn = _fake_fail_then_done_produce(projects_dir, hold=0.08)
+    app.state.decide_fn = _sup.safe_default_decider  # keep e2e offline — no real LLM
     app.state.max_in_flight = 2
     app.state.max_retries = 0          # park the transient failure; the UI drives RETRY
     app.state.settings_path = projects_dir / "control_room_settings.json"

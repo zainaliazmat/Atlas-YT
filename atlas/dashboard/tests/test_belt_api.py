@@ -74,6 +74,34 @@ def test_cancel_on_real_slug_ok_and_unknown_404(tmp_path):
     assert c.post("/api/cancel/no-such-project").status_code == 404
 
 
+def test_rerun_from_start_and_from_stage_ok(tmp_path):
+    c = _client(tmp_path)
+    slug = c.post("/api/trigger", json={"topic": "rerun me"}).json()["slug"]
+    v, _ = _belt_video(c, slug)             # let it finish (all stages done)
+    assert v is not None and v["belt_state"] == "done"
+    # re-run the whole video from the start
+    r = c.post(f"/api/rerun/{slug}", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["rerunning"] is True and r.json()["from_stage"] is None
+    v, _ = _belt_video(c, slug)             # it runs again to done
+    assert v["belt_state"] == "done"
+    # re-run from a specific (already-run) stage
+    r = c.post(f"/api/rerun/{slug}", json={"from_stage": "script"})
+    assert r.status_code == 200, r.text
+    assert r.json()["from_stage"] == "script"
+
+
+def test_rerun_unknown_slug_404_and_unknown_stage_409(tmp_path):
+    c = _client(tmp_path)
+    assert c.post("/api/rerun/no-such-project", json={}).status_code == 404
+    slug = c.post("/api/trigger", json={"topic": "x"}).json()["slug"]
+    _belt_video(c, slug)
+    # an unknown stage name is a safe segment but not a real station → 409 (not re-run)
+    r = c.post(f"/api/rerun/{slug}", json={"from_stage": "nope"})
+    assert r.status_code == 409, r.text
+    assert r.json()["rerunning"] is False
+
+
 def test_event_stream_backfills_then_stops_on_disconnect(tmp_path):
     """Drive the SSE generator directly (an infinite stream can't be read cleanly via the
     test client): it backfills events since Last-Event-ID, formats valid `id:`/`data:`

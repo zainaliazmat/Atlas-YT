@@ -15,7 +15,6 @@ render gate clears and the already-done render stage is skipped). A fact-check
 """
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import pathlib
@@ -41,9 +40,10 @@ def _md5(p: pathlib.Path) -> str:
 
 
 def _client_with_real_spine(tmp_path):
-    import pipeline
+    # produce_fn stays None → the belt dispatcher resumes the REAL pipeline.produce, pinned
+    # to the disposable dir it passes as root=tmp_path (it owns the root kwarg; binding it
+    # here too would double-pass it). The T2 approve now resumes through the belt (§4).
     app = dash_app.create_app(projects_dir=tmp_path)
-    app.state.produce_fn = functools.partial(pipeline.produce, root=tmp_path)
     return TestClient(app)
 
 

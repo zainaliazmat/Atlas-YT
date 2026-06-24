@@ -59,7 +59,11 @@ backend change (no --reload). Deliver in tested slices; report what you built + 
 
 ---
 
-## Current state — what is DONE (Slices 0–4 + 1.5) — 333 unit + 33 e2e green, branch `control-room`
+## Current state — what is DONE (Slices 0–5 + 1.5) — 353 unit + 39 e2e green, branch `control-room`
+
+> **Slice 5 (#3 chat + T2/T3 gate surfaces) is DONE** — see the Slice-5 entry in "Remaining slices"
+> below. The control room now also has the agentic chat (T1-only), the deterministic T2 gate-review
+> drawer (approve resumes through the belt), and the T3 publish-confirm shell.
 
 > Per-slice detail is in the "Remaining slices" list below (each shipped slice is marked **DONE** with
 > its files). Quick map of what exists now: **#0** fluid shell + status tokens · **#2** the belt
@@ -167,13 +171,14 @@ CSS tokens** (`--st-queued/running/blocked/failed/done/cancelled`). **Retired** 
 
 ## SHELLED / deferred (wire these in their slices)
 
-- **Gate-approve still resumes SYNCHRONOUSLY** via `session.approve_gate` (existing tested path), NOT
-  `dispatcher.resume()` — so a resumed render doesn't yet share the belt's station locks. **Wire
-  `dispatcher.resume()` in Slice 5's T2 gate panel.** The method exists + is tested.
-- **Chat FAB / agentic chat** not started → **Slice 5**. Needs an injectable chat seam
-  (`app.state.chat_fn`/`send_fn`) so e2e never runs the real LLM. Mirror `atlas/web/app.py` (Chainlit),
-  which already streams chat over `session.send` and renders the gates as Approve/Revise buttons.
-- **T3 publish-confirm modal** not started → **Slice 5** (the review SHELL; real publish = #6 Herald).
+- **T2 gate-approve now resumes through `dispatcher.resume(wait=True)`** (Slice 5) — DONE; shares the
+  belt's station locks, initiator="ceo", hard-block still refused.
+- **Agentic chat** (Slice 5) — DONE; T1-only, injectable `app.state.chat_fn`, never satisfies T2/T3.
+  The **real default LLM impl** (`chat.default_send`) is built but UNTESTED (needs the Claude
+  subscription; e2e/unit inject a fake). Future: ground it with #5 RAG `retrieve()` (it's a prompt-
+  injection surface — that's exactly why chat is T1-only; see §8/E7).
+- **T3 publish-confirm modal** (Slice 5) — DONE as the review SHELL; **real publish = #6 Herald**
+  (the fire button is disabled, there is no publish-fire route). Glint #8 fills the thumbnail slot.
 - **Channel OAuth connect/reconnect** (the Settings channels shell renders state but does no OAuth) →
   **#6 Herald**. **Niche → Scout AUTO-PICK** beyond candidate cards (the cards + you-pick/auto-pick
   toggle are live; the toggle currently auto-selects the top candidate client-side) — deeper auto-run
@@ -232,9 +237,33 @@ CSS tokens** (`--st-queued/running/blocked/failed/done/cancelled`). **Retired** 
   one); Generate triggers it onto the belt. Added a `postJSON` helper. Tests:
   `dashboard/tests/test_intake_api.py` (7) + `dashboard/tests/e2e/test_intake_e2e.py` (2); `belt_server`
   now injects a canned `find_topics_fn`. The launch modal's niche path is no longer shelled.
-- **Slice 5 (#3 + gates):** agentic chat panel (bottom-right launcher, T1-only tools, NEVER satisfies
-  T2/T3) + T2 gate review side-panel (the approve CLICK lives here; wire `dispatcher.resume()`) + T3
-  publish-confirm modal shell (structured exact-package review; hard, no stray-escape).
+- **Slice 5 (#3 + gates) — DONE (shipped, verified).** Agentic chat + the T2/T3 surfaces.
+  **(a) Agentic chat** — bottom-right lilac FAB → streaming panel over an INJECTABLE seam
+  (`app.state.chat_fn`; tests fake it, the real LLM never runs). The real default
+  (`dashboard/chat.py::default_send`) is a constrained Claude Agent SDK loop whose ONLY tools are
+  read-grounding + T1 *proposals* — there is no approve/publish tool. The chat is T1-ONLY **by
+  construction**: `T1_ACTION_KINDS = (trigger, cancel, update_setting)`, and `execute_action` /
+  `POST /api/chat/act` REJECT any other kind (`NotReversibleError` → 400). Each T1 action is a
+  *proposal* the CEO confirms with one click (the §4 light confirm), executed via the dispatcher
+  tagged `initiator="chat"` (the §4 audit, surfaced in the Activity feed's `p-chat` lilac plane).
+  `POST /api/chat` streams SSE frames; the done-frame DROPS any non-T1 action (defence in depth).
+  **(b) T2 gate-review drawer** (`openGateReview`) — the deterministic side-panel where the
+  authorising approve lives; it posts to `/api/gate/{slug}/approve`, now rewired to
+  **`dispatcher.resume(slug, gate, wait=True, initiator="ceo")`** so the resumed render shares the
+  belt's station locks (outcome read back from disk). A hard fact-check `block` is still refused
+  before any resume. **(c) T3 publish-confirm modal** (`openPublishModal`) — a HARD dialog (no
+  stray Escape/backdrop close) reviewing the EXACT package (title/description/tags/thumbnail/
+  visibility/schedule + niche→channel routing + §9 verification blockers) from
+  `GET /api/publish/{slug}` (`dashboard/publish.py`, read-only). `schedule` is null (set only AFTER
+  approval); the fire button is DISABLED ("arrives with Herald (#6)") and **there is NO publish-fire
+  route** (POST → 405) — the no-auto-fire-unreviewed property (E8) holds by construction.
+  New backend: `dashboard/chat.py`, `dashboard/publish.py`, the chat/publish endpoints,
+  `dispatcher.resume(wait=)` + `_disk_outcome`. New tests: `test_chat_api.py` (13),
+  `test_publish_api.py` (5), 2 dispatcher resume tests, `e2e/test_chat_e2e.py` (6) incl. the
+  negative-safety ones (rogue `approve` dropped; no reachable T2/T3 control; HARD publish with no
+  fire). Dead `_get_session`/`app.state.session` removed (T2 no longer goes through a session).
+  **Totals now: 353 unit + 39 e2e green.** SHELLED: the real publish (Herald #6); the chat's default
+  LLM impl requires the Claude subscription (never tested — the seam is faked).
 - **Slice 6:** Coaches (Quill/Flux) + Echo T4 proposal cards (accept/reject; Echo shows cohort/aggregate
   evidence, flags rubric contradictions as CEO-interview items) + the **negative safety Playwright
   tests** (chat cannot satisfy T2/T3 — no such control reachable; no auto-publish-unreviewed).
