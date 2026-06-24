@@ -145,8 +145,12 @@ is no K.
 - **Echo's engine and adapter MUST NOT import `eval.tracking`** (nor call `noise_floor`, `decide` with a
   `noise_floor=`, or any held-out `verify_fn`). This is enforced by an **import-boundary test**: the
   test imports `analyst.analyst` and `adapters.analyst` and asserts `eval.tracking` is **not** in their
-  module graph, and greps the Echo sources for `noise_floor`/`verify_fn`/`sigma` (must be absent). The
-  separation is a CI gate, not a comment.
+  transitive module graph (verified achievable — `eval.diagnose`/`eval.rollup` import only
+  `rubric`/`eval.types`, never `tracking`, so Echo can **import them read-only** to reuse the escalation
+  concept without pulling the noise floor; §5.4 chooses import-not-mirror). The test additionally scans
+  for **calls to** `noise_floor(`/`verify_fn=`/`sigma=` (an AST/call scan, **not** a raw substring grep
+  — Echo's report prose may legitimately contain the word "sigma"/"noise"). The separation is a CI gate,
+  not a comment.
 - **Echo never calls `run_loop`.** The internal loop's reproducible gates are for the internal proxy.
   Echo's evidence is the **cohort aggregate** (§6.3), carried in the envelope's `evidence.cohort` field
   (the Slice-6 contract already reserves `evidence.cohort` and leaves `evidence.verdict`/`held_out`
@@ -178,7 +182,8 @@ exactly the one thing the improver structurally *cannot* fix: the CEO owns the r
 write path** (`rubric/__init__.py` exposes no writer; `apply_soft_change` refuses every rubric path;
 `can_write_rubric()` stays true). So Echo's most valuable insight is **permanently a CEO-interview item,
 not a loop item** (§9). This reuses the existing `decomposition_gap → escalate_to_ceo` concept in
-`rollup.py`/`diagnose.py` — Echo mirrors the *escalation*, not a new fix path.
+`rollup.py`/`diagnose.py` — Echo **imports `eval.diagnose` read-only** (it's `tracking`-free, §5.2) and
+reuses the *escalation* shape; it adds no new fix path and edits neither module.
 
 > **Prove nobody can wire Echo into auto-tuning the rubric.** Three independent walls: (1) `rubric`
 > has no writer; (2) `apply_soft_change` raises `WriteBoundaryError` on every rubric/contracts/spine
@@ -216,7 +221,10 @@ not mean — one outlier must not move the signal):
 - `intro_retention_drop` — median retention loss over the first ~10–15% of the video.
 - `mid_retention_sag` — median retention slope through the middle third.
 - `ctr_band` — median CTR vs the cohort's own rolling baseline (Echo compares a cohort to **its own
-  history**, never to an absolute number it can't justify).
+  history**, never to an absolute number it can't justify). **The baseline's own trend is reported
+  alongside (review F4)** — comparing to self is blind to slow collective decline, so a falling baseline
+  is surfaced explicitly: "in band vs my baseline, but my baseline fell 40% this quarter" must be
+  visible, not masked.
 - `audio_dropoff` — median retention dip at audio-cut timestamps.
 Each signal carries `{n, window, median, iqr, maturity, confounders[]}`. **Under-powered or immature
 cohorts are reported, never proposed** (§5.3).
@@ -243,11 +251,38 @@ TokenProvider (passed in — Echo never reads a global):
 - **Until #6 ships,** the `TokenProvider`/`analytics_fn` is the **fake seam**: a canned cohort-data
   provider. Everything in §6.3/§7/§8/§9 is buildable and testable against it now.
 
-### 6.5 Trigger model (Fork B — on-demand + same-seam cron)
+### 6.5 The band ↔ real-metric attribution map (the hard, explicit part — review F5)
+The rubric bands measure **artifacts** (`info_density`, `words_per_scene`, `speech_cadence`, loudness,
+motion — verified in `rubric.py`/`rollup.py`). They do **not** predict retention or CTR. So there is **no
+free function** from a real cohort signal (e.g. "intro retention dropped 38%") to a rubric band or a
+coach. That mapping must be **authored explicitly and conservatively**, and v1 keeps it deliberately
+small and honest:
+
+- **`ATTRIBUTION` is an explicit, CEO-reviewable table** in `analyst/` (not inferred): `real_signal →
+  {candidate stage/band, confidence: low|med}`. It is a **hypothesis lookup**, never a proven cause. It
+  maps only the signals where a defensible artifact link exists (e.g. `intro_retention_drop →
+  script-stage hook framing`); a signal with **no** defensible artifact link (most of CTR/packaging) is
+  **report-only**, never routed.
+- **The map's existence does NOT assert causation.** A routed signal becomes a *candidate proposal the
+  human still judges*; Echo never claims the artifact band caused the real outcome. The diagnosis map
+  (§7) is exactly this table applied at cohort scale.
+- **Bands are validated to exist at build time.** Any `band_id` the attribution table names is asserted
+  to be a real entry in `rubric.bands()` (E40) — a renamed/absent band fails CI, so the spec never ships
+  a `hook_strength` that the rubric doesn't actually have. (Whether a *hook* band should exist at all is
+  a CEO-owned rubric question, O8 — and a missing one is itself a §9 decomposition gap.)
+
+### 6.6 Trigger model (Fork B — on-demand + same-seam cron)
 - **On-demand:** `POST /api/echo/refresh` (CEO, T1-ish read-trigger) runs
   `proposals.refresh_echo(echo_fn, …)` — pull → aggregate → hypothesize → upsert pending proposals +
   write the report. Mirrors Slice-6's on-demand `POST /api/coaches/{name}/propose`. Writes **no** persona
-  file; emits proposals + the report only.
+  file; emits proposals + the report only. **The pull is network + LLM**, so the endpoint runs it off the
+  event loop via `asyncio.to_thread` (mirrors `intake.py`'s Scout finder, review F9) — it never blocks
+  the SSE/dashboard.
+- **Analytics quota (review F8).** `yt-analytics.readonly` queries draw on the **same** ~10k-units/day
+  project bucket as Herald's `videos.insert` (master §9), so an unbounded refresh could starve publishing.
+  Echo therefore **caches mature cohort pulls** (a mature video's retention/CTR is settled — never
+  re-fetched), only queries new/immature videos, and a refresh that would exceed a per-run query budget
+  **back-pressures and reports `quota-deferred`** rather than failing (E37). The report shows units spent.
 - **Cron (future):** a thin driver calls the **same** `refresh_echo` seam on a schedule and lands in
   the **same** store. It does not auto-apply (Fork A's "one production write path" holds). Shelled to
   #7-or-later; the on-demand path proves the identical flow now.
@@ -256,8 +291,10 @@ TokenProvider (passed in — Echo never reads a global):
 
 ## 7. The diagnosis map (a hypothesis generator, cohort scale, routed via T4)
 
-The map from master §5 — applied **only** to cohort signals that cleared the n=1/maturity guards,
-generating **candidate proposals**, never auto-applying:
+The map from master §5 is **the §6.5 `ATTRIBUTION` table applied at cohort scale** — applied **only** to
+cohort signals that cleared the n=1/maturity guards, generating **candidate proposals**, never
+auto-applying. Each row is a *hypothesis lookup* (an artifact-link of stated confidence), not a proven
+cause; the human draws the final causal line:
 
 | Real cohort signal | Hypothesised cause | Candidate route (proposal target) |
 |---|---|---|
@@ -274,6 +311,12 @@ generating **candidate proposals**, never auto-applying:
 - The **direction** still comes from the CEO-owned rubric band, not from Echo — Echo supplies *cohort
   evidence + the band it concerns*; the proposal's `direction` is derived the same way the loop derives
   it (the band decides; Echo, like a coach, proposes the text only).
+- **The soft_addendum / contradiction dichotomy (review F6).** A `soft_addendum` is coherent **only when
+  reality and the rubric point the same way** — the rubric says "move band X" *and* the cohort evidence
+  corroborates that moving X would help reality. When reality and the rubric **diverge** (reality says
+  the band is fine / wrong), that is **not** an addendum — it is a `rubric_contradiction` (§9). Echo
+  never authors an addendum against a band that real performance contradicts; the two kinds are mutually
+  exclusive by construction.
 - A signal with **no clean soft-tier owner** (e.g. pure thumbnail/packaging, owned by Herald/Glint, not
   a soft-tier persona) is surfaced as a **report hypothesis only** — not a `soft_addendum` (there's no
   soft-tier file to write), keeping the T4 write path honest.
@@ -341,6 +384,12 @@ When a cohort signal **contradicts** a rubric band, Echo emits a `rubric_contrad
   evidence, and the read-only actions **Acknowledge** (track; status→`acknowledged`; **no write**) and
   **Dismiss**. **There is no Accept button** — and the absence is the guarantee. Plus the lock line:
   *"🔒 The rubric is CEO-owned — this is an interview item, not a tunable. There is no write path."*
+- **Acknowledged items have a persistent home (review F14).** `acknowledge` does **not** make the
+  highest-value output vanish — it moves the item into a **read-only "CEO interview queue"** on the Echo
+  lane (a filtered view of `status=acknowledged` rubric_contradiction items). That queue **is** the
+  agenda for the eventual human rubric interview; an acknowledged item stays visible there until the CEO
+  dismisses it (after editing `rubric.json` by hand). Without this, acknowledging would drop the insight
+  on the floor.
 - **Why it's the most valuable output.** It is the only signal that can correct the *standard itself* —
   but correcting the standard is a **human** act (the CEO edits `rubric.json` by hand, outside the
   dashboard, after the interview). Echo surfaces the gap with evidence; it never closes it. This is the
@@ -440,12 +489,26 @@ New `app.state` seams (mirror the established `None`-defaulting pattern):
 Slice-6 already shipped the Echo card UI (the `source:"echo"` soft proposal + the rubric-contradiction
 CEO-interview flag) on the **Coaches view's Echo lane**. #7 adds only:
 - A **"Refresh Echo" button** on the Echo lane → `POST /api/echo/refresh`, then re-list proposals + the
-  report (light confirm; it writes nothing but the report/proposals).
-- A small **Echo report panel** (read-only): per-cohort signal chips with their `n`/window/maturity and
-  the **confounder caveat block** rendered inline (the honesty is visible, not buried). Reuses the
-  existing `.card`/status tokens; no new modal/drawer (T4 cards stay in-card; §Slice-6 §8).
+  report (light confirm; it writes nothing but the report/proposals). **It is a slow, quota-spending pull,
+  not an instant action (review F13):** the button shows a **disabled/loading state** while the
+  `to_thread` pull runs, a **"last refreshed Xh ago"** stamp so the CEO doesn't spam a weeks-relevant
+  pull, and it is **idempotent under double-click / navigate-away mid-pull** (a refresh in flight is
+  reused, not duplicated).
+- **Three distinct empty states, never one blank panel (review F11).** "No proposals" must disambiguate:
+  **(a) never run** ("Echo hasn't analyzed yet — Refresh"), **(b) ran, no mature cohorts**
+  ("Not enough mature uploads yet — n/min-N per cohort shown"), **(c) ran, cohorts mature, nothing
+  actionable** ("Analyzed N cohorts, no actionable signal"). A blank panel read as "all fine" when it
+  means "never ran" or "tokens broken" is the silent-failure-as-green-check trap — each state is labelled.
+- A small **Echo report panel** (read-only). **The card hierarchy leads with trust, not drama (review
+  F12):** each cohort card leads with **sample size + maturity + confidence** and the **confounder caveat
+  block**, and renders the dramatic metric (e.g. "intro drop 38%") **after** that context — the honesty
+  is in the hierarchy, never skippable fine-print under a scary number. Reuses the existing `.card`/status
+  tokens; no new modal/drawer (T4 cards stay in-card; §Slice-6 §8).
 - The **immature/under-powered/unavailable** cohort states render as muted, explicitly-labelled rows —
   never as a usable signal (the n=1/maturity discipline is visible in the UI).
+- The **CEO interview queue** (§9, review F14) — a read-only filtered view of `acknowledged`
+  rubric_contradiction items, so the highest-value output persists as the human-interview agenda instead
+  of vanishing on acknowledge.
 
 No new rail entry; no change to the read-only Quality screen.
 
@@ -480,14 +543,20 @@ empty/under-powered state plainly so "no signal yet" never reads as "everything'
 | E33 | Herald not built yet (no token store) | `analytics_fn`/`token_provider` is the fake seam; Echo runs on canned cohorts; the real lane is empty-but-rendered until #6 ships (mirrors Slice-6's `echo_fn=None`). |
 | E34 | `control_room_echo_report.json` missing/corrupt | Degrades to "no report yet"; parsed in place, never rewritten behind the user's back (mirrors E13/E20). |
 | E35 | A cohort signal maps to a non-soft-tier owner (pure thumbnail/packaging) | Surfaced as a **report hypothesis only**, never a `soft_addendum` (no soft-tier file to write) — the T4 write path stays honest (§7). |
+| E36 | The `videoId → slug` join fails — video published outside Atlas, slug renamed/deleted, or no publish record | The orphan video is **excluded from cohorts** with an `unjoined` note on the report; it never silently corrupts an aggregate. A partial cohort (some videos joinable) reports its real `n` after exclusion (review F7). |
+| E37 | A refresh would exceed the analytics query budget / the shared daily quota is low | Echo **back-pressures**: mature cohorts are served from cache, the run reports `quota-deferred` for what it couldn't fetch, and it never starves Herald's publish budget or 500s (review F8, §6.6; mirrors master E9). |
+| E38 | `analytics_fn` returns partial/malformed data — missing retention curve for some videos, bad shape | Those videos drop from the cohort with a `partial-data` note; a cohort that loses too many to clear `min_cohort_n` becomes `under-powered`, not a false signal. Never a 500 (review F7). |
+| E39 | A cohort is "in band vs its own baseline" while the baseline itself is falling | The baseline's own trend is reported; a declining baseline is **flagged**, so self-relative comfort can't mask absolute decline (review F4, §6.3). |
+| E40 | The `ATTRIBUTION` table names a `band_id` the rubric doesn't have | **Build-time assertion fails CI** — every attribution `band_id` must exist in `rubric.bands()`; the spec never ships a phantom band like `hook_strength` if the rubric lacks it (review F5, §6.5). |
 
 ---
 
 ## 15. Testing (injectable seams; no real LLM/engine/network)
 
 **Structural / negative-safety (the point of the sub-project):**
-- **Methodology separation (E32):** assert `eval.tracking` is not in Echo's module graph; grep Echo
-  sources for `noise_floor`/`verify_fn`/`sigma` → none.
+- **Methodology separation (E32):** assert `eval.tracking` is not in Echo's transitive module graph; an
+  AST/call scan finds no `noise_floor(`/`verify_fn=`/`sigma=` **call** (not a raw substring grep — F10b).
+- **Attribution integrity (E40):** every `band_id` in the `ATTRIBUTION` table exists in `rubric.bands()`.
 - **No auto-tune (E31):** `can_write_rubric()` stays true; a `rubric_contradiction` has no accept path
   (409); `apply_soft_change` refuses a rubric `soft_path` even if an Echo record is tampered (reuse
   Slice-6 E16).
@@ -602,3 +671,58 @@ their resolutions; the body reflects them.
    **→ RESOLVED:** **confirmed** — Echo must be **structurally incapable** of touching the channel:
    Herald (#6) exposes only this read-only handle and **never** hands Echo the `youtube.upload` /
    `force-ssl` tokens. This is the one promise to lock when the Herald spec is written. (§6.4.)
+
+### New decisions raised by the plan review (2026-06-24) — **STILL OPEN**
+
+The CEO/eng/design stress-test surfaced three items that need a CEO decision (the rest were folded into
+the body as edits — see §19):
+
+8. **Sequencing — write Herald's token-store section first? (review F1).** Echo's §6.4 `TokenProvider`
+   is invented by the consumer; if Herald's real OAuth design differs, Echo reworks. Recommend: spec at
+   least Herald's token-store/`TokenProvider` section **before** building Echo, so O7 is a real handshake.
+   *(Decision: build Echo now on the assumed contract, or gate #7 on a Herald token-store spec first?)*
+
+9. **Window semantics — calendar days vs last-N-uploads (review F2, the load-bearing one).** With
+   `window_days = 30` calendar days, a **low-volume channel may never reach `min_cohort_n` mature uploads
+   in window — so Echo proposes nothing, ever, and the loop never actually closes.** A **rolling
+   "last N uploads regardless of date"** window closes the loop on any cadence (at the cost of comparing
+   across a longer time span). *(Decision: keep a calendar window, switch to a rolling-N-uploads window,
+   or make it configurable per channel?)* Recommend a rolling-N window so the loop can actually close.
+
+10. **Report-only v1? (review F3 — the cleanest de-risking cut).** The proposal machinery already shipped
+    in Slice-6. Echo v1 could ship **read-only (the report panel only)**, let the CEO eyeball real cohorts
+    for a few weeks, and wire the diagnosis-map → T4 proposals **only after** the signals prove
+    trustworthy — avoiding auto-generated confounded proposals before there's real data to trust.
+    *(Decision: full proposal path in v1, or report-only v1 then add proposals once signal is proven?)*
+
+11. **Should a `hook` rubric band exist at all? (review F5).** The diagnosis map wants to route
+    intro-retention drops to a hook property, but the rubric may have no `hook_strength` band (it measures
+    `info_density`/`words_per_scene`/etc.). A **missing** band is itself a §9 decomposition gap — a
+    CEO-owned rubric question, not something Echo invents. *(Decision: does the CEO want to add a hook
+    band to `rubric.json`, or should intro-retention signals stay report-only until they do?)*
+
+---
+
+## 19. Plan-review hardening (2026-06-24)
+
+This spec was stress-tested with the CEO / eng / design review lenses before any build. The **safety
+architecture passed** (the §5.2 import boundary, the three walls against rubric auto-tuning E31, the
+single Slice-6 guarded write path — nobody can turn Echo into an auto-tuner). The review's value was on
+**whether Echo produces real value**, not whether it's safe. Folded into the body as edits:
+
+| Finding | Change | Where |
+|---|---|---|
+| **F4** baseline can mask absolute decline | report the baseline's own trend; flag a falling baseline | §6.3, E39 |
+| **F5** band→retention mapping didn't exist | explicit `ATTRIBUTION` table (hypothesis lookup, stated confidence) + build-time band-existence assertion | §6.5, §7, E40 |
+| **F6** soft_addendum vs contradiction muddied | stated the mutually-exclusive dichotomy (reality agrees → addendum; diverges → contradiction) | §7 |
+| **F7** unnamed data-join shadow paths | orphan video / partial / malformed-data edge cases | E36, E38 |
+| **F8** analytics API quota unaddressed | shared-bucket back-pressure + mature-cohort cache + `quota-deferred` | §6.6, E37 |
+| **F9** refresh would block the event loop | `asyncio.to_thread` (mirrors `intake.py`) | §6.6 |
+| **F10b** import test fragile (substring grep) | transitive-graph + AST call scan; import `diagnose` read-only | §5.2, §5.4, §15 |
+| **F11** "no proposals" had 3 conflated meanings | three distinct, labelled empty states | §12 |
+| **F12** scary number led, caveat hid | card hierarchy leads with n/maturity/confidence + confounders | §12 |
+| **F13** slow quota-spending button looked instant | loading/disabled state, "last refreshed", idempotent | §12 |
+| **F14** acknowledged interview items vanished | persistent read-only CEO interview queue | §9, §12 |
+
+**Left as CEO decisions (not edited), §18 items 8–11:** F1 (Herald spec first) · F2 (window semantics —
+the loop-may-never-close risk) · F3 (report-only v1) · F5's rubric-band question.
