@@ -194,6 +194,18 @@ def test_classify_shot():
     gen = engine.classify_shot(_shot("chart", "cases by county over time", "x"))
     assert gen.action == "generate" and gen.asset_type == "data-viz"
 
+    # a CONCEPTUAL diagram (no data cue) -> SOURCE a relevant image, NOT a blank
+    # placeholder. Mason can only generate data charts/brand chips, so a described
+    # illustration like "chat bubble with robot arms" must come from stock (issue #2).
+    concept = engine.classify_shot(_shot("diagram", "a chat bubble sprouting robotic arms", "x"))
+    assert concept.action == "source" and concept.asset_type == "image"
+    # a data-driven diagram still generates (real chart from the scene's numbers)
+    ddiag = engine.classify_shot(_shot("diagram", "failure rate over time, by year", "x"))
+    assert ddiag.action == "generate" and ddiag.asset_type == "data-viz"
+    # a chart kind is always a chart -> generate even without an explicit cue phrase
+    bare_chart = engine.classify_shot(_shot("chart", "model sizes compared", "x"))
+    assert bare_chart.action == "generate" and bare_chart.asset_type == "data-viz"
+
     # the map split: a NAMED period artifact -> SOURCE as image (the scavenger hunt)
     arch = engine.classify_shot(_shot("map", "1929 Rand McNally map of Chicago", "x"))
     assert arch.action == "source" and arch.asset_type == "image"

@@ -329,6 +329,17 @@ def test_render_brand_chips_renders_logo_and_label():
     assert "Claude" in one and "#D97757" in one   # name label + brand color
 
 
+def test_render_brand_chips_strips_svg_title_to_avoid_occlusion_flag():
+    # The inline logo SVGs carry a decorative <title> (e.g. "OpenAI"). HyperFrames'
+    # inspect gate reads that as text occluded beneath the logo's own paths and errors
+    # (text_occluded), blocking the render. The chip already shows a visible name label,
+    # so the <title> is redundant — it must not reach the rendered HTML.
+    html = engine.render_brand_chips(["openai", "anthropic", "google", "deepseek"])
+    assert "<title>" not in html
+    # the visible names are still present (label, not the stripped title)
+    assert "GPT-4o" in html and "Claude" in html
+
+
 def test_render_brand_chips_falls_back_to_text_when_logo_empty(monkeypatch):
     entry = dict(engine.BRAND_CHIPS["anthropic"], logo_svg="")
     monkeypatch.setitem(engine.BRAND_CHIPS, "anthropic", entry)

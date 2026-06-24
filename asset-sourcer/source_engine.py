@@ -226,8 +226,13 @@ _TYPOGRAPHY_KINDS = {"title", "text", "quote", "headline", "caption", "label",
 _RENDER_KINDS = {"brand", "chip"}
 _VIDEO_KINDS = {"footage", "video", "clip", "broll-video", "motion", "b-roll-video"}
 _ICON_KINDS = {"icon", "logo", "symbol", "glyph", "pictogram", "mark"}
-_DATAVIZ_KINDS = {"chart", "graph", "plot", "data", "dataviz", "data-viz", "diagram",
-                  "figure", "infographic"}
+# Chart kinds ALWAYS generate (Mason draws them from the scene's numbers). Diagram kinds
+# only generate when the content actually carries data — a CONCEPTUAL diagram (e.g. "chat
+# bubble with robot arms") has no generator, so it sources a relevant stock image instead
+# of shipping a blank placeholder (issue #2).
+_CHART_KINDS = {"chart", "graph", "plot", "data", "dataviz", "data-viz"}
+_DIAGRAM_KINDS = {"diagram", "figure", "infographic"}
+_DATAVIZ_KINDS = _CHART_KINDS | _DIAGRAM_KINDS
 _IMAGE_KINDS = {"image", "photo", "still", "b-roll", "broll", "portrait", "photograph",
                 "picture", "archival", "illustration", "painting", "engraving"}
 # Kinds whose disposition depends on the CONTENT (named-archival -> image; data -> viz).
@@ -276,11 +281,12 @@ def classify_shot(shot: dict) -> ShotPlan:
         # The map/diagram split routes on CONTENT, scavenger bias wins ties.
         if _ARCHIVAL_CUE.search(content):
             return ShotPlan("image", "source", "named period/archival artifact")
-        if _DATA_CUE.search(content) or kind in _DATAVIZ_KINDS:
+        if _DATA_CUE.search(content) or kind in _CHART_KINDS:
             return ShotPlan("data-viz", "generate", "composition-generated (data-viz)")
-        # A bare "map" with no cue either way: source as an image (period imagery is
-        # Magpie's lane; a truly data-driven map names its data).
-        return ShotPlan("image", "source", "map with no data cue — source as image")
+        # A conceptual diagram or a bare "map" with no data cue: SOURCE a relevant image
+        # rather than ship a blank placeholder (Mason has no generator for it). Period
+        # imagery and concept stock are Magpie's lane; a truly data-driven viz names its data.
+        return ShotPlan("image", "source", "no data cue — source a relevant image")
 
     if kind in _VIDEO_KINDS:
         return ShotPlan("video", "source")

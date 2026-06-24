@@ -627,6 +627,10 @@ def render_brand_chips(items, *, cls: str = "brand-chips") -> str:
         if not b:
             continue
         logo = b.get("logo_svg") or ""
+        # Strip the decorative SVG <title>: HyperFrames' inspect gate reads it as text
+        # occluded beneath the logo paths (text_occluded error) and blocks the render.
+        # The visible name label below carries the name, so the title is redundant.
+        logo = re.sub(r"<title>.*?</title>", "", logo, flags=re.S)
         mark = f'<span class="brand-chip-logo">{logo}</span>' if logo else ""
         name = f'<span class="brand-chip-name">{_esc(b["display"])}</span>'
         klass = "brand-chip dim" if dim else "brand-chip"
