@@ -1537,9 +1537,13 @@ def compose(pdir, *, render: bool = True, gate: bool = True) -> dict:
             "render_status": render_status,
         })
 
+    # Contrast is SURFACED on the scene + summary (above) but does NOT gate the
+    # deterministic plane — per the C2 calibration note above, a zero-tolerance
+    # contrast hard-block would stop almost every LLM-palette video. Structure
+    # (self-scan, lint, validate console-errors, inspect) still blocks; the human
+    # final-render gate judges the surfaced contrast count against the draft.
     gated_ok = sum(1 for s in scenes_out
                    if s["self_scan"]["ok"] and
-                   not s["assets"]["contrast_failures"] and
                    all((s["gate"][k] or {}).get("ok", False) for k in
                        ("lint", "validate", "inspect")))
     if not gate:

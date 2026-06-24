@@ -744,6 +744,24 @@ def test_contrast_failures_are_recorded_and_surfaced_not_silently_swallowed(tmp_
                for s in manifest["scenes"]) or manifest["summary"]["contrast_failures"] >= 5
 
 
+def test_contrast_failures_alone_do_not_block_the_auto_gate(tmp_path, monkeypatch):
+    """Contrast is an aesthetic/legibility signal for the human render gate to judge —
+    it is SURFACED, not a deterministic hard-block. A scene whose only issue is contrast
+    (structure clean) must NOT fail the auto-gate, or no LLM-palette video could ever
+    render. The human final-render gate still sees the surfaced count + draft."""
+    _write_fixture_project(tmp_path)
+    monkeypatch.setenv("MASON_SKIP_RENDER", "1")
+    import hf_tools
+    monkeypatch.setattr(hf_tools, "run_gate", lambda d, motion_strict=False: {
+        "lint": {"ok": True, "errors": 0},
+        "validate": {"ok": True, "console_errors": 0, "contrast_failures": 7},
+        "inspect": {"ok": True, "issues": 0}})
+    manifest = engine.compose(tmp_path)
+    assert manifest["summary"]["contrast_failures"] >= 7      # still surfaced
+    assert manifest["summary"]["auto_gate"] == "PASS"          # but NOT blocked
+    assert manifest["verdict"] == "pass"
+
+
 def test_structural_gate_failures_still_block_the_auto_gate(tmp_path, monkeypatch):
     """The deterministic guarantee is intact: a console error (structural) blocks."""
     _write_fixture_project(tmp_path)
