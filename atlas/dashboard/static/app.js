@@ -1117,7 +1117,8 @@
     if (!el) return;
     var kc = '<span class="tab' + (!activityFilter.kind ? " on" : "") + '" data-k="">All events</span>' +
       ACT_KINDS.map(function (k) {
-        return '<span class="tab' + (activityFilter.kind === k ? " on" : "") + '" data-k="' + k + '">' + esc(k) + "</span>";
+        // chip shows a plain label; data-k keeps the raw event kind for filtering
+        return '<span class="tab' + (activityFilter.kind === k ? " on" : "") + '" data-k="' + k + '">' + esc(k.replace(/_/g, " ")) + "</span>";
       }).join("");
     var planes = ["ceo", "dispatcher", "chat"];
     var ic = '<span class="iflt' + (!activityFilter.initiator ? " on" : "") + '" data-i="">any</span>' +
