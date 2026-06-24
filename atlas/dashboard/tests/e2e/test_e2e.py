@@ -166,6 +166,24 @@ def test_pipeline_detail_done_has_video(page, base_url, guard_console, e2e_slugs
     assert_no_console_errors(guard_console)
 
 
+def test_stage_inspector_closes_on_navigation(page, base_url, guard_console, e2e_slugs):
+    """The stage-inspector drawer must not linger over the next screen when the CEO
+    navigates away — opening it then switching rails closes it."""
+    _open(page, base_url)
+    _go_rail(page, "projects")
+    page.wait_for_selector('#pr-list .row[data-slug="done"]')
+    page.locator('#pr-list .row[data-slug="done"]').first.click()
+    page.wait_for_selector("#pl-body .ladder .stage")
+    page.locator("#pl-body .ladder .stage").first.click()
+    page.wait_for_selector(".dw-panel")                 # drawer opened
+    # navigate (the drawer scrim blocks a rail mouse-click, so any keyboard/programmatic
+    # nav is the path that could leave it lingering — go() must close it)
+    page.evaluate("window.go('v-fleet','fleet')")
+    assert page.locator(".dw-panel").count() == 0       # and is gone after nav
+    assert _active_view_id(page) == "v-fleet"
+    assert_no_console_errors(guard_console)
+
+
 # ================================================================ 2d. Fleet (10 cards)
 def test_fleet_ten_cards(page, base_url, guard_console):
     _open(page, base_url)

@@ -45,6 +45,7 @@
 
   // ---------------------------------------------------------------- nav core
   function go(view, rail) {
+    closeDrawer();   // a stage/agent inspector must never linger over the next screen
     document.querySelectorAll(".view").forEach(function (v) {
       v.classList.toggle("active", v.id === view);
     });
