@@ -479,17 +479,23 @@
   // POST a re-run (whole video when fromStage is null, else from that station) and
   // refresh the spine. Reuses the belt-flash + poll the trigger/retry paths use.
   async function doRerun(slug, fromStage) {
-    var body = fromStage ? JSON.stringify({ from_stage: fromStage }) : "{}";
+    var rerunBtn = $("pl-rerun");
+    var origText = rerunBtn ? rerunBtn.textContent : null;
+    if (rerunBtn) { rerunBtn.disabled = true; rerunBtn.textContent = "Atlas is deciding…"; }
     try {
-      var r = await fetch("/api/rerun/" + encodeURIComponent(slug),
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: body });
+      var r = await fetch("/api/atlas/request", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ intent: "rerun",
+          args: { slug: slug, from_stage: fromStage || null } }) });
       var out = await r.json().catch(function () { return {}; });
-      if (!r.ok) throw new Error(out.reason || out.error || ("HTTP " + r.status));
+      if (!r.ok) throw new Error((out.result && (out.result.reason || out.result.error)) || out.error || ("HTTP " + r.status));
       flashSlug = slug;
       scheduleBeltRefresh();
       renderPipeline(slug);
     } catch (e) {
       alert("Couldn't re-run: " + e.message);
+    } finally {
+      if (rerunBtn) { rerunBtn.disabled = false; rerunBtn.textContent = origText || "Re-run"; }
     }
   }
 
@@ -856,14 +862,15 @@
       btn.disabled = true;
       $("gt-result").innerHTML = '<div class="state-msg">Submitting approval…</div>';
       try {
-        var r = await fetch("/api/gate/" + encodeURIComponent(slug) + "/approve", {
+        var r = await fetch("/api/atlas/request", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ gate: gate })
+          body: JSON.stringify({ intent: "answer_escalation",
+            args: { action: "approve", slug: slug, gate: gate } })
         });
         var out = await r.json().catch(function () { return {}; });
-        if (!r.ok) throw new Error(out.error || ("HTTP " + r.status));
-        $("gt-result").innerHTML = '<div class="state-msg" style="color:var(--done)">✓ ' + esc(out.status || "approved") + "</div>";
+        if (!r.ok) throw new Error((out.result && out.result.error) || out.error || ("HTTP " + r.status));
+        $("gt-result").innerHTML = '<div class="state-msg" style="color:var(--done)">✓ ' + esc((out.result || {}).status || "approved") + "</div>";
       } catch (e) {
         btn.disabled = false;
         $("gt-result").innerHTML = '<div class="state-msg err">Approval failed: ' + esc(e.message) + "</div>";
@@ -1071,8 +1078,9 @@
 
   async function cancelVideo(slug) {
     try {
-      await fetch("/api/cancel/" + encodeURIComponent(slug),
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      await fetch("/api/atlas/request", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ intent: "cancel", args: { slug: slug } }) });
     } catch (e) { /* surfaced on the next belt refresh */ }
     scheduleBeltRefresh();
   }
@@ -1457,16 +1465,17 @@
           '<div class="dlg-note warn">Enter a topic to produce.</div>'; return;
       }
       var btn = box.querySelector(".dlg-primary");
-      if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+      if (btn) { btn.disabled = true; btn.textContent = "Atlas is deciding…"; }
       try {
-        var r = await fetch("/api/trigger", {
+        var r = await fetch("/api/atlas/request", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ topic: topic, length: length, gates: gatesOn, niche: niche }),
+          body: JSON.stringify({ intent: "make_video",
+            args: { topic: topic, length: length, gates: gatesOn, niche: niche } }),
         });
         var out = await r.json().catch(function () { return {}; });
-        if (!r.ok) throw new Error(out.error || ("HTTP " + r.status));
+        if (!r.ok) throw new Error((out.result && out.result.error) || out.error || ("HTTP " + r.status));
         closeDialog();
-        flashSlug = out.slug;
+        flashSlug = (out.result || {}).slug;
         renderBelt();
       } catch (e) {
         if (btn) { btn.disabled = false; btn.textContent = "Generate"; }
@@ -1910,7 +1919,9 @@
     btn.disabled = true;
     res.innerHTML = '<div class="state-msg">Approving — resuming the pipeline…</div>';
     try {
-      var out = await postJSON("/api/gate/" + encodeURIComponent(slug) + "/approve", { gate: gate });
+      var raw = await postJSON("/api/atlas/request",
+        { intent: "answer_escalation", args: { action: "approve", slug: slug, gate: gate } });
+      var out = raw.result || {};
       res.innerHTML = '<div class="state-msg" style="color:var(--done)">✓ ' + esc(out.status || "approved") +
         (out.next_gate ? " · now at " + esc(out.next_gate) + " gate" : "") + "</div>";
       flashSlug = slug; scheduleBeltRefresh();

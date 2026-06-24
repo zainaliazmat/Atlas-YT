@@ -85,6 +85,31 @@ def test_many_in_flight(page, belt_server, guard_console):
     assert_no_console_errors(guard_console)
 
 
+def test_rerun_split_button_reruns_from_pipeline(page, belt_server, guard_console):
+    """A settled video's pipeline page offers a Re-run split-button: the caret lists the
+    previously-run stations, and the main button POSTs /api/rerun to re-run from start."""
+    page.goto(belt_server["base_url"] + "/", wait_until="domcontentloaded")
+    page.wait_for_selector("#ov-belt")
+    page.click("#ov-generate")
+    page.fill("#dialog-root #lm-topic", "rerun this one")
+    page.click("#dialog-root .dlg-primary")
+    page.wait_for_selector("#dialog-root .dlg", state="detached")
+    page.wait_for_selector("#ov-belt .spine-row .pill-state.done", timeout=15000)
+    # open the pipeline detail for the finished video
+    page.locator("#ov-belt .spine-row").first.click()
+    page.wait_for_selector("#pl-rerun")
+    # the caret opens a menu of previously-run stations (≥ 1 since the video finished)
+    page.click("#pl-rerun-caret")
+    page.wait_for_selector("#pl-rerun-menu .ri")
+    assert page.locator("#pl-rerun-menu .ri").count() >= 1
+    page.click("#pl-rerun-caret")  # close the menu
+    # the main button re-runs from the start: POST /api/atlas/request (intent=rerun) succeeds
+    with page.expect_response(lambda r: "/api/atlas/request" in r.url) as ri:
+        page.click("#pl-rerun")
+    assert ri.value.ok
+    assert_no_console_errors(guard_console)
+
+
 def test_cancel_running_video_from_belt(page, belt_server, guard_console):
     page.goto(belt_server["base_url"] + "/", wait_until="domcontentloaded")
     page.wait_for_selector("#ov-belt")
