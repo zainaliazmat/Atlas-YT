@@ -292,6 +292,48 @@ class Dispatcher:
             t.join(timeout)
         return {"slug": slug, "resumed": True, **self._disk_outcome(slug)}
 
+    def _atlas_activity(self, slug: str) -> dict | None:
+        """The latest Atlas decision line for the live 'what Atlas is doing' feed."""
+        proj = self._load_project(slug)
+        if proj is None:
+            return None
+        log = (proj.get("supervisor", {}) or {}).get("log") or []
+        if not log:
+            return None
+        last = log[-1]
+        text = f"Atlas: {last.get('kind', '')}"
+        if last.get("reason"):
+            text += f" — {last['reason']}"
+        return {"text": text, "ts": last.get("ts", 0)}
+
+    def guide(self, slug: str, instructions: str, *, initiator: str = "ceo") -> dict:
+        """CEO guidance on a parked fact-check block: feed instructions to the next fix and
+        re-run from the script stage. Still re-runs the fact-check — never ships a block."""
+        proj = self._load_project(slug)
+        if proj is None:
+            return {"slug": slug, "guided": False, "reason": "no such project"}
+        proj.setdefault("history", []).append(
+            {"ts": time.time(), "stage": "script", "initiator": initiator,
+             "decision": "guide", "why": instructions})
+        self._save_project(slug, proj)
+        self._persist_revision_hint(slug, "script", instructions)
+        self.events.emit("fixing", slug=slug, stage="script", initiator="atlas",
+                         message="re-running script (CEO guided)")
+        self.rerun(slug, from_stage="script", initiator=initiator)
+        return {"slug": slug, "guided": True}
+
+    def kill(self, slug: str, reason: str = "", *, initiator: str = "ceo") -> dict:
+        proj = self._load_project(slug)
+        if proj is not None:
+            proj.setdefault("history", []).append(
+                {"ts": time.time(), "stage": None, "initiator": initiator,
+                 "decision": "killed", "why": reason})
+            self._save_project(slug, proj)
+        self._mark_cancelled(slug)
+        self.events.emit("killed", slug=slug, initiator=initiator,
+                         message=reason or "killed by the CEO")
+        return {"slug": slug, "killed": True}
+
     def _disk_outcome(self, slug: str) -> dict:
         """The spine's authoritative result for a just-finished run, read from disk (the
         belt's source of truth). Normalises status to the belt vocabulary and surfaces the
@@ -498,6 +540,17 @@ class Dispatcher:
             return self._escalate(slug, result, decision,
                                   reason="decision budget exhausted — escalating")
         attempt_no = supervisor.fix_attempts(proj, gate) if gate else 0
+        if gate == "factcheck":
+            report = chat_state.load_json(
+                self._project_path(slug).parent / "factcheck_report.json", {})
+            flagged = [c for c in (report.get("claims") or [])
+                       if c.get("status") in ("flagged", "unverifiable")]
+            proj2 = self._load_project(slug)
+            if proj2 is not None:
+                supervisor.record_fix_snapshot(proj2, gate, attempt_no=attempt_no,
+                                               flagged=flagged,
+                                               instructions=decision.instructions)
+                self._save_project(slug, proj2)
         self._persist_revision_hint(slug, decision.stage, decision.instructions)
         self.events.emit("fixing", slug=slug, stage=decision.stage, initiator="atlas",
                          message=(f"re-running {decision.stage} "

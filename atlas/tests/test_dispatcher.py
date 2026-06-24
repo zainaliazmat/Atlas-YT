@@ -892,3 +892,78 @@ def test_build_context_includes_render_plan_for_render_gate(tmp_path):
     ctx = d._build_context("vid", {"status": "blocked", "gate": "final_render"})
     assert ctx["render_plan"]["est_runtime_sec"] == 200
     assert ctx["render_budget_sec"] == 450.0
+
+
+# ---------------------------------------------------------------- Task 2 (Slice 4): snapshots + guide + kill + atlas_activity
+def test_fix_and_rerun_records_a_snapshot(tmp_path):
+    """A fact-check FIX_AND_RERUN snapshots the flagged claims + instructions before re-run."""
+    import json as _json
+    from supervisor import Decision, fix_history
+
+    def fake(slug=None, approve=None, root=None, progress=None, station_locks=None,
+             should_cancel=None):
+        pdir = root / slug; pdir.mkdir(parents=True, exist_ok=True)
+        chat_state.atomic_write_json(pdir / "factcheck_report.json",
+            {"verdict": "block", "claims": [
+                {"claim_id": "s5c2", "status": "flagged", "claim_text": "42%"}]})
+        # Preserve any existing supervisor block written by the dispatcher; only update status.
+        existing = chat_state.load_json(pdir / "project.json", {})
+        existing.update({"slug": slug, "status": "blocked_at_factcheck",
+                         "stages": {}, "history": existing.get("history", [])})
+        chat_state.atomic_write_json(pdir / "project.json", existing)
+        return {"status": "blocked", "gate": "factcheck", "stage": "factcheck",
+                "reason": "unverified"}
+
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake,
+                   decide_fn=lambda s, r, c: Decision("FIX_AND_RERUN", stage="script",
+                       gate="factcheck", instructions="drop s5c2"), max_retries=0)
+    slug = d.trigger(topic="snap-me")["slug"]
+    assert _wait_for(lambda: bool(fix_history(_proj(tmp_path, slug), "factcheck")),
+                     timeout=12), _proj(tmp_path, slug)
+    hist = fix_history(_proj(tmp_path, slug), "factcheck")
+    assert hist[0]["instructions"] == "drop s5c2"
+    assert hist[0]["flagged_before"][0]["claim_id"] == "s5c2"
+
+
+def test_guide_persists_hint_and_reruns(tmp_path):
+    fake, probe = make_fake_produce()
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake)
+    # seed a parked project
+    pdir = tmp_path / "vid"; pdir.mkdir()
+    import json as _json
+    (pdir / "project.json").write_text(_json.dumps(
+        {"slug": "vid", "status": "blocked_at_factcheck",
+         "stages": {"script": {"status": "done"}, "factcheck": {"status": "blocked"}},
+         "gates": {"factcheck": {"status": "blocked"}}, "history": []}))
+    out = d.guide("vid", "tighten the stat in scene 5")
+    assert out["guided"] is True
+    proj = _proj(tmp_path, "vid")
+    assert proj["revision"]["hint"] == "tighten the stat in scene 5"
+    assert any(h.get("decision", "").startswith("guide") for h in proj["history"])
+
+
+def test_kill_marks_cancelled_and_emits(tmp_path):
+    fake, probe = make_fake_produce()
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake)
+    import json as _json
+    pdir = tmp_path / "vid"; pdir.mkdir()
+    (pdir / "project.json").write_text(_json.dumps(
+        {"slug": "vid", "status": "blocked_at_factcheck", "stages": {}, "history": []}))
+    out = d.kill("vid", "unworkable topic")
+    assert out["killed"] is True
+    assert _proj(tmp_path, "vid")["status"] == "cancelled"
+    assert any(e["kind"] == "killed" for e in d.events.since(0))
+
+
+def test_atlas_activity_returns_latest_supervisor_line(tmp_path):
+    from supervisor import record_decision
+    fake, probe = make_fake_produce()
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake)
+    import json as _json
+    pdir = tmp_path / "vid"; pdir.mkdir()
+    proj = {"slug": "vid", "history": []}
+    record_decision(proj, trigger="blocked", stage="script", kind="FIX_AND_RERUN",
+                    reason="fix 1/2")
+    (pdir / "project.json").write_text(_json.dumps(proj))
+    act = d._atlas_activity("vid")
+    assert act and "FIX_AND_RERUN" in act["text"]
