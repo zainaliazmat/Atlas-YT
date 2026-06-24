@@ -712,8 +712,8 @@
     body.innerHTML =
       '<div class="cols" style="grid-template-columns:1fr 330px"><div>' + scorecard +
       '<div class="card"><h3>The rubric standard <span class="r">' + Object.keys(dims).length + ' dimensions</span></h3>' + dimRows + "</div>" +
-      "</div><div>" + stdCard + ledger + "</div></div>" +
-      '<div class="cols" style="grid-template-columns:1fr 1fr">' + trend + ledger + "</div>";
+      trend +
+      "</div><div>" + stdCard + ledger + "</div></div>";
   }
 
   function scoreOf(latest) {
