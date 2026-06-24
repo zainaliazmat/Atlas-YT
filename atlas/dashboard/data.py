@@ -187,6 +187,9 @@ def _project_summary(pdir: pathlib.Path, proj: dict) -> dict:
         "updated": proj.get("updated", 0) or 0,
         "updated_rel": _rel_time(proj.get("updated")),
         "created": proj.get("created", 0) or 0,
+        # un-approvable fact-check block — lets the UI split 'Needs you' (soft, approvable)
+        # from 'Blocked' (hard) without re-deriving the verdict client-side.
+        "hard_block": _is_hard_block(pdir) if status == "blocked_at_factcheck" else False,
     }
 
 
@@ -207,7 +210,7 @@ def list_projects(projects_dir: pathlib.Path) -> dict:
     rows = [_project_summary(d, p) for d, p in iter_projects(projects_dir)]
     rows.sort(key=lambda r: r["updated"], reverse=True)
     counts = {"total": len(rows), "needs_you": 0, "in_production": 0,
-              "blocked": 0, "done": 0, "queued": 0, "failed": 0}
+              "blocked": 0, "done": 0, "queued": 0, "failed": 0, "interrupted": 0}
     qsum, qn = 0.0, 0
     for r in rows:
         st = r["status"]
@@ -219,6 +222,8 @@ def list_projects(projects_dir: pathlib.Path) -> dict:
             counts["queued"] += 1
         elif st == "failed":
             counts["failed"] += 1
+        elif st == "interrupted":
+            counts["interrupted"] += 1
         if st.startswith("blocked_at_"):
             counts["needs_you"] += 1
             # a hard fact-check block is un-approvable: it's "blocked", not "needs you"

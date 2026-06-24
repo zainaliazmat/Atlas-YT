@@ -24,6 +24,18 @@ HERE = pathlib.Path(__file__).resolve().parent
 STATIC = HERE / "static"
 
 
+class _RevalidatingStatic(StaticFiles):
+    """Serve the Control Room UI with `Cache-Control: no-cache` so a browser always
+    revalidates app.js/styles.css/index.html against the ETag the server already
+    sends. Unchanged files come back as a cheap 304; a shipped fix is picked up on
+    the next refresh with no stale-JS footgun (no manual Ctrl+Shift+R needed)."""
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers.setdefault("Cache-Control", "no-cache")
+        return resp
+
+
 def _projects_dir(app: FastAPI) -> pathlib.Path:
     return app.state.projects_dir
 
@@ -430,7 +442,7 @@ def create_app(projects_dir: pathlib.Path | str | None = None) -> FastAPI:
 
     # ---------------- static Control Room UI ----------------
     if STATIC.exists():
-        app.mount("/", StaticFiles(directory=str(STATIC), html=True), name="static")
+        app.mount("/", _RevalidatingStatic(directory=str(STATIC), html=True), name="static")
     else:  # pragma: no cover - static built by the frontend workstream
         @app.get("/")
         def _placeholder():

@@ -71,6 +71,28 @@ def test_projects_shape_and_counts(client, slugs):
     assert counts["needs_you"] >= 1
     # avg_quality present (None or float)
     assert "avg_quality" in counts
+    # interrupted is a first-class count (the projects 'Stalled' tab partitions on it)
+    assert "interrupted" in counts
+    # every row exposes hard_block so the UI can split 'Needs you' (soft) from 'Blocked'
+    by_slug = {p["slug"]: p for p in rows}
+    for p in rows:
+        assert "hard_block" in p and isinstance(p["hard_block"], bool)
+    assert by_slug[slugs["hard_block"]]["hard_block"] is True          # un-approvable
+    assert by_slug[slugs["blocked_clean"]]["hard_block"] is False      # soft, approvable
+
+
+def test_projects_tab_counts_partition_the_list(client):
+    """Badge counts and tab filters must agree: needs_you (soft gate), blocked (hard),
+    in_production, done, queued, failed, interrupted are mutually exclusive and cover
+    every non-corrupt row exactly once. Guards the badge≠filtered-rows bug."""
+    body = client.get("/api/projects").json()
+    rows, c = body["projects"], body["counts"]
+    soft = [p for p in rows if str(p["status"]).startswith("blocked_at_") and not p["hard_block"]]
+    hard = [p for p in rows if p["hard_block"]]
+    assert len(soft) == c["needs_you"]
+    assert len(hard) == c["blocked"]
+    # buckets don't overlap
+    assert not ({p["slug"] for p in soft} & {p["slug"] for p in hard})
 
 
 def test_projects_empty(empty_client):
@@ -274,3 +296,13 @@ def test_video_missing_404(client, slugs):
     # queued project has no video.mp4
     r = client.get(f"/api/media/{slugs['queued']}/video")
     assert r.status_code == 404
+
+
+def test_static_assets_send_no_cache_revalidation(client):
+    """Static UI must carry Cache-Control: no-cache so browsers revalidate against the
+    ETag every load — a shipped fix is picked up on refresh, no stale-JS footgun."""
+    for path in ("/app.js", "/styles.css", "/"):
+        r = client.get(path)
+        assert r.status_code == 200, path
+        assert "no-cache" in r.headers.get("cache-control", ""), f"{path} missing no-cache"
+        assert r.headers.get("etag"), f"{path} missing etag for revalidation"

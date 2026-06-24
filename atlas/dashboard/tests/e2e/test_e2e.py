@@ -122,6 +122,28 @@ def test_projects_screen_real_data(page, base_url, guard_console, e2e_slugs):
     assert_no_console_errors(guard_console)
 
 
+def test_projects_tab_badges_match_filtered_rows(page, base_url, guard_console, e2e_slugs):
+    """Every filter tab's badge must equal the number of rows it actually shows — a
+    badge that lies about its own filter erodes trust. Regression for the
+    Needs-you/Blocked badge≠rows bug."""
+    import re
+    _open(page, base_url)
+    _go_rail(page, "projects")
+    page.wait_for_selector("#pr-tabs .tab")
+    tabs = page.locator("#pr-tabs .tab")
+    for i in range(tabs.count()):
+        t = tabs.nth(i)
+        label = t.inner_text().strip()
+        m = re.search(r"(\d+)\s*$", label)
+        assert m, f"tab has no badge count: {label!r}"
+        badge = int(m.group(1))
+        t.click()
+        page.wait_for_timeout(150)
+        rows = page.locator("#pr-list .row").count()
+        assert rows == badge, f"tab {label!r}: badge={badge} but {rows} rows shown"
+    assert_no_console_errors(guard_console)
+
+
 # ================================================================ 2c. Pipeline (done)
 def test_pipeline_detail_done_has_video(page, base_url, guard_console, e2e_slugs):
     _open(page, base_url)

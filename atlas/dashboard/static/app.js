@@ -234,10 +234,11 @@
       kpi("Avg quality", '<div class="v">' + num(c.avg_quality) + "</div>");
 
     var n = (d.projects || []).length;
+    var stalled = (c.failed || 0) + (c.interrupted || 0);
     tabs.innerHTML =
       tab("All", n, "all") + tab("Needs you", c.needs_you, "needs") +
-      tab("In production", c.in_production, "prod") + tab("Done", c.done, "done") +
-      tab("Blocked", c.blocked, "block");
+      tab("Blocked", c.blocked, "block") + tab("Stalled", stalled, "stalled") +
+      tab("In production", c.in_production, "prod") + tab("Done", c.done, "done");
     bindProjectControls();
     drawProjectRows();
   }
@@ -256,10 +257,12 @@
       t.classList.toggle("on", t.dataset.tab === projTab);
     });
     var rows = (projectsCache.projects || []).filter(function (p) {
-      if (projTab === "needs") return /blocked_at_/.test(p.status) && p.gate;
+      // Mutually-exclusive buckets — each tab's filter matches its badge count exactly.
+      if (projTab === "needs") return /blocked_at_/.test(p.status) && p.gate && !p.hard_block;
+      if (projTab === "block") return p.hard_block === true;
+      if (projTab === "stalled") return p.status === "failed" || p.status === "interrupted";
       if (projTab === "prod") return p.status === "running";
       if (projTab === "done") return p.status === "done";
-      if (projTab === "block") return /blocked/.test(p.status) || p.status === "failed" || p.status === "interrupted";
       return true;
     }).filter(function (p) {
       return !projSearch || (p.label || p.topic || p.slug).toLowerCase().indexOf(projSearch) >= 0;
