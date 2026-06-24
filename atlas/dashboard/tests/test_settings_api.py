@@ -134,6 +134,31 @@ def test_put_settings_drops_bad_rows_but_keeps_good(tmp_path):
     assert [n["name"] for n in r.json()["settings"]["niches"]] == ["ok niche here"]
 
 
+def test_render_budget_default_is_present():
+    from dashboard import settings_store
+    assert settings_store.DEFAULT_SETTINGS["defaults"]["render_budget_sec"] == 600.0
+
+
+def test_validate_coerces_render_budget_to_float():
+    from dashboard import settings_store
+    ok, errors, clean = settings_store.validate_settings(
+        {"defaults": {"render_budget_sec": "300"}})
+    assert ok, errors
+    assert clean["defaults"]["render_budget_sec"] == 300.0
+
+
+def test_validate_defaults_render_budget_when_missing_or_bad():
+    from dashboard import settings_store
+    _, _, clean = settings_store.validate_settings({"defaults": {}})
+    assert clean["defaults"]["render_budget_sec"] == 600.0
+    _, _, clean2 = settings_store.validate_settings(
+        {"defaults": {"render_budget_sec": "not-a-number"}})
+    assert clean2["defaults"]["render_budget_sec"] == 600.0
+    _, _, clean3 = settings_store.validate_settings(
+        {"defaults": {"render_budget_sec": -50}})
+    assert clean3["defaults"]["render_budget_sec"] == 600.0   # negative is invalid
+
+
 def test_trigger_uses_niche_default_length_when_unspecified(tmp_path):
     """A niche carries a default length; triggering with that niche and no explicit length
     resolves it from settings (dashboard-side, passed INTO the pipeline as an arg)."""

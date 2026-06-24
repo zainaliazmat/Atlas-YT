@@ -49,7 +49,7 @@ DEFAULT_SETTINGS = {
     "schema_version": "1.0",
     "niches": [],       # [{name, default_length, channel_id, default_angle, voice, style_preset}]
     "defaults": {"target_length": "short", "voice": "", "style_preset": "",
-                 "intake_mode": "pick"},
+                 "intake_mode": "pick", "render_budget_sec": 600.0},
     "channels": [],     # [{channel_id, title, niche_id, connection_status, project_verified,
                         #   channel_phone_verified, scopes}]
 }
@@ -137,11 +137,19 @@ def validate_settings(obj) -> tuple[bool, list[str], dict]:
     if isinstance(defaults, dict):
         tl = defaults.get("target_length")
         im = defaults.get("intake_mode")
+        raw_budget = (defaults or {}).get("render_budget_sec", 600.0)
+        try:
+            budget = float(raw_budget)
+            if budget < 0:
+                budget = 600.0
+        except (TypeError, ValueError):
+            budget = 600.0
         out["defaults"] = {
             "target_length": tl if tl in LENGTH_OPTIONS else "short",
             "voice": str(defaults.get("voice", "") or "")[:64],
             "style_preset": str(defaults.get("style_preset", "") or "")[:64],
             "intake_mode": im if im in INTAKE_MODES else "pick",
+            "render_budget_sec": budget,
         }
     return (not errors), errors, out
 
