@@ -34,6 +34,17 @@ def test_overview_empty_system(empty_client):
     assert body["activity"] == []
 
 
+def test_overview_activity_humanizes_atlas_decisions(client):
+    """The activity log must never show the raw engine enum (RETRY_STAGE, ESCALATE,
+    FIX_AND_RERUN…) — Atlas decisions read as plain English."""
+    body = client.get("/api/overview").json()
+    raw = ("RETRY_STAGE", "FIX_AND_RERUN", "RERUN_FROM", "APPROVE_GATE")
+    for e in body["activity"]:
+        dec = e.get("decision") or ""
+        for tok in raw:
+            assert tok not in dec, f"raw enum {tok} leaked into activity: {dec!r}"
+
+
 # ---------------------------------------------------------------- projects
 def test_projects_shape_and_counts(client, slugs):
     r = client.get("/api/projects")

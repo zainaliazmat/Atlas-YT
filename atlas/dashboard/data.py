@@ -837,6 +837,16 @@ def _mini_pipeline(projects_dir, slug) -> dict | None:
             "status": det["summary"]["status"], "nodes": nodes, "gates": det["gates"]}
 
 
+def _humanize_decision(h: dict) -> str | None:
+    """An Atlas history line stores `decision` as "atlas: {KIND}" — turn that raw
+    enum into plain English. Non-Atlas decisions (operator/human text) pass through."""
+    dec = h.get("decision")
+    if dec and dec.lower().startswith("atlas:"):
+        kind = dec.split(":", 1)[1].strip()
+        return supervisor.humanize_atlas_activity({"kind": kind, "stage": h.get("stage")})
+    return dec
+
+
 def _activity_log(projects_dir: pathlib.Path, limit: int = 12) -> list[dict]:
     """Merged, newest-first history across all projects (real ts + decision lines)."""
     events = []
@@ -844,7 +854,7 @@ def _activity_log(projects_dir: pathlib.Path, limit: int = 12) -> list[dict]:
         label = proj.get("title") or proj.get("topic") or proj.get("slug") or "?"
         for h in proj.get("history", []) or []:
             events.append({"ts": h.get("ts", 0) or 0, "stage": h.get("stage"),
-                           "decision": h.get("decision"), "why": h.get("why", ""),
+                           "decision": _humanize_decision(h), "why": h.get("why", ""),
                            "project": label[:60], "rel": _rel_time(h.get("ts"))})
     events.sort(key=lambda e: e["ts"], reverse=True)
     return events[:limit]
