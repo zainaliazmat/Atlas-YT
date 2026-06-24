@@ -253,9 +253,14 @@ def test_signature_scene_has_the_highlighter_sweep():
 
 
 def test_every_layout_renders_clean_and_self_scans_clean():
+    # Give every layout a present photo so the photo-hero layouts render their real form
+    # (a photo-slot layout with no usable photo intentionally downgrades to a text card —
+    # exercised separately in the text-forward tests).
+    present_photo = [{"type": "image", "label": "a1", "src_rel": "assets/p.jpg",
+                      "placeholder": False, "integrity_flag": None}]
     for layout in engine.LAYOUTS:
         html = engine.compose_scene_html(_ctx(layout=layout, signature=False,
-                                              effects=[]))
+                                              effects=[], assets=present_photo))
         assert layout in html
         assert engine.scan_determinism(html) == [], f"{layout} tripped the self-scan"
 
@@ -281,13 +286,54 @@ def test_stutter_effect_uses_the_computed_step_count():
     assert "steps(36)" in html      # round(12 * 3.0)
 
 
-def test_missing_local_asset_becomes_a_placeholder_panel():
+# ----------------------------------------------------------------------
+# Text-forward for no-relevant-photo scenes (CEO decision 2026-06-24): a photo-slot
+# layout whose only asset is a sourcer-declared placeholder (no relevant photo cleared
+# the relevance floor) renders a CLEAN TEXT CARD, not a striped placeholder-panel. A
+# sourced-but-MISSING file (integrity failure) still shows the panel so the pipeline bug
+# stays visible; brand scenes keep their slot (chips fill it).
+# ----------------------------------------------------------------------
+def test_photo_slot_with_declared_placeholder_downgrades_to_text_forward():
     ctx = _ctx(layout="full-bleed-image", signature=False, effects=[],
                assets=[{"type": "image", "label": "a1", "src_rel": None,
-                        "placeholder": True}])
+                        "placeholder": True, "integrity_flag": None}])
     html = engine.compose_scene_html(ctx)
-    assert "placeholder-panel" in html
+    body = html.split("<body>", 1)[1]
+    assert "centered-statement" in body          # downgraded to a text card
+    assert "full-bleed-image" not in body        # the layout element is gone (CSS aside)
+    assert "placeholder-panel" not in body       # no striped box element
     assert "<img" not in html
+
+
+def test_photo_slot_keeps_panel_on_integrity_failure():
+    # A SOURCED file that's missing is a pipeline bug — keep the visible panel (surfaced),
+    # don't silently hide it behind a clean text card.
+    ctx = _ctx(layout="full-bleed-image", signature=False, effects=[],
+               assets=[{"type": "image", "label": "a1", "src_rel": None,
+                        "placeholder": True,
+                        "integrity_flag": "cleared asset 'a1' has no local file"}])
+    html = engine.compose_scene_html(ctx)
+    assert "full-bleed-image" in html
+    assert "placeholder-panel" in html.split("<body>", 1)[1]
+
+
+def test_photo_slot_keeps_a_present_photo():
+    ctx = _ctx(layout="full-bleed-image", signature=False, effects=[],
+               assets=[{"type": "image", "label": "a1", "src_rel": "assets/p.jpg",
+                        "placeholder": False, "integrity_flag": None}])
+    html = engine.compose_scene_html(ctx)
+    assert "full-bleed-image" in html
+    assert "<img" in html
+
+
+def test_brand_scene_keeps_its_photo_slot_layout():
+    # Brand chips fill the media slot, so a brand scene must NOT downgrade even with no photo.
+    ctx = _ctx(layout="split-screen", signature=False, effects=[], brand_keys=["openai"],
+               assets=[{"type": "image", "label": "a1", "src_rel": None,
+                        "placeholder": True, "integrity_flag": None}])
+    html = engine.compose_scene_html(ctx)
+    assert "split-screen" in html
+    assert "brand-media" in html
 
 
 # ----------------------------------------------------------------------

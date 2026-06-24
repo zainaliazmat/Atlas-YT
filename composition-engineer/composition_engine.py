@@ -159,6 +159,26 @@ MEDIA_SLOT_LAYOUTS = frozenset({
     "split-screen", "full-bleed-image", "lower-third", "data-chart", "map-focus",
 })
 
+# Photo-hero layouts: a media slot that expects a real PHOTO. (data-chart is excluded —
+# it has its own native-bar-chart fallback and never needs a photo.) When such a scene
+# has no relevant photo, we prefer a clean text card over a striped placeholder-panel.
+_PHOTO_SLOT_LAYOUTS = MEDIA_SLOT_LAYOUTS - {"data-chart"}
+
+
+def _should_text_forward(ctx: dict) -> bool:
+    """CEO decision (2026-06-24): a photo-slot scene with NO usable photo renders a clean
+    text card instead of a striped placeholder-panel. Keep the slot when a real photo is
+    present, when brand chips fill it, or when a SOURCED file is missing (an integrity
+    failure we must keep visible) — downgrade only a clean sourcer-declared placeholder."""
+    if ctx.get("brand_keys"):
+        return False
+    photos = [a for a in ctx.get("assets", []) if a.get("type") in ("image", "video")]
+    if any(a.get("src_rel") for a in photos):
+        return False                       # a usable photo exists
+    if any(a.get("integrity_flag") for a in photos):
+        return False                       # surface the sourcing bug via the panel
+    return True                            # only placeholders / nothing → text-forward
+
 
 # ======================================================================
 # Memory — a log of past composition runs (provider-agnostic, on our disk)
@@ -1275,6 +1295,11 @@ def compose_scene_html(ctx: dict) -> str:
 
     # --- LAYOUT (always present; default centered-statement) ---
     layout = ctx["layout"] if ctx["layout"] in LAYOUT_BUILDERS else "centered-statement"
+    # Text-forward (CEO 2026-06-24): a photo-hero layout with no relevant photo renders a
+    # clean centered text card rather than a striped placeholder-panel. Future videos lean
+    # on this so abstract scenes that can't source a fitting photo read intentionally.
+    if layout in _PHOTO_SLOT_LAYOUTS and _should_text_forward(ctx):
+        layout = "centered-statement"
     lb = LAYOUT_BUILDERS[layout](ctx)
     css_parts.append(lb["css"])
     layout_html = lb["html"]
