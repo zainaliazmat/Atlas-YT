@@ -1363,7 +1363,7 @@
     var intakeMode = ((settings.defaults || {}).intake_mode) || "pick";
     var nicheField = pills
       ? '<div class="field"><label>Niche (optional)</label><div class="pills" id="lm-niches">' + pills + "</div>" +
-        '<div class="dlg-note">Pick a niche to pre-fill its default length, or let Scout find a topic for it.</div>' +
+        '<div class="dlg-note">Pick a niche to pre-fill its default length, then type a topic below to produce.</div>' +
         '<div id="lm-intake" class="intake"></div></div>'
       : "";
     var body =
