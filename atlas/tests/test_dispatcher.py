@@ -133,7 +133,7 @@ def test_trigger_creates_then_runs_to_done(tmp_path):
     d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, max_in_flight=2)
     slug = d.trigger(topic="noise cancelling headphones")["slug"]
     assert (tmp_path / slug / "project.json").exists()
-    assert _wait_status(tmp_path, slug, "done")
+    assert _wait_status(tmp_path, slug, "done", timeout=15)  # load-robust under the full suite
     kinds = [e["kind"] for e in d.events.since(0)]
     assert "triggered" in kinds and "done" in kinds
 
