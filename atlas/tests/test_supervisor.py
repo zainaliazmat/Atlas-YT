@@ -102,7 +102,7 @@ from supervisor import (ensure_supervisor_block, bump_decision, decisions_count,
 def test_ensure_block_is_idempotent():
     p = {}
     b = ensure_supervisor_block(p)
-    assert b == {"decisions": 0, "fix_attempts": {}, "log": []}
+    assert b == {"decisions": 0, "fix_attempts": {}, "log": [], "fix_history": {}}
     b["decisions"] = 5
     assert ensure_supervisor_block(p)["decisions"] == 5  # does not clobber
 
@@ -130,3 +130,32 @@ def test_record_decision_appends_to_log_and_history():
     assert p["supervisor"]["log"][-1]["kind"] == "FIX_AND_RERUN"
     assert p["history"][-1]["decision"].startswith("atlas: FIX_AND_RERUN")
     assert p["history"][-1].get("initiator") == "atlas"
+
+
+# ---------------------------------------------------------------------------
+# Slice 4 — Task 1: fix-attempt snapshot history (parallel to cap counter)
+# ---------------------------------------------------------------------------
+from supervisor import record_fix_snapshot, fix_history
+
+
+def test_record_fix_snapshot_appends_trajectory():
+    p = {}
+    e1 = record_fix_snapshot(p, "factcheck", attempt_no=1,
+                             flagged=[{"claim_id": "s5c2", "status": "flagged"}],
+                             instructions="drop s5c2")
+    assert e1["n"] == 1 and e1["instructions"] == "drop s5c2"
+    record_fix_snapshot(p, "factcheck", attempt_no=2, flagged=[], instructions="ok")
+    hist = fix_history(p, "factcheck")
+    assert [h["n"] for h in hist] == [1, 2]
+    assert hist[0]["flagged_before"][0]["claim_id"] == "s5c2"
+    assert fix_history(p, "never") == []
+
+
+def test_fix_history_is_separate_from_fix_attempts_counter():
+    from supervisor import bump_fix_attempt, fix_attempts
+    p = {}
+    bump_fix_attempt(p, "factcheck"); bump_fix_attempt(p, "factcheck")
+    record_fix_snapshot(p, "factcheck", attempt_no=2, flagged=[], instructions="")
+    assert fix_attempts(p, "factcheck") == 2          # the int cap counter is intact
+    assert isinstance(p["supervisor"]["fix_attempts"]["factcheck"], int)
+    assert len(fix_history(p, "factcheck")) == 1       # parallel list, unrelated to the int

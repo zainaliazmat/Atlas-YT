@@ -115,6 +115,7 @@ def ensure_supervisor_block(project: dict) -> dict:
     blk.setdefault("decisions", 0)
     blk.setdefault("fix_attempts", {})
     blk.setdefault("log", [])
+    blk.setdefault("fix_history", {})
     return blk
 
 
@@ -150,3 +151,24 @@ def record_decision(project: dict, *, trigger: str, stage, kind: str, reason: st
         {"ts": entry["ts"], "stage": stage, "initiator": "atlas",
          "decision": f"atlas: {kind}", "why": reason})
     return entry
+
+
+# ---------------------------------------------------------------------------
+# Slice 4 — Task 1: fix-attempt snapshot history (pure, parallel to cap counter)
+# ---------------------------------------------------------------------------
+
+def record_fix_snapshot(project: dict, gate: str, *, attempt_no: int, flagged: list,
+                        instructions: str = "") -> dict:
+    """Capture a fix attempt's 'before' state (the flagged claims + Atlas's instructions),
+    PARALLEL to the int fix_attempts counter (which the cap reads). The escalation card
+    diffs successive snapshots against the current report to show the CEO the trajectory."""
+    blk = ensure_supervisor_block(project)
+    blk.setdefault("fix_history", {})
+    entry = {"n": attempt_no, "ts": time.time(),
+             "flagged_before": flagged or [], "instructions": instructions or ""}
+    blk["fix_history"].setdefault(gate, []).append(entry)
+    return entry
+
+
+def fix_history(project: dict, gate: str) -> list:
+    return ensure_supervisor_block(project).get("fix_history", {}).get(gate, [])
