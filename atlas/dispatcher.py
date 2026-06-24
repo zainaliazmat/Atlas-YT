@@ -403,8 +403,34 @@ class Dispatcher:
             return
         if kind == "FIX_AND_RERUN":
             return self._do_fix_and_rerun(slug, result, decision)
-        # (RERUN_FROM / APPROVE_GATE / KILL land in Task 6; until then they fall through to
-        # the safe ESCALATE handling below.)
+        if kind == "RERUN_FROM":
+            if self._over_decision_budget(slug):
+                return self._escalate(slug, result, decision,
+                                      reason="decision budget exhausted — escalating")
+            self.events.emit("rerunning", slug=slug, stage=decision.stage, initiator="atlas",
+                             message=f"sending back to {decision.stage}")
+            self._retries.pop(slug, None)
+            self.rerun(slug, from_stage=decision.stage, initiator="atlas")
+            return
+        if kind == "APPROVE_GATE":
+            # HARD GUARANTEE: never approve a fact-check block. Render auto-approval is
+            # gated on the budget rule (Slice 3); until then it also escalates. So in
+            # Slice 2 every APPROVE_GATE escalates the gate for a human.
+            return self._escalate(slug, result,
+                supervisor.Decision("ESCALATE", gate=decision.gate, payload={"blocked": True},
+                    reason=(decision.reason or "gate needs your sign-off")))
+        if kind == "KILL":
+            self._retries.pop(slug, None)
+            proj = self._load_project(slug)
+            if proj is not None:
+                proj.setdefault("history", []).append(
+                    {"ts": time.time(), "stage": result.get("stage"), "initiator": "atlas",
+                     "decision": "killed by Atlas", "why": decision.reason})
+                self._save_project(slug, proj)
+            self._mark_cancelled(slug)
+            self.events.emit("killed", slug=slug, initiator="atlas",
+                             message=decision.reason or "abandoned by Atlas")
+            return
         self._retries.pop(slug, None)
         return self._escalate(slug, result, decision)
 

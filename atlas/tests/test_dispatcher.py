@@ -28,7 +28,7 @@ def make_fake_produce(stages=("research", "script", "render"), hold=0.02,
       attempts at that stage (per slug) then succeeds — to test retry-then-recover.
     """
     outcomes = outcomes or {}
-    probe = {"seen": {}, "cur": {}, "ran": set()}
+    probe = {"seen": {}, "cur": {}, "ran": []}
     m = threading.Lock()
     fail_counts: dict[str, int] = {}
 
@@ -50,7 +50,7 @@ def make_fake_produce(stages=("research", "script", "render"), hold=0.02,
                 with m:
                     probe["cur"][key] = probe["cur"].get(key, 0) + 1
                     probe["seen"][key] = max(probe["seen"].get(key, 0), probe["cur"][key])
-                    probe["ran"].add((slug, key))
+                    probe["ran"].append((slug, key))
                 if progress is not None:
                     progress.emit(f"{key} running")
                 time.sleep(hold)
@@ -615,3 +615,64 @@ def test_decision_budget_forces_escalation(tmp_path):
         timeout=20, dispatcher=d)
     assert _wait_status(tmp_path, slug, "failed", timeout=5), _status(tmp_path, slug)
     assert proj["supervisor"]["decisions"] >= 3
+
+
+# ---------------------------------------------------------------- Task 6: APPROVE_GATE / RERUN_FROM / KILL
+def test_approve_gate_factcheck_is_illegal_and_escalates(tmp_path):
+    """HARD GUARANTEE: APPROVE_GATE(factcheck) is rejected by the EXECUTOR — a video that
+    fails fact-check is never approved away."""
+    from supervisor import Decision
+    fake, probe = make_fake_produce(stages=("research", "script", "factcheck"),
+                                    outcomes={"factcheck": "deterministic"})
+
+    def approve_it(slug, result, context):
+        return Decision("APPROVE_GATE", gate="factcheck", reason="looks fine to me")
+
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, decide_fn=approve_it,
+                   max_in_flight=2, max_retries=0)
+    slug = d.trigger(topic="cannot-approve")["slug"]
+    assert _wait_status(tmp_path, slug, "failed", timeout=12), _status(tmp_path, slug)
+    evs = [e for e in d.events.since(0) if e["kind"] == "blocked"]
+    assert evs and evs[-1]["gate"] == "factcheck"     # escalated as a gate, NOT approved
+    # the video never advanced past the gate
+    assert _proj(tmp_path, slug)["status"] != "done"
+
+
+def test_rerun_from_sends_video_back_to_earlier_stage(tmp_path):
+    from supervisor import Decision
+    fake, probe = make_fake_produce(outcomes={"render": "deterministic"})
+
+    calls = {"n": 0}
+    def back_to_research(slug, result, context):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return Decision("RERUN_FROM", stage="research", reason="bad source upstream")
+        return Decision("ESCALATE", stage=result.get("stage"),
+                        payload={"failure_kind": "deterministic"})
+
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, decide_fn=back_to_research,
+                   max_in_flight=2, max_retries=0)
+    slug = d.trigger(topic="rewind-me")["slug"]
+    # Wait until research ran >=2 times AND video is finally parked as failed (second run done).
+    proj = _wait_proj_cond(tmp_path, slug,
+        lambda p, k: (p.get("status") == "failed"
+                      and sum(1 for s, _k in probe["ran"] if s == slug and _k == "research") >= 2),
+        timeout=15, dispatcher=d)
+    assert proj.get("status") == "failed", _status(tmp_path, slug)
+    # research ran at least twice (initial + the RERUN_FROM)
+    assert sum(1 for s, _k in probe["ran"] if s == slug and _k == "research") >= 2
+
+
+def test_kill_abandons_the_video(tmp_path):
+    from supervisor import Decision
+    fake, probe = make_fake_produce(outcomes={"script": "deterministic"})
+
+    def kill_it(slug, result, context):
+        return Decision("KILL", reason="topic is unworkable")
+
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, decide_fn=kill_it,
+                   max_in_flight=2, max_retries=0)
+    slug = d.trigger(topic="doomed")["slug"]
+    assert _wait_status(tmp_path, slug, "cancelled", timeout=12), _status(tmp_path, slug)
+    kinds = [e["kind"] for e in d.events.since(0)]
+    assert "killed" in kinds
