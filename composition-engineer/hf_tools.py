@@ -18,6 +18,7 @@ import json
 import pathlib
 import shutil
 import subprocess
+import time
 
 # Verified command surface (Phase 0). Render policy: draft mp4, --strict backstop,
 # no --docker (Docker absent; per-machine determinism is the draft standard).
@@ -146,16 +147,51 @@ def run_inspect(scene_dir: pathlib.Path, *, strict: bool = False) -> dict:
             "errors": errs}
 
 
+# Transient-failure retry (reliability): a saturated compose runs many headless-Chrome
+# instances back-to-back; under load a validate/inspect Chrome can exit NON-ZERO though
+# the scene is fine (parseable JSON, zero real findings). Those crashes hit only the
+# LATER scenes and flake the whole video's gate. The checks are read-only/idempotent, so
+# re-running a transient failure (with a brief pause for load to subside) is safe. A
+# result with REAL findings — a console error, an inspect issue, a lint error, or a
+# fail-closed 'note' (unparseable/timeout) — is deterministic and never retried.
+GATE_TRANSIENT_RETRIES = 2        # extra attempts beyond the first
+GATE_RETRY_SLEEP = 3.0            # seconds between attempts (patched to 0 in tests)
+
+
+def _is_transient(result: dict) -> bool:
+    """True when a check FAILED only because its Chrome exited non-zero under load —
+    parseable JSON (no 'note'), zero substantive findings. Such a result is safe to
+    retry; anything with real findings or a fail-closed note is not."""
+    return (not result.get("ok")
+            and "note" not in result
+            and result.get("console_errors", 0) == 0
+            and result.get("errors", 0) == 0
+            and result.get("issues", 0) == 0)
+
+
+def _retrying(check) -> dict:
+    """Run a read-only gate check, retrying TRANSIENT (resource-contention) failures."""
+    res = check()
+    attempts = 0
+    while _is_transient(res) and attempts < GATE_TRANSIENT_RETRIES:
+        time.sleep(GATE_RETRY_SLEEP)
+        res = check()
+        attempts += 1
+    return res
+
+
 def run_gate(scene_dir: pathlib.Path, *, motion_strict: bool = False) -> dict:
     """The composition auto-gate: lint -> validate -> inspect. Short-circuits on the
-    first hard failure so we don't spend a Chrome launch on an already-broken scene."""
-    lint = run_lint(scene_dir)
+    first hard failure so we don't spend a Chrome launch on an already-broken scene.
+    Each step retries a transient Chrome crash (see _is_transient) so a saturated
+    compose doesn't flake a perfectly good scene."""
+    lint = _retrying(lambda: run_lint(scene_dir))
     if not lint["ok"]:
         return {"lint": lint, "validate": None, "inspect": None}
-    validate = run_validate(scene_dir)
+    validate = _retrying(lambda: run_validate(scene_dir))
     if not validate["ok"]:
         return {"lint": lint, "validate": validate, "inspect": None}
-    inspect = run_inspect(scene_dir, strict=motion_strict)
+    inspect = _retrying(lambda: run_inspect(scene_dir, strict=motion_strict))
     return {"lint": lint, "validate": validate, "inspect": inspect}
 
 
