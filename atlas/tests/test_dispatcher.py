@@ -465,3 +465,34 @@ def test_decider_is_not_called_for_terminal_outcomes(tmp_path):
     slug = d.trigger(topic="clean-run")["slug"]
     assert _wait_status(tmp_path, slug, "done", timeout=12), _status(tmp_path, slug)
     assert "done" not in seen and "cancelled" not in seen
+
+
+def test_slow_decision_does_not_hold_an_inflight_slot(tmp_path):
+    """A slow decider for video A must NOT throttle the belt: with max_in_flight=1, video B
+    still runs its stage and reaches its terminal state while A's decision sleeps — proving
+    _on_result (the decision) runs AFTER the in-flight slot is released (spec §1, Slice 2).
+    Under the old code A would hold the only slot through its slow decision and B could not
+    even start."""
+    import threading, time as _t
+    from supervisor import Decision
+
+    release_a = threading.Event()
+
+    def slow_decider(slug, result, context):
+        if "aaa" in slug:
+            release_a.wait(timeout=10)          # A's decision blocks, holding NO in-flight slot
+        return Decision("ESCALATE", stage=result.get("stage"),
+                        payload={"failure_kind": "deterministic"})
+
+    # Both videos fail at script (deterministic); only A's DECISION is slow.
+    fake, _ = make_fake_produce(outcomes={"script": "deterministic"})
+    d = Dispatcher(projects_dir=tmp_path, produce_fn=fake, decide_fn=slow_decider,
+                   max_in_flight=1, max_retries=0)
+    a = d.trigger(topic="aaa-slow")["slug"]
+    _t.sleep(0.3)                                # let A reach its (sleeping) decision
+    b = d.trigger(topic="bbb-fast")["slug"]
+    # B must reach its terminal 'failed' state even though A's decision still sleeps (and would,
+    # under the OLD in-slot decision, still hold the only in-flight slot so B could not run).
+    assert _wait_status(tmp_path, b, "failed", timeout=12), _status(tmp_path, b)
+    release_a.set()
+    assert _wait_status(tmp_path, a, "failed", timeout=12), _status(tmp_path, a)

@@ -336,6 +336,7 @@ class Dispatcher:
         self._inflight.acquire()
         with self._threads_lock:
             self._running.add(slug)
+        result = None
         try:
             if self._is_cancelled(slug):
                 self._mark_cancelled(slug)
@@ -347,12 +348,16 @@ class Dispatcher:
                 station_locks=self._station_locks,
                 should_cancel=lambda: self._is_cancelled(slug),
             ) or {}
-            self._on_result(slug, result)
         finally:
             self._inflight.release()
             with self._threads_lock:
                 self._running.discard(slug)
                 self._threads.pop(slug, None)
+        # The decision (an LLM call in Slice 2) runs AFTER the in-flight slot is released, so
+        # a slow decision never throttles max_in_flight (spec §1). A produce() exception
+        # re-raises through the finally and skips this — same as before.
+        if result is not None:
+            self._on_result(slug, result)
 
     def _on_result(self, slug: str, result: dict) -> None:
         status = result.get("status")
