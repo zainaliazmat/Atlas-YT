@@ -402,6 +402,42 @@ def test_no_brand_keys_leaves_layouts_unchanged():
     assert "layout has-brand" not in html        # layout container class untouched
 
 
+# ----------------------------------------------------------------------
+# Render last-mile (occlusion): the two scene structures the inspect gate
+# rejected with 'text_occluded'. These encode the structural invariants that
+# keep text out from under opaque media; the geometric truth is verified by
+# `npx hyperframes inspect` on the composed scenes.
+# ----------------------------------------------------------------------
+def test_data_chart_title_sits_above_the_chart_clear_of_caption_band():
+    # data-chart rendered its <h2 title> AFTER the chart-frame, so the centered
+    # column dropped the title into the bottom caption band where the burned-in
+    # caption-scrim painted over it (inspect 'text_occluded'). The title must own
+    # the TOP zone, above the chart, leaving the bottom band to the (text-free) media.
+    html = engine.compose_scene_html(_ctx(layout="data-chart", signature=False,
+                                          effects=[], assets=[]))
+    assert '<h2 class="scene-title">' in html
+    assert html.index('class="scene-title"') < html.index('class="chart-frame"'), \
+        "data-chart title must render ABOVE the chart-frame"
+
+
+def test_comparison_with_brands_keeps_chips_out_from_under_opaque_panel():
+    # comparison-2up's .cmp panels are position:absolute and .cmp.myth is an opaque
+    # dark plate. When brand chips were injected (has-brand), the grid laid out only
+    # the in-flow chips row; the absolute opaque myth panel then painted OVER the
+    # left-hand chips (inspect 'text_occluded' on 'GPT-4o'/'Claude'). Under has-brand
+    # the cmp panels must flow as grid rows so every block keeps its own row.
+    ctx = _ctx(layout="comparison-2up", signature=False, effects=[], assets=[],
+               brand_keys=["openai", "anthropic", "google", "deepseek"])
+    html = engine.compose_scene_html(ctx)
+    assert "layout has-brand comparison-2up" in html
+    for name in ("GPT-4o", "Claude", "Gemini", "DeepSeek"):
+        assert name in html
+    # the fix: CSS reflows the absolute opaque cmp panels into the has-brand grid
+    assert ".layout.has-brand .cmp{" in engine._BASE_CSS
+    assert ".layout.has-brand .cmp.myth{display:none" in engine._BASE_CSS
+    assert engine.scan_determinism(html) == []
+
+
 def test_scene_ctx_wires_brand_keys_from_storyboard_shots(tmp_path):
     board = {"scene_no": 1, "layout": "title-card", "transition": "cut", "effects": [],
              "signature_beat": False,

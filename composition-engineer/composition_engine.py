@@ -861,9 +861,14 @@ def _layout_data_chart(ctx):
             inner = chart if chart else _media_html(ctx)
     else:
         inner = _media_html(ctx)
+    # Title ABOVE the chart: a centered column drops a below-chart title into the
+    # bottom caption band, where the burned-in caption-scrim occludes it (inspect
+    # 'text_occluded'). Top-zoned title + chart below keeps the title clear of the
+    # caption and reads as the conventional "chart title on top".
     return {"css": "", "html":
-            f'<div class="layout data-chart"><div class="chart-frame">{inner}'
-            f'</div><h2 class="scene-title">{_esc(ctx["title"])}</h2></div>', "tl": []}
+            f'<div class="layout data-chart">'
+            f'<h2 class="scene-title">{_esc(ctx["title"])}</h2>'
+            f'<div class="chart-frame">{inner}</div></div>', "tl": []}
 
 
 def _layout_quote(ctx):
@@ -1197,6 +1202,13 @@ _BASE_CSS = (
     "overflow:hidden;}"
     ".layout.has-brand>*{min-height:0;max-width:100%;}"
     ".title-card.has-brand .scene-title{font-size:92px;}"
+    # comparison-2up's .cmp panels are position:absolute opaque half-plates that fall
+    # OUTSIDE the has-brand grid, so the grid's "own row" guarantee can't reach them and
+    # the opaque .cmp.myth painted OVER the injected chips (inspect 'text_occluded'). Under
+    # has-brand, reflow the panels as in-flow grid rows (static, transparent) and drop the
+    # literal 'myth' stub so the chips + title each keep their own row, never overlapping.
+    ".layout.has-brand .cmp{position:static;width:auto;height:auto;background:transparent;}"
+    ".layout.has-brand .cmp.myth{display:none;}"
     # big-number (Job 2): one dominant stat at HERO scale, a short label, optional unit.
     ".big-number{flex-direction:column;gap:24px;text-align:center;max-width:94%;"
     "overflow:hidden;}"
