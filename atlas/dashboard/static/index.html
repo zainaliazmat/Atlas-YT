@@ -110,6 +110,13 @@
   <div id="dialog-root"></div>
   <div id="drawer-root"></div>
 
+  <!-- Agentic chat — the LLM plane (lilac). T1-only: it proposes reversible actions you
+       confirm; it can surface a gate/publish but the authorising click lives on the
+       deterministic UI (spec §4/§8). -->
+  <button id="chat-fab" class="chat-fab" type="button" aria-label="Chat with Atlas">
+    <span class="cf-i">✦</span><span class="cf-l">Ask Atlas</span></button>
+  <div id="chat-root"></div>
+
   <script src="app.js"></script>
 </body>
 </html>

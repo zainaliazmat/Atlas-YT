@@ -259,7 +259,7 @@
       if (projTab === "needs") return /blocked_at_/.test(p.status) && p.gate;
       if (projTab === "prod") return p.status === "running";
       if (projTab === "done") return p.status === "done";
-      if (projTab === "block") return /blocked/.test(p.status) || p.status === "failed";
+      if (projTab === "block") return /blocked/.test(p.status) || p.status === "failed" || p.status === "interrupted";
       return true;
     }).filter(function (p) {
       return !projSearch || (p.label || p.topic || p.slug).toLowerCase().indexOf(projSearch) >= 0;
@@ -305,6 +305,7 @@
     }
     if (/blocked/.test(s)) return { badge: "block", tile: "block", glyph: "⛔", rowcls: "block", label: "blocked", stage: "sent back · can't be approved away" };
     if (s === "failed") return { badge: "block", tile: "block", glyph: "⛔", rowcls: "block", label: "failed", stage: "run failed" };
+    if (s === "interrupted") return { badge: "block", tile: "block", glyph: "⏸", rowcls: "attn", label: "interrupted", stage: "stopped mid-run · re-run when ready" };
     if (s === "queued") return { badge: "queue", tile: "queue", glyph: "☰", rowcls: "", label: "queued", stage: "waiting for a slot" };
     return { badge: "queue", tile: "queue", glyph: "☰", rowcls: "", label: esc(s || "—"), stage: "" };
   }
@@ -334,11 +335,33 @@
 
     var sm = d.summary || {};
     var smap = statusMap(sm);
+
+    // Re-run is offered for a video that has SETTLED (failed / cancelled / done /
+    // blocked) — never one mid-flight (running / queued), where a re-run would race the
+    // live worker. The dropdown re-runs FROM a previously-run station only.
+    var stStr = String(sm.status || "");
+    var rerunnable = stStr === "done" || stStr === "failed" || stStr === "cancelled" ||
+      stStr === "interrupted" || /blocked/.test(stStr);
+    var runnableStages = (d.stages || []).filter(function (s) { return s.status !== "pending"; });
+    var rerunMenu = runnableStages.map(function (s) {
+      return '<button class="ri" data-from="' + esc(s.key) + '" role="menuitem">From <b>' +
+        esc(s.key) + "</b></button>";
+    }).join("");
+    var rerunBtn = rerunnable
+      ? '<div class="rerun-split"><button class="btn" id="pl-rerun" title="Re-run the whole video from the start">↻ Re-run</button>' +
+        (runnableStages.length
+          ? '<button class="btn caret" id="pl-rerun-caret" aria-haspopup="true" aria-expanded="false" aria-label="Re-run from a stage">▾</button>' +
+            '<div class="rerun-menu" id="pl-rerun-menu" role="menu" hidden><div class="rm-h">Re-run from…</div>' + rerunMenu + "</div>"
+          : "") +
+        "</div>"
+      : "";
+
     head.innerHTML =
       "<div><h1>" + ellipEsc(sm.label || sm.topic || slug, 80) +
       ' <span class="badge" style="vertical-align:middle">' + esc(smap.label) + "</span></h1>" +
       '<div class="slug">atlas/projects/' + esc(slug) + '/project.json</div></div>' +
-      '<div class="acts"><button class="btn">Open folder</button>' +
+      '<div class="acts">' + rerunBtn + '<button class="btn">Open folder</button>' +
+      (d.has_video ? '<button class="btn" id="pl-publish">Publish…</button>' : "") +
       (d.has_video ? '<button class="btn primary" id="pl-openvid">Open video.mp4</button>' : "") + "</div>";
 
     var stages = d.stages || [];
@@ -427,6 +450,47 @@
     });
     var ov = $("pl-openvid");
     if (ov) ov.onclick = function () { window.open("/api/media/" + encodeURIComponent(slug) + "/video", "_blank"); };
+    var pub = $("pl-publish");
+    if (pub) pub.onclick = function () { openPublishModal(slug); };
+
+    // Re-run split-button: main = from start; caret opens the "from <stage>" menu.
+    var rr = $("pl-rerun");
+    if (rr) rr.onclick = function () { doRerun(slug, null); };
+    var rrc = $("pl-rerun-caret"), rrm = $("pl-rerun-menu");
+    if (rrc && rrm) {
+      rrc.onclick = function (e) {
+        e.stopPropagation();
+        var open = rrm.hasAttribute("hidden");
+        if (open) { rrm.removeAttribute("hidden"); rrc.setAttribute("aria-expanded", "true"); }
+        else { rrm.setAttribute("hidden", ""); rrc.setAttribute("aria-expanded", "false"); }
+      };
+      rrm.querySelectorAll(".ri").forEach(function (b) {
+        b.onclick = function () { doRerun(slug, b.dataset.from); };
+      });
+      document.addEventListener("click", function closeRerun(ev) {
+        if (rrm && !rrm.contains(ev.target) && ev.target !== rrc) {
+          rrm.setAttribute("hidden", "");
+          if (rrc) rrc.setAttribute("aria-expanded", "false");
+        }
+      });
+    }
+  }
+
+  // POST a re-run (whole video when fromStage is null, else from that station) and
+  // refresh the spine. Reuses the belt-flash + poll the trigger/retry paths use.
+  async function doRerun(slug, fromStage) {
+    var body = fromStage ? JSON.stringify({ from_stage: fromStage }) : "{}";
+    try {
+      var r = await fetch("/api/rerun/" + encodeURIComponent(slug),
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: body });
+      var out = await r.json().catch(function () { return {}; });
+      if (!r.ok) throw new Error(out.reason || out.error || ("HTTP " + r.status));
+      flashSlug = slug;
+      scheduleBeltRefresh();
+      renderPipeline(slug);
+    } catch (e) {
+      alert("Couldn't re-run: " + e.message);
+    }
   }
 
   async function openArtifact(slug, name) {
@@ -728,11 +792,30 @@
       (approvable && !hard ? '<label class="ack"><input type="checkbox" id="gt-ack"> I\'ve read the flagged claims and accept proceeding.</label>' : "") +
       approveBtn +
       '<button class="bigbtn send" data-go="v-pipeline" data-rail="pipeline" data-slug="' + esc(slug) + '">Send back to Marlow<small>he revises → Sage re-checks → gate re-opens</small></button>' +
+      '<div class="gt-guide-kill">' +
+      '<textarea id="gt-guide-text" class="gt-guide-textarea" placeholder="Instructions for Atlas (re-run guided)…" rows="3"></textarea>' +
+      '<div class="gt-gk-btns">' +
+      '<button class="bigbtn primary" id="gt-guide" disabled>Guide &amp; re-run<small>Atlas re-runs with your instructions</small></button>' +
+      '<button class="bigbtn danger" id="gt-kill">Kill video<small>stop Atlas — no further auto-retries</small></button>' +
+      '</div></div>' +
       '<div id="gt-result"></div>' +
       '<div class="rule">🔒 These are <b>flags</b> — your call. A fact-check <b>block</b> can <b>never be approved away</b> and always routes back until fixed.</div>' +
-      "</div></div></div>";
+      "</div></div>" +
+      (d.fix_history && d.fix_history.length
+        ? '<div class="gt-fix-history"><div class="sec">Atlas auto-fix attempts <span class="r">' + d.fix_history.length + "</span></div>" +
+          d.fix_history.map(function (a) {
+            var ids = (a.flagged_before || []).map(function (c) { return esc(c.claim_id || c.claim_text || "?"); }).join(", ");
+            return '<div class="gt-fix-attempt"><span class="gt-fix-n">Attempt ' + esc(a.n) + "</span>" +
+              '<span class="gt-fix-instr">' + esc(a.instructions || "—") + "</span>" +
+              (ids ? '<span class="gt-fix-claims">flagged before: ' + ids + "</span>" : "") +
+              "</div>";
+          }).join("")
+          + "</div>"
+        : "") +
+      "</div>";
 
     wireApprove(slug);
+    wireGuideKill(slug);
   }
 
   function renderFinalGate(slug, d) {
@@ -784,6 +867,56 @@
       } catch (e) {
         btn.disabled = false;
         $("gt-result").innerHTML = '<div class="state-msg err">Approval failed: ' + esc(e.message) + "</div>";
+      }
+    };
+  }
+
+  function wireGuideKill(slug) {
+    var guideText = $("gt-guide-text");
+    var guideBtn  = $("gt-guide");
+    var killBtn   = $("gt-kill");
+    if (!guideText || !guideBtn || !killBtn) return;
+    guideText.oninput = function () {
+      guideBtn.disabled = !guideText.value.trim();
+    };
+    guideBtn.onclick = async function () {
+      var instr = guideText.value.trim();
+      if (!instr) return;
+      guideBtn.disabled = true;
+      killBtn.disabled = true;
+      $("gt-result").innerHTML = '<div class="state-msg">Submitting guidance…</div>';
+      try {
+        var r = await fetch("/api/gate/" + encodeURIComponent(slug) + "/guide", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ instructions: instr })
+        });
+        var out = await r.json().catch(function () { return {}; });
+        if (!r.ok) throw new Error(out.error || ("HTTP " + r.status));
+        $("gt-result").innerHTML = '<div class="state-msg" style="color:var(--done)">✓ re-running (guided)</div>';
+      } catch (e) {
+        guideBtn.disabled = false;
+        killBtn.disabled = false;
+        $("gt-result").innerHTML = '<div class="state-msg err">Guide failed: ' + esc(e.message) + "</div>";
+      }
+    };
+    killBtn.onclick = async function () {
+      guideBtn.disabled = true;
+      killBtn.disabled = true;
+      $("gt-result").innerHTML = '<div class="state-msg">Killing video…</div>';
+      try {
+        var r = await fetch("/api/gate/" + encodeURIComponent(slug) + "/kill", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: "" })
+        });
+        var out = await r.json().catch(function () { return {}; });
+        if (!r.ok) throw new Error(out.error || ("HTTP " + r.status));
+        $("gt-result").innerHTML = '<div class="state-msg" style="color:var(--gate)">✓ killed</div>';
+      } catch (e) {
+        guideBtn.disabled = false;
+        killBtn.disabled = false;
+        $("gt-result").innerHTML = '<div class="state-msg err">Kill failed: ' + esc(e.message) + "</div>";
       }
     };
   }
@@ -860,6 +993,7 @@
       '<span class="run">running <b>' + (counts.running || 0) + "</b></span>" +
       '<span class="gate">awaiting you <b>' + (counts.blocked || 0) + "</b></span>" +
       '<span class="fail">failed <b>' + (counts.failed || 0) + "</b></span>" +
+      (counts.interrupted ? '<span class="fail">interrupted <b>' + counts.interrupted + "</b></span>" : "") +
       '<span class="done">done <b>' + (counts.done || 0) + "</b></span>" +
       "<span>in flight <b>" + ((live.running || []).length) + "</b>/" +
       (live.max_in_flight || "—") + "</span></div></div>" +
@@ -890,10 +1024,12 @@
     var bs = v.belt_state || "queued";
     var act = (bs === "running" || bs === "queued")
       ? '<button class="row-act danger" data-slug="' + esc(v.slug) + '">cancel</button>' : "";
+    var atlasLine = v.atlas_activity
+      ? '<div class="atlas-line">🤖 ' + esc(v.atlas_activity.text) + "</div>" : "";
     return '<div class="spine-row s-' + esc(bs) + '" data-slug="' + esc(v.slug) + '">' +
       '<div class="lbl"><div class="t">' + ellipEsc(v.label || v.topic || v.slug, 60) +
       '</div><div class="s">' + esc(v.station || "—") + " · " + esc(v.updated_rel || "") +
-      "</div></div>" + '<div class="track">' + track + "</div>" +
+      "</div>" + atlasLine + "</div>" + '<div class="track">' + track + "</div>" +
       '<div class="rgt"><span class="pill-state ' + esc(bs) + '">' + esc(bs) + "</span>" +
       act + "</div></div>";
   }
@@ -910,7 +1046,10 @@
       return;
     }
     tray.className = "tray has-items";
+    var digestHeader = items.length > 1
+      ? '<div class="tray-digest">⚑ ' + items.length + " videos need you</div>" : "";
     tray.innerHTML = '<h3>Needs you <span class="badge-n">' + items.length + "</span></h3>" +
+      digestHeader +
       items.map(function (v) {
         var fail = v.belt_state === "failed";
         return '<div class="tray-item ' + (fail ? "fail" : "gate") + '" data-slug="' +
@@ -942,8 +1081,9 @@
   // The live audit trail (spec §4/§10): every belt event, newest-first, tagged with the
   // initiator PLANE (ceo / dispatcher / chat) — because "who set it off" is the property
   // an audit checks. Backfilled from /api/activity, then live-tailed by the SSE stream.
-  var ACT_KINDS = ["triggered", "progress", "retry", "blocked", "gate_approved",
-                   "failed", "cancel_requested", "cancelled", "done"];
+  var ACT_KINDS = ["triggered", "progress", "decision", "fixing", "approving", "retry",
+                   "rerun", "rerunning", "interrupted", "blocked", "gate_approved",
+                   "failed", "killed", "cancel_requested", "cancelled", "done"];
   var activityFilter = { kind: null, initiator: null };
   var actTimer = null;
 
@@ -1535,6 +1675,303 @@
     return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/"/g, '\\"');
   }
 
+  // ================================================================ AGENTIC CHAT
+  // The LLM plane (lilac): read-grounded, agentic, but T1-ONLY. It streams Atlas's words,
+  // can PROPOSE a reversible action (you confirm with one click), and can NAVIGATE you to a
+  // gate/publish — but the authorising click for a T2/T3 always lives on the deterministic
+  // UI (spec §4/§8). Nothing the chat returns can satisfy a gate or publish.
+  var chatHistory = [];     // [{role:'user'|'atlas', content}]
+  var chatOpen = false, chatBusy = false;
+
+  function openChat() {
+    var root = $("chat-root");
+    if (chatOpen) return;
+    chatOpen = true;
+    $("chat-fab").classList.add("hidden");
+    root.innerHTML =
+      '<div class="chat-panel" role="dialog" aria-label="Chat with Atlas">' +
+      '<div class="chat-hd"><div class="ava">✦</div>' +
+      '<div><div class="ttl">Atlas</div><div class="sub">LLM plane · proposes, never approves</div></div>' +
+      '<button class="x" type="button" aria-label="Close chat">✕</button></div>' +
+      '<div class="chat-log" id="chat-log"></div>' +
+      '<div class="chat-input"><textarea id="chat-ta" rows="1" placeholder="Ask about the belt, or ask me to start / cancel a run…"></textarea>' +
+      '<button class="send" id="chat-send" type="button" aria-label="Send">➤</button></div></div>';
+    var panel = root.querySelector(".chat-panel");
+    requestAnimationFrame(function () { panel.classList.add("in"); });
+    root.querySelector(".chat-hd .x").onclick = closeChat;
+    var log = $("chat-log");
+    if (!chatHistory.length) {
+      log.innerHTML = '<div class="chat-intro">I can read the live belt, fleet, and gates, and ' +
+        '<b>propose</b> reversible moves — start a production, cancel a run, change a default — ' +
+        'which you confirm with one click. I\'ll point you to a gate or publish, but the ' +
+        '<b>approving click stays on the deterministic screen</b>.</div>';
+    } else {
+      chatHistory.forEach(function (m) { appendMsg(log, m.role, m.content); });
+    }
+    var ta = $("chat-ta");
+    ta.oninput = function () { ta.style.height = "auto"; ta.style.height = Math.min(120, ta.scrollHeight) + "px"; };
+    ta.onkeydown = function (e) {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+    };
+    $("chat-send").onclick = sendChat;
+    setTimeout(function () { ta.focus(); }, 60);
+  }
+  function closeChat() {
+    chatOpen = false;
+    $("chat-root").innerHTML = "";
+    $("chat-fab").classList.remove("hidden");
+  }
+
+  function appendMsg(log, role, text, opts) {
+    opts = opts || {};
+    var who = role === "user" ? "You" : "Atlas";
+    var div = document.createElement("div");
+    div.className = "msg " + (role === "user" ? "you" : "atlas");
+    div.innerHTML = '<span class="who">' + esc(who) + '</span>' +
+      '<div class="bub' + (opts.streaming ? " streaming" : "") + (opts.err ? " err" : "") + '"></div>';
+    div.querySelector(".bub").textContent = text || "";
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    return div.querySelector(".bub");
+  }
+
+  async function sendChat() {
+    if (chatBusy) return;
+    var ta = $("chat-ta"), log = $("chat-log");
+    var text = (ta.value || "").trim();
+    if (!text) return;
+    ta.value = ""; ta.style.height = "auto";
+    chatBusy = true; $("chat-send").disabled = true;
+    appendMsg(log, "user", text);
+    chatHistory.push({ role: "user", content: text });
+    var bub = appendMsg(log, "atlas", "", { streaming: true });
+    var acc = "";
+    try {
+      var r = await fetch("/api/chat", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text, history: chatHistory.slice(0, -1) }),
+      });
+      if (!r.ok) {
+        var e = await r.json().catch(function () { return {}; });
+        throw new Error(e.error || ("HTTP " + r.status));
+      }
+      var reader = r.body.getReader(), dec = new TextDecoder(), buf = "", done = null;
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buf += dec.decode(chunk.value, { stream: true });
+        var parts = buf.split("\n\n");
+        buf = parts.pop();
+        parts.forEach(function (p) {
+          var line = p.trim();
+          if (line.indexOf("data:") !== 0) return;
+          var frame;
+          try { frame = JSON.parse(line.slice(5).trim()); } catch (e) { return; }
+          if (frame.type === "text") { acc += frame.t; bub.textContent = acc; log.scrollTop = log.scrollHeight; }
+          else if (frame.type === "error") { done = { error: frame.error }; }
+          else if (frame.type === "done") { done = frame; }
+        });
+      }
+      bub.classList.remove("streaming");
+      if (done && done.error) {
+        bub.classList.add("err"); bub.textContent = "Couldn't finish: " + done.error;
+      } else {
+        var reply = (done && done.reply) || acc || "(no reply)";
+        bub.textContent = reply;
+        chatHistory.push({ role: "atlas", content: reply });
+        if (done && done.action) renderProposal(log, done.action);
+        await maybeOfferGateNav(log);
+      }
+    } catch (e) {
+      bub.classList.remove("streaming"); bub.classList.add("err");
+      bub.textContent = "Couldn't reach Atlas: " + e.message;
+    } finally {
+      chatBusy = false; $("chat-send").disabled = false; $("chat-ta").focus();
+    }
+  }
+
+  // A PROPOSED T1 action — rendered as a reversible proposal you confirm (the light confirm
+  // of §4). The kinds are fixed (trigger/cancel/update_setting); there is no approve/publish.
+  function renderProposal(log, action) {
+    var kind = action.kind, args = action.args || {};
+    var label = kind === "trigger"
+      ? 'Start a production' + (args.topic ? ' — <b>' + esc(ellip(args.topic, 60)) + '</b>' : '')
+      : kind === "cancel"
+        ? 'Cancel / park <b>' + esc(ellip(args.slug || "", 40)) + '</b>'
+        : 'Set <b>' + esc(args.field || "") + '</b> to <b>' + esc(String(args.value)) + '</b>';
+    var box = document.createElement("div");
+    box.className = "proposal";
+    box.innerHTML =
+      '<div class="ph"><span class="t1">T1 · reversible</span>Atlas proposes</div>' +
+      '<div class="pd">' + label + "</div>" +
+      '<div class="pacts"><button class="pbtn go" type="button">Confirm</button>' +
+      '<button class="pbtn no" type="button">Dismiss</button></div>' +
+      '<div class="pnote"></div>';
+    log.appendChild(box); log.scrollTop = log.scrollHeight;
+    var note = box.querySelector(".pnote");
+    box.querySelector(".no").onclick = function () { box.remove(); };
+    box.querySelector(".go").onclick = async function () {
+      box.querySelectorAll(".pbtn").forEach(function (b) { b.disabled = true; });
+      note.className = "pnote"; note.textContent = "Working…";
+      try {
+        var out = await postJSON("/api/chat/act", { kind: kind, args: args });
+        note.className = "pnote ok";
+        note.textContent = kind === "trigger" ? "Started — it's on the belt."
+          : kind === "cancel" ? "Cancellation requested." : "Setting saved.";
+        box.querySelector(".pacts").remove();
+        scheduleBeltRefresh();
+        if (kind === "trigger" && out.slug) flashSlug = out.slug;
+      } catch (e) {
+        note.className = "pnote err"; note.textContent = "Couldn't do it: " + e.message;
+        box.querySelectorAll(".pbtn").forEach(function (b) { b.disabled = false; });
+      }
+    };
+  }
+
+  // Chat NAVIGATES to a gate — it never acts there. If something is blocked, offer a chip
+  // that opens the deterministic gate-review drawer (where the authorising click lives).
+  async function maybeOfferGateNav(log) {
+    var d;
+    try { d = await getJSON("/api/belt"); } catch (e) { return; }
+    var blocked = (d.videos || []).filter(function (v) { return v.belt_state === "blocked"; });
+    if (!blocked.length) return;
+    var v = blocked[0];
+    var chip = document.createElement("button");
+    chip.type = "button"; chip.className = "gobtn";
+    chip.innerHTML = "⚑ Review the " + esc(v.gate || "") + " gate → <b>" + ellipEsc(v.label, 28) + "</b>";
+    chip.onclick = function () { openGateReview(v.slug); };
+    log.appendChild(chip); log.scrollTop = log.scrollHeight;
+  }
+
+  // ================================================================ T2 GATE-REVIEW DRAWER
+  // The DETERMINISTIC surface where the authorising APPROVE click lives. Reachable from the
+  // chat's navigate chip and the belt, but the approve always posts to the deterministic
+  // endpoint (which resumes through the belt, sharing station locks). A hard fact-check
+  // `block` can never be approved away (the spine re-earns it; the UI never offers it).
+  async function openGateReview(slug) {
+    var panel = openDrawer({ title: "Gate review", sub: slug });
+    var body = panel.querySelector(".dw-body");
+    loading(body, "Loading gate…");
+    var d;
+    try { d = await getJSON("/api/gate/" + encodeURIComponent(slug)); }
+    catch (e) { errState(body, "Couldn't load the gate. " + e.message); return; }
+    if (d.kind === "none") {
+      body.innerHTML = '<div class="state-msg">No gate is awaiting a decision (status: ' + esc(d.status) + ").</div>";
+      return;
+    }
+    var hard = d.hard_block, approvable = d.approvable && !hard;
+    var head, bodyHtml = "";
+    if (d.kind === "factcheck") {
+      var sm = d.summary || {}, flagged = d.flagged || [];
+      var verdict = hard ? "block" : (flagged.length ? "review" : "pass");
+      head = '<div class="gr-verdict ' + verdict + '">' +
+        (hard ? "BLOCK — routed back" : flagged.length ? (flagged.length + " flagged · review") : "pass") + "</div>";
+      bodyHtml =
+        '<div class="gr-stake' + (hard ? " hard" : "") + '">' +
+        (hard ? "Sage raised a <b>hard fact-check block</b> — it <b>cannot be approved away</b>. The script returns to Marlow until it's fixed and re-checked."
+          : flagged.length ? "Sage flagged <b>" + flagged.length + " claim" + (flagged.length > 1 ? "s" : "") + "</b>. Approve to send the script on, or send it back. <b>Nothing renders until you decide.</b>"
+            : "Sage verified the script with no flags. You can approve it through.") + "</div>" +
+        '<div class="gr-summ"><span class="chip"><b>' + ((sm.verified || 0) + (sm.flagged || 0) + (sm.unverifiable || 0)) + '</b> claims</span>' +
+        '<span class="chip v"><b>' + (sm.verified || 0) + '</b> verified</span>' +
+        '<span class="chip f"><b>' + (sm.flagged || 0) + '</b> flagged</span>' +
+        '<span class="chip b"><b>' + (sm.unverifiable || 0) + '</b> unverifiable</span></div>' +
+        flagged.slice(0, 6).map(function (c) {
+          return '<div class="gr-flag"><div class="cn">scene ' + esc(c.scene_no) + ' · ' + esc((c.status || "flagged").toUpperCase()) + '</div>' +
+            '<div class="ct">"' + esc(ellip(c.claim_text, 160)) + '"</div>' +
+            (c.note ? '<div class="note">' + esc(ellip(c.note, 180)) + "</div>" : "") + "</div>";
+        }).join("");
+    } else {
+      var plan = d.plan || {};
+      head = '<div class="gr-verdict review">final-render gate</div>';
+      bodyHtml =
+        '<div class="gr-stake">Last gate before the spine spends on the render. Review the plan and approve to render.</div>' +
+        '<div class="gr-plan"><span class="gr-summ"><span class="chip"><b>' + num(plan.scenes, "—") + '</b> scenes</span>' +
+        '<span class="chip"><b>' + (plan.est_runtime_sec ? Math.round(plan.est_runtime_sec) : "—") + '</b>s est</span>' +
+        (d.draft_renders ? '<span class="chip"><b>' + d.draft_renders.length + '</b> draft(s)</span>' : "") + "</span>" +
+        (plan.plan ? '<div class="note" style="font-family:Space Mono;font-size:11px;color:var(--mut);line-height:1.5">' + esc(plan.plan) + "</div>" : "") + "</div>";
+    }
+    var gate = d.kind;
+    var btn = approvable
+      ? '<label class="gr-ack"><input type="checkbox" id="gr-ack"> I\'ve reviewed this and accept proceeding.</label>' +
+        '<button class="bigbtn primary" id="gr-approve" data-gate="' + esc(gate) + '">Approve ' + esc(prettyGate(gate)) +
+        '<small>resumes through the belt</small></button>'
+      : '<button class="bigbtn" disabled style="opacity:.55;cursor:not-allowed">Can\'t approve — ' +
+        (hard ? "routed back" : "not approvable") + '<small>' + (hard ? "the spine refuses a block" : "not at an approvable gate") + "</small></button>";
+    body.innerHTML = head + bodyHtml +
+      '<div style="margin-top:14px">' + btn + '<div id="gr-result"></div></div>' +
+      '<div class="gr-rule">🔒 This is the <b>deterministic</b> surface. The chat can bring you here and summarise it, but it can <b>never</b> satisfy this gate — the authorising click is yours, here.</div>';
+    var ab = $("gr-approve");
+    if (ab) ab.onclick = function () { submitGateApprove(slug, gate); };
+  }
+
+  async function submitGateApprove(slug, gate) {
+    var ack = $("gr-ack"), res = $("gr-result"), btn = $("gr-approve");
+    if (ack && !ack.checked) { res.innerHTML = '<div class="state-msg err">Tick the acknowledgement first.</div>'; return; }
+    btn.disabled = true;
+    res.innerHTML = '<div class="state-msg">Approving — resuming the pipeline…</div>';
+    try {
+      var out = await postJSON("/api/gate/" + encodeURIComponent(slug) + "/approve", { gate: gate });
+      res.innerHTML = '<div class="state-msg" style="color:var(--done)">✓ ' + esc(out.status || "approved") +
+        (out.next_gate ? " · now at " + esc(out.next_gate) + " gate" : "") + "</div>";
+      flashSlug = slug; scheduleBeltRefresh();
+      setTimeout(function () { closeDrawer(); renderPipeline(slug); }, 800);
+    } catch (e) {
+      btn.disabled = false;
+      res.innerHTML = '<div class="state-msg err">Approval failed: ' + esc(e.message) + "</div>";
+    }
+  }
+  window.openGateReview = openGateReview;
+
+  // ================================================================ T3 PUBLISH-CONFIRM (shell)
+  // The HARD, structured review of the EXACT final package (title/description/tags/thumbnail/
+  // visibility/schedule). No stray Escape/backdrop close (openDialog hard:true). Scheduling
+  // sets go-live only AFTER approval; real publishing arrives with Herald (#6), so the fire
+  // button is disabled here — there is no auto-fire-unreviewed path (spec §4 T3 / E8).
+  async function openPublishModal(slug) {
+    var d;
+    try { d = await getJSON("/api/publish/" + encodeURIComponent(slug)); }
+    catch (e) { return; }
+    var p = d.package || {};
+    var chan = d.channel;
+    var q = d.quota || {};
+    var tags = (p.tags || []).length
+      ? '<div class="pub-tags">' + p.tags.map(function (t) { return "<span>" + esc(t) + "</span>"; }).join("") + "</div>"
+      : '<span class="mono" style="color:var(--mut)">— none —</span>';
+    var chanRow = chan
+      ? '<div class="pub-chan"><b>' + esc(chan.title || chan.channel_id || "untitled") + "</b> · " + esc(chan.connection_status || "disconnected") +
+        '<br>project ' + (chan.project_verified ? "verified ✓" : "<span style=\"color:var(--gate)\">unverified</span>") +
+        ' · channel ' + (chan.channel_phone_verified ? "verified ✓" : "<span style=\"color:var(--gate)\">unverified</span>") + "</div>"
+      : '<span class="mono" style="color:var(--gate)">no channel mapped to this niche</span>';
+    var body =
+      '<div class="pub-band"><span class="lock">🔒</span><div>This is the <b>exact package</b> that would go live. ' +
+      'Review every field — once approved, scheduling only sets the <b>go-live time</b>; nothing publishes before that.</div></div>' +
+      '<div class="pub-pkg">' +
+      pubRow("Title", '<div class="vv">' + esc(p.title || "—") + "</div>") +
+      pubRow("Description", '<div class="vv">' + (p.description ? esc(ellip(p.description, 240)) : '<span class="mono" style="color:var(--mut)">— none —</span>') + "</div>") +
+      pubRow("Tags", tags) +
+      pubRow("Thumbnail", '<div class="pub-thumb">' + esc((p.thumbnail || {}).note || "thumbnail") + "</div>") +
+      pubRow("Visibility", '<span class="pub-vis">' + esc(p.visibility || "private") + "</span>") +
+      pubRow("Schedule", '<div class="vv"><span class="mono">' + (p.schedule ? esc(p.schedule) : "not scheduled — go-live is set after approval") + "</span></div>") +
+      pubRow("Channel", '<div class="vv">' + chanRow + "</div>") +
+      pubRow("Quota", '<div class="vv"><span class="mono">' + num(q.max_uploads_per_day, 6) + " uploads/day · shared across ALL channels</span></div>") +
+      "</div>" +
+      (d.blockers && d.blockers.length
+        ? '<ul class="pub-blockers">' + d.blockers.map(function (b) { return "<li>" + esc(b) + "</li>"; }).join("") + "</ul>" : "") +
+      '<button class="pub-fire" disabled>Publish to YouTube<small>arrives with Herald (#6) — no upload fires from here</small></button>';
+    openDialog({
+      icon: "📡", title: "Publish — final review", hard: true,
+      sub: "irreversible external · T3 · the enforced checkpoint",
+      body: body, secondaryLabel: "Close",
+    });
+    // tag the dialog so the broadcast-red header styling applies
+    var dlg = $("dialog-root").querySelector(".dlg");
+    if (dlg) { dlg.querySelector(".box").classList.add("t3"); dlg.querySelector(".hd").classList.add("t3"); }
+  }
+  function pubRow(k, vHtml) {
+    return '<div class="pub-row"><div class="k">' + esc(k) + "</div>" + vHtml + "</div>";
+  }
+  window.openPublishModal = openPublishModal;
+
   // ================================================================ SSE (live)
   function connectEvents() {
     if (es || typeof EventSource === "undefined") return;
@@ -1551,5 +1988,7 @@
     connectEvents();
     var g = $("ov-generate");
     if (g) g.onclick = openLaunchModal;
+    var fab = $("chat-fab");
+    if (fab) fab.onclick = openChat;
   });
 })();
