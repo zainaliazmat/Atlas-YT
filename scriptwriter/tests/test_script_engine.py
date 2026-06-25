@@ -174,6 +174,117 @@ def test_no_treatment_means_no_treatment_section():
     assert "DIRECTOR'S CREATIVE TREATMENT" not in captured["user"]
 
 
+_NARRATIVE_INTENT = {
+    "video_level": {"core_thesis": "an agent is a loop with tools",
+                    "emotional_journey": "from confusion to confident clarity",
+                    "tone_profile": "curious_exploration"},
+    "per_scene_intent": [
+        {"scene_index": 0, "arc_phase": "hook", "primary_emotion": "curiosity",
+         "intensity": 9, "pacing_directive": "punchy_staccato",
+         "texture_directive": "clean_high_contrast",
+         "delivery_note": "open like you just learned a secret"},
+        {"scene_index": 1, "arc_phase": "peak", "primary_emotion": "awe",
+         "intensity": 10, "pacing_directive": "contemplative",
+         "texture_directive": "cinematic_widescreen", "delivery_note": "let it land"}],
+}
+
+
+def test_narrative_intent_is_injected_per_scene_when_present():
+    captured = {}
+
+    def chat_fn(system, user):
+        captured["user"] = user
+        return json.dumps(_script_json())
+
+    engine.write_script(BRIEF, chat_fn=chat_fn, narrative_intent=_NARRATIVE_INTENT)
+    user = captured["user"]
+    assert "THE EMOTIONAL SCORE" in user
+    # the per-scene emotional directive lands as a concrete instruction
+    assert "SCENE 1: This scene is in the 'hook' phase" in user
+    assert "curiosity at intensity 9/10" in user
+    assert "punchy_staccato" in user
+    assert "open like you just learned a secret" in user
+    # the pacing/awe word-shape rules are present so Marlow constrains sentence length
+    assert "max 12 words" in user
+    assert "ellipsis" in user
+
+
+def test_no_narrative_intent_means_no_emotional_score_section():
+    captured = {}
+
+    def chat_fn(system, user):
+        captured["user"] = user
+        return json.dumps(_script_json())
+
+    engine.write_script(BRIEF, chat_fn=chat_fn)            # intent absent
+    assert "THE EMOTIONAL SCORE" not in captured["user"]
+
+
+_MOTION_MOOD_BOARD = {
+    "video_level": {"global_tempo": "brisk_and_urgent", "global_texture": "grain",
+                    "dominant_motion_philosophy": "motion is punctuation, not decoration"},
+    "beat_map": [
+        {"beat_id": "b-hook", "arc_phase": "hook", "primary_emotion": "curiosity",
+         "intensity": 9, "pacing_profile": "rapid_staccato",
+         "dominant_effect": "stutter-12fps", "transition_in": "cut",
+         "layout_family": "centered-statement", "scene_duration_target_sec": 8,
+         "visual_mood_ref": "the 2001 corridor"},
+        {"beat_id": "b-peak", "arc_phase": "peak", "primary_emotion": "awe",
+         "intensity": 10, "pacing_profile": "held_stillness",
+         "dominant_effect": "highlighter-FFD000", "transition_in": "dip-to-black",
+         "layout_family": "big-number", "scene_duration_target_sec": 15}],
+}
+
+
+def test_get_pacing_rules_returns_concrete_rules_per_profile():
+    assert "max 12 words" in engine.get_pacing_rules("rapid_staccato").lower() \
+        or "12 words" in engine.get_pacing_rules("rapid_staccato")
+    # every profile resolves to a non-empty rule block; an unknown one falls back
+    for p in ("rapid_staccato", "steady_build", "slow_reveal", "held_stillness",
+              "conversational_flow"):
+        assert engine.get_pacing_rules(p).strip()
+    assert engine.get_pacing_rules("nonsense") == engine.get_pacing_rules("conversational_flow")
+
+
+def test_motion_mood_board_is_injected_per_beat_when_present():
+    captured = {}
+
+    def chat_fn(system, user):
+        captured["user"] = user
+        return json.dumps(_script_json())
+
+    engine.write_script(BRIEF, chat_fn=chat_fn, motion_mood_board=_MOTION_MOOD_BOARD)
+    user = captured["user"]
+    assert "MOTION MOOD BOARD" in user
+    assert "brisk_and_urgent" in user           # the global tempo governs pacing
+    assert "motion is punctuation" in user       # the motion philosophy is surfaced
+    assert "rapid_staccato" in user              # the hook beat's pacing profile
+    assert "15" in user                          # the peak beat's duration target
+    # the concrete pacing RULES (from get_pacing_rules) are injected so Marlow obeys them
+    assert "max 12 words" in user
+
+
+def test_no_motion_mood_board_means_no_motion_section():
+    captured = {}
+
+    def chat_fn(system, user):
+        captured["user"] = user
+        return json.dumps(_script_json())
+
+    engine.write_script(BRIEF, chat_fn=chat_fn)            # mood board absent
+    assert "MOTION MOOD BOARD" not in captured["user"]
+
+
+def test_motion_mood_board_does_not_relax_the_brief_fence():
+    # The mood board shapes HOW (pacing), never WHAT — every claim still resolves.
+    script = engine.write_script(BRIEF, chat_fn=_chat_returning(_script_json()),
+                                 motion_mood_board=_MOTION_MOOD_BOARD)
+    for scene in script["scenes"]:
+        for c in scene["claims"]:
+            ok, _ = engine.resolve_source_ref(c["source_ref"], BRIEF["sources"])
+            assert ok, (c["claim_id"], c["source_ref"])
+
+
 def test_every_shipped_claim_resolves_to_a_brief_source():
     script = engine.write_script(BRIEF, chat_fn=_chat_returning(_script_json()))
     for scene in script["scenes"]:
@@ -741,6 +852,95 @@ def test_magnitude_guard_passes_when_brief_carries_the_magnitude():
     }
     script = _mag_script("DeepSeek is about an order of magnitude cheaper.")
     assert engine.find_magnitude_comparative_problems(script, brief) == []
+
+
+# ----------------------------------------------------------------------
+# Creative Roundtable integration (Task 5) — write_script(use_roundtable=...)
+# ----------------------------------------------------------------------
+def _enhanced_script(**overrides):
+    """A craftsman rewrite that STILL grounds (source_ref 0 == sci.example/crema)."""
+    base = {
+        "working_title": "What Crema Really Tells You",
+        "hook": "Pros blind-tested crema and guessed quality no better than a coin flip.",
+        "cta": "What did you used to believe about espresso?",
+        "scenes": [
+            {"scene_no": 1, "beat": "hook", "point": "crema is misunderstood",
+             "narration": "Pros blind-tested crema and guessed no better than a coin flip.",
+             "on_screen_text": "CREMA", "visual_note": "macro shot",
+             "duration_est_sec": 5, "claims": []},
+            {"scene_no": 2, "beat": "point", "point": "not a quality signal",
+             "narration": "It's mostly gas and oil — not a grade.",
+             "on_screen_text": "not a grade", "visual_note": "pull",
+             "duration_est_sec": 8,
+             "claims": [{"claim_id": "s2c1",
+                         "text": "Crema is mostly CO2 and emulsified oils.",
+                         "source_ref": 0}]},
+        ],
+    }
+    base.update(overrides)
+    return base
+
+
+def _roundtable_chat(enhanced):
+    """Routes the arc call vs the three sub-agent calls by a marker in the system prompt."""
+    def chat(system, user):
+        if "INTERNAL CRITIC" in system:
+            return json.dumps([{"rank": 1, "severity": "major",
+                                "principle_violated": "open on the sharpest true thing",
+                                "target_text": "Crema isn't the sign of quality...",
+                                "location": "scene 1 (hook)",
+                                "diagnosis": "the hook is generic and abstract",
+                                "impact": "the viewer doesn't lean in"}])
+        if "RESEARCH ASSISTANT" in system:
+            return json.dumps({"findings": [{"target_criticism_rank": 1,
+                "found_detail": "blind-test detail", "detail_type": "case_study",
+                "source_description": "a 2019 study", "source_url": "https://x.example",
+                "suggested_use": "open on the blind test", "why_surprising": "pros assume they can read it"}]})
+        if system.startswith("You are Marlow."):       # the Craftsman
+            return json.dumps(enhanced)
+        return json.dumps(_script_json())               # Marlow's first-pass arc
+    return chat
+
+
+def test_write_script_default_does_not_run_roundtable():
+    calls = []
+
+    def chat(system, user):
+        calls.append(system)
+        return json.dumps(_script_json())
+
+    engine.write_script(BRIEF, chat_fn=chat)            # use_roundtable defaults off
+    assert len(calls) == 1                              # only the arc call, no sub-agents
+
+
+def test_write_script_with_roundtable_returns_the_enhanced_script(monkeypatch):
+    monkeypatch.setattr(engine, "_roundtable_search", lambda: None)  # no network
+    enhanced = _enhanced_script()
+    script = engine.write_script(BRIEF, chat_fn=_roundtable_chat(enhanced),
+                                 use_roundtable=True)
+    # the craftsman's rewrite won, and it is still contract-valid + traceable
+    assert script["hook"].startswith("Pros blind-tested crema")
+    stamped = {"schema_version": contracts.CONTRACT_VERSION, **script}
+    assert contracts.validate("script", stamped)[0]
+
+
+def test_write_script_keeps_draft_when_enhanced_is_untraceable(monkeypatch):
+    monkeypatch.setattr(engine, "_roundtable_search", lambda: None)
+    # the craftsman returns a script whose claim cites a source that doesn't resolve
+    broken = _enhanced_script()
+    broken["scenes"][1]["claims"][0]["source_ref"] = 999
+    script = engine.write_script(BRIEF, chat_fn=_roundtable_chat(broken),
+                                 use_roundtable=True)
+    # untraceable enhancement is rejected — the grounded draft ships instead
+    assert not script["hook"].startswith("Pros blind-tested crema")
+    assert engine.assert_traceable(script, BRIEF) is None  # draft is traceable
+
+
+def test_write_script_roundtable_saves_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "_roundtable_search", lambda: None)
+    engine.write_script(BRIEF, chat_fn=_roundtable_chat(_enhanced_script()),
+                        use_roundtable=True, project_dir=tmp_path)
+    assert (tmp_path / "roundtable_log.json").exists()
 
 
 if __name__ == "__main__":

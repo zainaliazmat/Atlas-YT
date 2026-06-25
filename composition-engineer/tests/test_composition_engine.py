@@ -649,6 +649,119 @@ def test_build_assembly_plan_flags_unknown_transition_and_missing_renders():
 
 
 # ----------------------------------------------------------------------
+# Motion mood board — beat governance (Task 4). The design-first artifact governs
+# Mason's per-scene MOTION (effect/transition/texture) and EXPRESSIVE layout, while
+# content-driven layouts (data-chart/big-number/timeline/diagram) and the signature
+# highlighter stay the storyboard's authority. Fully fallback-safe (no board -> no change).
+# ----------------------------------------------------------------------
+_GOV_BEAT = {
+    "beat_id": "b-build", "arc_phase": "build", "dominant_effect": "push-in",
+    "secondary_effect": "parallax", "transition_in": "dip-to-black",
+    "layout_family": "split-screen",
+    "motion_parameter_overrides": {"push-in": {"duration_sec": 1.8}},
+}
+_INTENT = {"per_scene_intent": [
+    {"scene_index": 0, "arc_phase": "hook"},
+    {"scene_index": 1, "arc_phase": "build"},
+    {"scene_index": 2, "arc_phase": "peak"}]}
+_BOARD = {"beat_map": [
+    {"beat_id": "b-hook", "arc_phase": "hook"},
+    {"beat_id": "b-build", "arc_phase": "build"},
+    {"beat_id": "b-peak", "arc_phase": "peak"}]}
+
+
+def test_build_scene_beat_map_links_scenes_to_beats_by_arc_phase():
+    m = engine.build_scene_beat_map(_INTENT, _BOARD)
+    assert m[1]["beat_id"] == "b-hook"      # scene_index 0 -> scene_no 1 -> hook
+    assert m[2]["beat_id"] == "b-build"
+    assert m[3]["beat_id"] == "b-peak"
+
+
+def test_build_scene_beat_map_empty_without_inputs():
+    assert engine.build_scene_beat_map({}, {}) == {}
+    assert engine.build_scene_beat_map(_INTENT, {}) == {}
+
+
+def test_scene_ctx_beat_governs_transition_and_effects(tmp_path):
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [{"name": "drift"}], "signature_beat": False, "shots": []}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, {"palette": {}},
+                            board, [], [], tmp_path, tmp_path, beat=_GOV_BEAT)
+    names = [e["name"] for e in ctx["effects"]]
+    assert ctx["transition"] == "dip-to-black"          # beat transition overrides 'cut'
+    assert "push-in" in names                            # beat dominant replaces the storyboard's
+    assert "drift" not in names                          # storyboard effect gone
+    assert ctx["layout"] == "split-screen"              # beat layout governs a generic layout
+    assert ctx["governed_by_beat"] == "b-build"
+    pe = next(e for e in ctx["effects"] if e["name"] == "push-in")
+    assert pe["params"].get("duration_sec") == 1.8      # motion_parameter_overrides merged
+
+
+def test_scene_ctx_content_layout_wins_over_beat(tmp_path):
+    board = {"scene_no": 1, "layout": "data-chart", "chart_kind": "bar", "transition": "cut",
+             "effects": [], "signature_beat": False, "shots": []}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "A 10 B 20"},
+                            {"palette": {}}, board, [], [], tmp_path, tmp_path, beat=_GOV_BEAT)
+    assert ctx["layout"] == "data-chart"                # content layout is sacrosanct
+
+
+def test_scene_ctx_beat_cannot_force_a_data_layout(tmp_path):
+    data_beat = {**_GOV_BEAT, "layout_family": "big-number"}
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": False, "shots": []}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, {"palette": {}},
+                            board, [], [], tmp_path, tmp_path, beat=data_beat)
+    assert ctx["layout"] == "centered-statement"        # a data layout is never forced on
+
+
+def test_scene_ctx_without_beat_is_unchanged(tmp_path):
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [{"name": "drift"}], "signature_beat": False, "shots": []}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, {"palette": {}},
+                            board, [], [], tmp_path, tmp_path)
+    assert ctx["transition"] == "cut"
+    assert [e["name"] for e in ctx["effects"]] == ["drift"]
+    assert ctx.get("governed_by_beat") is None
+
+
+def test_scene_ctx_global_texture_overrides_style_textures(tmp_path):
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": False, "shots": []}
+    style = {"palette": {}, "textures": ["paper", "grain"]}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, style, board,
+                            [], [], tmp_path, tmp_path, global_texture="scanlines")
+    assert [t["name"] for t in ctx["textures"]] == ["scanlines"]
+
+
+def test_scene_ctx_beat_never_creates_a_second_highlighter(tmp_path):
+    # Even on the signature scene, a beat (whose dominant could be the highlighter) never
+    # produces a duplicate — the storyboard's signature_beat stays the sole authority.
+    peak_beat = {"beat_id": "b-peak", "arc_phase": "peak",
+                 "dominant_effect": "highlighter-FFD000", "secondary_effect": "push-in",
+                 "transition_in": "cut", "layout_family": "big-number"}
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": True, "shots": []}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "41%"}, {"palette": {}},
+                            board, [], [], tmp_path, tmp_path, beat=peak_beat)
+    names = [e["name"] for e in ctx["effects"]]
+    assert names.count(engine.SIGNATURE_EFFECT) == 1
+    assert ctx["signature"] is True
+
+
+def test_assembly_plan_honors_a_governed_manifest_transition():
+    # The governed transition lives on the manifest scene; the seam must honor it over
+    # the storyboard's (which the mood board overrode), falling back when absent.
+    manifest = {"scenes": [
+        {"scene_no": 1, "render_path": "a.mp4", "transition": "dip-to-black"},
+        {"scene_no": 2, "render_path": "b.mp4"}]}
+    storyboard = {"scenes": [{"scene_no": 1, "transition": "cut"},
+                             {"scene_no": 2, "transition": "cut"}]}
+    plan = engine.build_assembly_plan(manifest, storyboard, {})
+    boundary = next(s for s in plan["steps"] if s.get("boundary_after") == 1)
+    assert boundary["mode"] == "xfade" and boundary["xfade"] == "fadeblack"
+
+
+# ----------------------------------------------------------------------
 # Signature WebGL shader transitions at the assembly seam (≤budget, into sig beats)
 # ----------------------------------------------------------------------
 import shader_transition  # noqa: E402

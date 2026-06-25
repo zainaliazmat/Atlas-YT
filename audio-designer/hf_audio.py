@@ -231,7 +231,7 @@ TARGET_LRA = 11.0       # loudness range (LU) — documentary VO+bed sits comfor
 def build_mix_recipe(vo_path: str | pathlib.Path, total_dur: float, *,
                      out_path: str | pathlib.Path,
                      bed: dict | None = None, sfx: dict | None = None,
-                     vo_gain_db: float = 0.0,
+                     vo_gain_db: float = 0.0, vo_filters: str = "",
                      duck=(DUCK_THRESHOLD, DUCK_RATIO, DUCK_ATTACK_MS, DUCK_RELEASE_MS),
                      tail_fade: float = TAIL_FADE_SEC, limit: float = LIMIT,
                      target_lufs: float = TARGET_LUFS, target_tp: float = TARGET_TP,
@@ -250,11 +250,18 @@ def build_mix_recipe(vo_path: str | pathlib.Path, total_dur: float, *,
         masters ship ~-22 LUFS, too quiet (the eval calibration finding).
     `bed`/`sfx` are {"path": str, "gain_db": float[, "at_sec": float]} or None — a
     flagged/uncleared track is simply not passed in, so it can never enter the mix.
+
+    `vo_filters` (optional) is an extra FFmpeg filter chain applied to the AUDIBLE VO only
+    (e.g. an emotion-driven EQ/reverb from the narrative-intent score, "equalizer=…,aecho=…").
+    It is appended AFTER the VO volume and is deliberately NOT applied to the [vokey] duck
+    key, so ducking still keys off the clean, un-effected VO. Default "" -> the filtergraph
+    is byte-identical to before (the emotional EQ is purely additive + opt-in).
     """
     ffmpeg = _ffmpeg() or "ffmpeg"
     dur = round(float(total_dur), 3)
     fade_st = max(0.0, round(dur - tail_fade, 3))
     thr, ratio, attack, release = duck
+    vof = f",{vo_filters.strip().strip(',')}" if (vo_filters or "").strip() else ""
 
     # Ordered inputs: VO is always input 0. Bed loops to cover the full duration.
     inputs: list[tuple[list[str], str]] = [([], str(vo_path))]
@@ -270,9 +277,9 @@ def build_mix_recipe(vo_path: str | pathlib.Path, total_dur: float, *,
     # needs the key — otherwise the [vokey] pad would dangle and FFmpeg would error.
     if bed_idx is not None:
         chains = [f"[0:a]asplit=2[vokey][vo0]",
-                  f"[vo0]volume={vo_gain_db}dB[voout]"]
+                  f"[vo0]volume={vo_gain_db}dB{vof}[voout]"]
     else:
-        chains = [f"[0:a]volume={vo_gain_db}dB[voout]"]
+        chains = [f"[0:a]volume={vo_gain_db}dB{vof}[voout]"]
     mix_labels = ["[voout]"]
 
     if bed_idx is not None:

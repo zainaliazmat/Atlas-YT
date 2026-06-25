@@ -538,6 +538,110 @@ def test_mix_recipe_loudness_normalized_to_target():
     assert hf_audio.TARGET_LUFS == -14.0   # YouTube integrated-loudness standard
 
 
+def test_mix_recipe_vo_filters_default_is_unchanged():
+    # The emotional-EQ hook is purely additive: absent vo_filters -> byte-identical graph.
+    base = hf_audio.build_mix_recipe("vo.wav", 9.0, out_path="m.wav")
+    same = hf_audio.build_mix_recipe("vo.wav", 9.0, out_path="m.wav", vo_filters="")
+    assert base["filter_complex"] == same["filter_complex"]
+
+
+def test_mix_recipe_vo_filters_color_the_audible_vo_not_the_duck_key():
+    fx = "equalizer=f=180:t=q:w=1:g=2,aecho=0.8:0.7:45:0.18"
+    r = hf_audio.build_mix_recipe("vo.wav", 12.0, out_path="m.wav",
+                                  bed={"path": "bed.mp3", "gain_db": -20}, vo_filters=fx)
+    fc = r["filter_complex"]
+    # the EQ rides on the audible VO chain (…volume…dB,<fx>[voout])
+    assert f"volume=0.0dB,{fx}[voout]" in fc
+    # …but the sidechain duck KEY stays the clean, un-effected VO
+    assert "[vokey]" in fc and f"[vokey]{fx}" not in fc
+
+
+# ======================================================================
+# 8b. narrative intent -> audio params (the emotional score, made audible)
+# ======================================================================
+_INTENT = {
+    "video_level": {"tone_profile": "dark_warning"},
+    "emotional_arc": {"peak": {"dominant_emotion": "awe"}},
+    "per_scene_intent": [
+        {"scene_index": 0, "pacing_directive": "punchy_staccato",
+         "primary_emotion": "curiosity", "texture_directive": "clean_high_contrast"},
+        {"scene_index": 1, "pacing_directive": "contemplative",
+         "primary_emotion": "awe", "texture_directive": "cinematic_widescreen"},
+        {"scene_index": 2, "pacing_directive": "driving",
+         "primary_emotion": "awe", "texture_directive": "cinematic_widescreen"}],
+}
+
+
+def test_scene_speeds_map_pacing_to_tts_speed():
+    speeds = engine.scene_speeds(SCRIPT, _INTENT)
+    assert speeds[1] > 1.0          # punchy_staccato -> faster
+    assert speeds[2] < 1.0          # contemplative -> slower
+    assert speeds[3] > 1.0          # driving -> faster
+    # unscored script -> every scene at 1.0 (unchanged)
+    assert set(engine.scene_speeds(SCRIPT, None).values()) == {1.0}
+
+
+def test_dominant_emotion_and_texture_are_modal():
+    assert engine.dominant_emotion(_INTENT) == "awe"          # 2/3 scenes
+    assert engine.dominant_texture(_INTENT) == "cinematic_widescreen"
+    assert engine.dominant_emotion(None) is None
+    assert engine.dominant_texture(None) is None
+
+
+def test_voice_fx_and_texture_maps_are_closed_and_safe():
+    assert "aecho" in engine.voice_fx_for("awe")              # awe gets a hint of room
+    assert engine.voice_fx_for("not_an_emotion") == ""        # unknown -> neutral
+    assert "instrumental" in engine.texture_music_query("cinematic_widescreen")
+    assert engine.texture_music_query("nope") is None
+    assert engine.texture_sfx_name("cinematic_widescreen") == "whoosh"
+    assert engine.texture_sfx_name("nope") is None
+
+
+def test_record_narration_varies_speed_per_scene_from_intent():
+    captured = {}
+
+    def speedy_tts(text, out, speed=1.0):
+        n = int(pathlib.Path(out).stem.split("-")[1])
+        captured[n] = speed
+        p = pathlib.Path(out)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"RIFFstub")
+        return {"ok": True, "duration": _DURS[n], "output": str(out), "error": None}
+
+    with tempfile.TemporaryDirectory() as d:
+        engine.record_narration(SCRIPT, pdir=d, narrative_intent=_INTENT,
+                                tts_fn=speedy_tts, concat_fn=fake_concat)
+    assert captured[1] > 1.0 and captured[2] < 1.0 and captured[3] > 1.0
+
+
+def test_record_narration_tolerates_a_legacy_two_arg_tts():
+    # An old (text, out) seam must still work (speed applied only to speed-aware seams).
+    with tempfile.TemporaryDirectory() as d:
+        out = engine.record_narration(SCRIPT, pdir=d, narrative_intent=_INTENT,
+                                      tts_fn=fake_tts, concat_fn=fake_concat)
+    assert out["total_duration_sec"] == 9.0
+
+
+def test_mix_records_the_emotional_score_decisions(monkeypatch):
+    with tempfile.TemporaryDirectory() as d:
+        monkeypatch.setattr(sfx_kit, "ensure_sfx",
+                            lambda name, path, **k: (pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True),
+                                                     pathlib.Path(path).write_bytes(b"sfx"),
+                                                     {"ok": True, "path": str(path), "error": None})[-1])
+        transcript = engine.record_narration(SCRIPT, pdir=d, tts_fn=fake_tts,
+                                             concat_fn=fake_concat)["transcript"]
+        client = FakeClient({})
+        manifest = engine.mix_audio(SCRIPT, STYLE, STORYBOARD, transcript, pdir=d,
+                                    client=client, narrative_intent=_INTENT, mix_fn=fake_mix)["manifest"]
+    score = manifest["mix"]["emotional_score"]
+    assert score["dominant_emotion"] == "awe"
+    assert score["dominant_texture"] == "cinematic_widescreen"
+    assert score["vo_filters"] and "aecho" in score["vo_filters"]
+    # the texture drives the bed query + the signature accent
+    assert "cinematic" in score["music_query"]
+    assert manifest["mix"]["sfx"] == "whoosh"
+
+
 # ======================================================================
 # 9. sfx_kit
 # ======================================================================

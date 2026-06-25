@@ -789,9 +789,47 @@ def _brief_digest_for_treatment(brief: dict) -> str:
             + ("\n".join(fact_lines) or "(none listed)"))
 
 
+def _thematic_anchor_block(brief: dict) -> str:
+    """The research's thematic anchor as a prompt section (empty when absent).
+
+    If Sage found a thesis, Iris's ENTIRE treatment orbits it — the thesis is the sun,
+    every creative decision is in its gravity. When there's no anchor the block is empty
+    and Iris runs her standard creative process (backward-compatible)."""
+    anchor = brief.get("thematic_anchor")
+    if not isinstance(anchor, dict) or not anchor.get("thesis_statement"):
+        return ""
+    thesis = str(anchor.get("thesis_statement", "")).strip()
+    payload = str(anchor.get("emotional_payload", "")).strip()
+    lines = [
+        "=== THE THEMATIC ANCHOR (this is the SUN — everything orbits it) ===",
+        "Your entire creative treatment must be built in service of this single thesis. "
+        "This is not optional.",
+        f"THESIS: {thesis}",
+        f"EMOTIONAL PAYLOAD: {payload}",
+    ]
+    if anchor.get("counter_intuitive_angle"):
+        lines.append(f"WHY IT SURPRISES: {str(anchor['counter_intuitive_angle']).strip()}")
+    lines += [
+        "",
+        "Your creative treatment must answer these questions:",
+        "1. What visual world makes this thesis feel undeniable, not just stated?",
+        "2. What rhythm best delivers the emotional payload? If the payload is "
+        "\"vertigo of realizing an assumption is wrong,\" your rhythm should feel "
+        "disorienting at first, then settle into clarity.",
+        "3. What mood refs align with this payload? Find film scenes, paintings, or "
+        "photographic styles that evoke the SAME feeling, not just the same topic.",
+        "4. How does each beat serve the thesis? The hook plants the question the thesis "
+        "answers. The build presents the evidence. The peak IS the thesis landing. The "
+        "breathe lets the implication sink in. The CTA channels the emotional payload "
+        "into action. The ONE idea you name (emphasis) must BE this thesis.",
+    ]
+    return "\n".join(lines) + "\n\n"
+
+
 def _build_treatment_prompt(brief: dict) -> str:
     return (
         f"=== CREATIVE CRAFT (your method for this job) ===\n{CRAFT}\n\n"
+        f"{_thematic_anchor_block(brief)}"
         f"=== THE RESEARCH BRIEF (your raw material AND your fence) ===\n"
         f"{_brief_digest_for_treatment(brief)}\n\n"
         "Produce the CREATIVE TREATMENT for this video: the director's direction the "
@@ -852,6 +890,590 @@ def design_treatment(brief: dict, *, chat_fn=llm.chat) -> dict:
         raise ValueError(reason)
     llm_out = _chat_json(SOUL, _build_treatment_prompt(brief), chat_fn=chat_fn)
     return assemble_treatment(brief, llm_out)
+
+
+# ======================================================================
+# Narrative Intent (the emotional score) — the machine-actionable bridge.
+# Runs AFTER the creative_treatment, BEFORE the script, on the strong creative model.
+# The treatment is poetic ("awe-inspiring"); the downstream engines only read structural
+# keywords, so the EMOTIONAL objective used to evaporate at every handoff. This stage
+# translates Iris's poetry into a parameterized blueprint in CLOSED vocabularies that
+# Marlow (word choice / sentence length) and Cadence (TTS pacing, EQ, music, SFX) can
+# both ACT on without re-interpreting the prose. Advisory + optional: a missing intent
+# leaves every downstream stage on its prior behavior (backward-compatible).
+#
+# The closed vocabularies below are kept in lock-step with the enums in
+# atlas/contracts/narrative_intent.schema.json (the schema is the authority; these are
+# the engine-side mirror the prompt advertises and the assembler enforces).
+# ======================================================================
+TONE_PROFILES = (
+    "urgent_reveal", "thoughtful_unpacking", "dark_warning",
+    "optimistic_march", "curious_exploration",
+)
+ARC_PHASES = ("hook", "build", "peak", "breathe", "cta")
+EMOTIONS = (
+    "curiosity", "surprise", "awe", "satisfaction", "determination",
+    "tension", "dread", "hope", "nostalgia", "clarity",
+    "urgency", "wonder", "unease", "triumph", "melancholy", "empathy",
+)
+PACING_DIRECTIVES = (
+    "punchy_staccato", "driving", "measured", "flowing",
+    "contemplative", "building", "breathless", "deliberate_pause",
+)
+TEXTURE_DIRECTIVES = (
+    "clean_high_contrast", "warm_grain", "dark_moody", "bright_airy",
+    "gritty_raw", "cinematic_widescreen", "soft_focus", "stark_minimal",
+)
+# Sensible per-phase defaults so the arc is always complete even when the brain omits one.
+_ARC_DEFAULTS = {
+    "hook":    {"dominant_emotion": "curiosity", "intensity": 9, "duration_goal_sec": 8.0},
+    "build":   {"dominant_emotion": "surprise", "intensity": 7, "duration_goal_sec": 25.0},
+    "peak":    {"dominant_emotion": "awe", "intensity": 10, "duration_goal_sec": 15.0},
+    "breathe": {"dominant_emotion": "satisfaction", "intensity": 4, "duration_goal_sec": 10.0},
+    "cta":     {"dominant_emotion": "determination", "intensity": 8, "duration_goal_sec": 12.0},
+}
+_INTENT_MAX_SCENES = 60
+
+
+def validate_treatment_for_intent(treatment) -> tuple[bool, str]:
+    """An intent is buildable from a treatment that carries any felt direction to score."""
+    if not isinstance(treatment, dict):
+        return False, "That's not a creative treatment — I need the treatment JSON object."
+    if not (treatment.get("rhythm") or treatment.get("emphasis")
+            or treatment.get("visual_world") or treatment.get("beats")):
+        return False, ("This treatment has no rhythm/emphasis/world/beats — nothing to "
+                       "translate into an emotional score.")
+    return True, ""
+
+
+def _pick(value, allowed: tuple[str, ...], default: str) -> str:
+    """Snap a brain-supplied token to the closed vocabulary; `default` when unknown."""
+    v = str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    return v if v in allowed else default
+
+
+def _clamp_intensity(value, default: int = 5) -> int:
+    """An intensity coerced to the inclusive 1..10 band; `default` when unusable."""
+    try:
+        v = int(round(float(value)))
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(10, v))
+
+
+def _clamp_duration(value, default: float = 8.0) -> float:
+    """A non-negative duration-goal in seconds; `default` when unusable."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    return round(max(0.0, v), 1)
+
+
+def _treatment_digest_for_intent(treatment: dict) -> str:
+    lines = [f"RHYTHM: {treatment.get('rhythm') or '(none)'}",
+             f"THE ONE IDEA TO LAND: {treatment.get('emphasis') or '(none)'}",
+             f"VISUAL WORLD: {treatment.get('visual_world') or '(none)'}"]
+    if treatment.get("mood_refs"):
+        lines.append("MOOD REFS: " + "; ".join(treatment["mood_refs"]))
+    if treatment.get("motifs"):
+        lines.append("MOTIFS: " + "; ".join(treatment["motifs"]))
+    beats = treatment.get("beats") or []
+    if beats:
+        lines.append("BEATS (each carries the felt mood + intent you must score):")
+        for b in beats[:_TREATMENT_MAX_BEATS]:
+            lines.append(f"  · {b.get('beat', '?')}: concept={b.get('concept', '')} | "
+                         f"mood={b.get('mood', '')} | emphasis={b.get('emphasis_word', '')} | "
+                         f"intent={b.get('intent', '')}")
+    if treatment.get("negative"):
+        lines.append("AVOID: " + "; ".join(treatment["negative"]))
+    return "\n".join(lines)
+
+
+def _intent_vocab_block() -> str:
+    return (
+        "TONE_PROFILE (pick ONE for the whole video):\n  " + ", ".join(TONE_PROFILES) + "\n"
+        "EMOTIONS (pick from these ONLY, per phase + per scene):\n  " + ", ".join(EMOTIONS) + "\n"
+        "ARC_PHASES (each scene belongs to exactly one):\n  " + ", ".join(ARC_PHASES) + "\n"
+        "PACING_DIRECTIVES (how the narration is voiced — pick ONE per scene):\n  "
+        + ", ".join(PACING_DIRECTIVES) + "\n"
+        "TEXTURE_DIRECTIVES (the visual+sonic surface — pick ONE per scene):\n  "
+        + ", ".join(TEXTURE_DIRECTIVES))
+
+
+_INTENT_SYSTEM = (
+    "You are translating a director's creative vision into a technical brief that other "
+    "AI agents can execute faithfully. Be specific, be emotional, be precise. This is not "
+    "cold documentation; it is an emotional score that must survive translation. Every "
+    "value you choose will be read by a machine and turned into word choice, sentence "
+    "length, vocal pacing, EQ, music and sound — so a vague or off-vocabulary value is a "
+    "lost instruction. Honor the closed vocabularies exactly.")
+
+
+def _brief_thesis_hint(brief: dict) -> str:
+    """A short grounding line from the research so the thesis stays true to the facts."""
+    if not isinstance(brief, dict):
+        return ""
+    topic = brief.get("topic") or brief.get("working_title") or ""
+    overview = (brief.get("overview") or "").strip()
+    return (f"TOPIC: {topic}\nOVERVIEW (ground the thesis in this — invent nothing):\n"
+            f"{overview[:800]}" if (topic or overview) else "")
+
+
+def _build_intent_prompt(treatment: dict, brief: dict) -> str:
+    return (
+        f"=== THE RESEARCH (your fence — the thesis must be TRUE to it) ===\n"
+        f"{_brief_thesis_hint(brief) or '(no brief supplied)'}\n\n"
+        f"=== THE DIRECTOR'S CREATIVE TREATMENT (translate THIS into the score) ===\n"
+        f"{_treatment_digest_for_intent(treatment)}\n\n"
+        f"=== THE CLOSED VOCABULARY (use ONLY these tokens) ===\n{_intent_vocab_block()}\n\n"
+        "Produce the NARRATIVE INTENT — the emotional score the scriptwriter and the "
+        "audio designer will both execute. Translate the treatment's poetry into precise, "
+        "machine-actionable parameters; do not flatten the feeling, sharpen it.\n\n"
+        "1. video_level: a one-sentence core_thesis (the single argument the video exists "
+        "to make), an emotional_journey (what the viewer feels at the START vs. the END — "
+        "be specific, name both ends), and ONE tone_profile.\n"
+        "2. emotional_arc: for EACH of hook, build, peak, breathe, cta give a "
+        "dominant_emotion (from EMOTIONS), an intensity 1-10, and a duration_goal_sec.\n"
+        "3. per_scene_intent: an ordered list, ONE entry per anticipated scene (hook first, "
+        "cta last). For each give: scene_index (0-based, contiguous), its arc_phase, a "
+        "primary_emotion, an intensity 1-10, a pacing_directive, a texture_directive, and a "
+        "delivery_note — a concrete, human instruction (e.g. 'Deliver this like you just "
+        "learned a secret and have 30 seconds to tell someone before it goes public.').\n\n"
+        "Output ONLY this JSON object (no prose, no fences):\n"
+        '{"video_level":{"core_thesis":"…","emotional_journey":"…","tone_profile":"…"},'
+        '"emotional_arc":{"hook":{"dominant_emotion":"…","intensity":9,"duration_goal_sec":8},'
+        '"build":{…},"peak":{…},"breathe":{…},"cta":{…}},'
+        '"per_scene_intent":[{"scene_index":0,"arc_phase":"hook","primary_emotion":"curiosity",'
+        '"intensity":9,"pacing_directive":"punchy_staccato","texture_directive":"clean_high_contrast",'
+        '"delivery_note":"…"}]}'
+    )
+
+
+def assemble_narrative_intent(treatment: dict, llm_out: dict) -> dict:
+    """Normalize the brain's reply into the narrative_intent shape (minus schema_version).
+
+    Pure + deterministic: snaps every token to a closed vocabulary, clamps every
+    intensity to 1..10 and every duration to >= 0, guarantees all five arc phases, and
+    RE-INDEXES per_scene_intent to a contiguous 0-based order (the brain's scene_index is
+    advisory; scene order is the source of truth). Off-vocabulary or missing values fall
+    back to a sensible default so the artifact is always complete and contract-valid.
+    """
+    out = llm_out if isinstance(llm_out, dict) else {}
+
+    vl = out.get("video_level") if isinstance(out.get("video_level"), dict) else {}
+    video_level = {
+        "core_thesis": str(vl.get("core_thesis", "")).strip()[:400],
+        "emotional_journey": str(vl.get("emotional_journey", "")).strip()[:400],
+        "tone_profile": _pick(vl.get("tone_profile"), TONE_PROFILES, "curious_exploration"),
+    }
+
+    arc_in = out.get("emotional_arc") if isinstance(out.get("emotional_arc"), dict) else {}
+    emotional_arc = {}
+    for phase in ARC_PHASES:
+        node = arc_in.get(phase) if isinstance(arc_in.get(phase), dict) else {}
+        d = _ARC_DEFAULTS[phase]
+        emotional_arc[phase] = {
+            "dominant_emotion": _pick(node.get("dominant_emotion"), EMOTIONS,
+                                      d["dominant_emotion"]),
+            "intensity": _clamp_intensity(node.get("intensity"), d["intensity"]),
+            "duration_goal_sec": _clamp_duration(node.get("duration_goal_sec"),
+                                                 d["duration_goal_sec"]),
+        }
+
+    per_scene = []
+    raw_scenes = out.get("per_scene_intent")
+    raw_scenes = raw_scenes if isinstance(raw_scenes, list) else []
+    for idx, sc in enumerate(raw_scenes[:_INTENT_MAX_SCENES]):
+        sc = sc if isinstance(sc, dict) else {}
+        phase = _pick(sc.get("arc_phase"), ARC_PHASES, "build")
+        per_scene.append({
+            "scene_index": idx,  # re-indexed: contiguous 0-based, scene order is authority
+            "arc_phase": phase,
+            "primary_emotion": _pick(sc.get("primary_emotion"), EMOTIONS,
+                                     emotional_arc[phase]["dominant_emotion"]),
+            "intensity": _clamp_intensity(sc.get("intensity"),
+                                          emotional_arc[phase]["intensity"]),
+            "pacing_directive": _pick(sc.get("pacing_directive"), PACING_DIRECTIVES, "measured"),
+            "texture_directive": _pick(sc.get("texture_directive"), TEXTURE_DIRECTIVES,
+                                       "clean_high_contrast"),
+            "delivery_note": str(sc.get("delivery_note", "")).strip()[:500],
+        })
+
+    return {
+        "video_level": video_level,
+        "emotional_arc": emotional_arc,
+        "per_scene_intent": per_scene,
+    }
+
+
+def design_narrative_intent(creative_treatment: dict, research_brief: dict, *,
+                            chat_fn=llm.chat) -> dict:
+    """Turn a creative_treatment (+ the research brief) into a narrative_intent dict.
+
+    The emotional bridge: Iris's poetic direction becomes a parameterized, closed-vocabulary
+    score the script + audio engines can ACT on without re-interpreting prose. Validates the
+    treatment, makes ONE call to the strong creative model (Opus, via llm.chat) under a
+    crafted "emotional score" system prompt, then enforces every vocabulary/clamp invariant
+    in code. Envelope-free; Atlas stamps schema_version + validates at the boundary.
+    """
+    ok, reason = validate_treatment_for_intent(creative_treatment)
+    if not ok:
+        raise ValueError(reason)
+    llm_out = _chat_json(_INTENT_SYSTEM, _build_intent_prompt(creative_treatment,
+                                                              research_brief or {}),
+                         chat_fn=chat_fn)
+    return assemble_narrative_intent(creative_treatment, llm_out)
+
+
+# ======================================================================
+# Motion Mood Board (the design-first visual architecture / the motion score).
+# Runs AFTER narrative_intent (the emotional blueprint), BEFORE the script. It inverts
+# the pipeline's creative logic: the visual language — pacing, texture, motion — is
+# conceived from the emotional arc, then GOVERNS both Marlow's pacing AND Mason's motion
+# design. Where narrative_intent says WHAT the viewer feels, this says HOW the frame
+# moves to make them feel it, in CONCRETE HyperFrames directives Mason executes without
+# interpretation.
+#
+# The closed vocabularies it snaps to ARE the engine's real HyperFrames axes (EFFECTS /
+# LAYOUTS / TRANSITIONS / TEXTURES) — NOT a private subset — so every value maps to a
+# token Mason can render. (A cross-engine parity test guards the schema enums in lock-
+# step.) Advisory + optional: a missing mood board leaves every downstream stage on its
+# prior behavior (backward-compatible).
+# ======================================================================
+# MMB-specific vocabularies (the new axes this artifact adds on top of the render axes).
+TEMPOS = ("methodical", "conversational", "brisk_and_urgent", "slow_and_cinematic")
+PACING_PROFILES = ("rapid_staccato", "steady_build", "slow_reveal",
+                   "held_stillness", "conversational_flow")
+# The render axes the mood board reuses verbatim (mirrored from the schema $defs). "none"
+# is the mood board's "no effect" sentinel on top of the real EFFECTS vocabulary.
+MOOD_BOARD_EFFECTS = EFFECTS + ("none",)
+MOOD_BOARD_LAYOUTS = LAYOUTS
+MOOD_BOARD_TRANSITIONS = TRANSITIONS
+MOOD_BOARD_TEXTURES = ("clean",) + TEXTURES
+
+_MMB_MAX_BEATS = 12
+
+# Per-phase fallbacks so the architecture is always complete + invariant-holding even
+# when the brain omits a beat (the motion analog of narrative_intent's _ARC_DEFAULTS).
+# peak's dominant is the signature highlighter by construction (see _enforce_single_*).
+_MMB_PHASE_DEFAULTS = {
+    "hook":    {"primary_emotion": "curiosity", "intensity": 9,
+                "pacing_profile": "rapid_staccato", "dominant_effect": "stutter-12fps",
+                "transition_in": "cut", "layout_family": "centered-statement",
+                "duration": 8.0},
+    "build":   {"primary_emotion": "surprise", "intensity": 7,
+                "pacing_profile": "steady_build", "dominant_effect": "stepped-ease",
+                "transition_in": "cut", "layout_family": "list-stack", "duration": 25.0},
+    "peak":    {"primary_emotion": "awe", "intensity": 10,
+                "pacing_profile": "slow_reveal", "dominant_effect": SIGNATURE_EFFECT,
+                "transition_in": "dip-to-black", "layout_family": "big-number",
+                "duration": 15.0},
+    "breathe": {"primary_emotion": "satisfaction", "intensity": 4,
+                "pacing_profile": "held_stillness", "dominant_effect": "breathe",
+                "transition_in": "dip-to-black", "layout_family": "quote-card",
+                "duration": 10.0},
+    "cta":     {"primary_emotion": "determination", "intensity": 8,
+                "pacing_profile": "conversational_flow", "dominant_effect": "word-reveal",
+                "transition_in": "cut", "layout_family": "title-card", "duration": 12.0},
+}
+_TONE_TO_TEMPO = {
+    "urgent_reveal": "brisk_and_urgent", "dark_warning": "slow_and_cinematic",
+    "thoughtful_unpacking": "methodical", "optimistic_march": "conversational",
+    "curious_exploration": "conversational",
+}
+
+
+def _pick_token(value, allowed: tuple[str, ...], default: str) -> str:
+    """Snap a brain-supplied token to a HYPHENATED closed vocabulary (effects/layouts/
+    transitions/textures) — exact then case-insensitive. (`_pick` is for the underscore
+    vocabularies; it would mangle 'stutter-12fps' -> 'stutter_12fps'.)"""
+    v = str(value or "").strip()
+    if v in allowed:
+        return v
+    low = v.lower()
+    return next((a for a in allowed if a.lower() == low), default)
+
+
+def _is_hex6(value) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"#[0-9A-Fa-f]{6}", value.strip()))
+
+
+def validate_intent_for_mood_board(intent) -> tuple[bool, str]:
+    """A mood board is buildable from a narrative_intent that carries any arc to translate."""
+    if not isinstance(intent, dict):
+        return False, "That's not a narrative intent — I need the emotional score JSON object."
+    if not (intent.get("emotional_arc") or intent.get("per_scene_intent")
+            or intent.get("video_level")):
+        return False, ("This narrative intent has no arc/scenes/video_level — nothing to "
+                       "translate into a motion architecture.")
+    return True, ""
+
+
+def _enforce_single_highlighter(beats: list[dict]) -> tuple[list[dict], str]:
+    """Guarantee the #FFD000 signature highlighter appears on EXACTLY one beat (and as a
+    dominant_effect), by construction. Returns (beats, signature_beat_id).
+
+    Preference for WHERE it lands: a beat the brain already gave it -> the 'peak' beat ->
+    the highest-intensity beat. The signature is the one flourish Iris won't cut; every
+    other beat is stripped of it (a stripped dominant is promoted from its secondary)."""
+    if not beats:
+        return beats, ""
+
+    def holds(b):
+        return SIGNATURE_EFFECT in (b["dominant_effect"], b["secondary_effect"])
+
+    sig = next((i for i, b in enumerate(beats) if holds(b)), None)
+    if sig is None:
+        sig = next((i for i, b in enumerate(beats) if b["arc_phase"] == "peak"), None)
+    if sig is None:
+        sig = max(range(len(beats)), key=lambda i: beats[i]["intensity"])
+
+    for i, b in enumerate(beats):
+        if i == sig:
+            continue
+        if b["dominant_effect"] == SIGNATURE_EFFECT:
+            b["dominant_effect"] = (b["secondary_effect"]
+                                    if b["secondary_effect"] not in (SIGNATURE_EFFECT, "none")
+                                    else "none")
+        if b["secondary_effect"] == SIGNATURE_EFFECT:
+            b["secondary_effect"] = "none"
+
+    sb = beats[sig]
+    if sb["dominant_effect"] != SIGNATURE_EFFECT:
+        if sb["secondary_effect"] == "none" and sb["dominant_effect"] != "none":
+            sb["secondary_effect"] = sb["dominant_effect"]
+        sb["dominant_effect"] = SIGNATURE_EFFECT
+    if sb["secondary_effect"] == SIGNATURE_EFFECT:
+        sb["secondary_effect"] = "none"
+    return beats, sb["beat_id"]
+
+
+def assemble_motion_mood_board(narrative_intent: dict, llm_out: dict) -> dict:
+    """Normalize the brain's reply into the motion_mood_board shape (minus schema_version).
+
+    Pure + deterministic: snaps every token to a closed vocabulary, clamps intensity to
+    1..10 and durations to >= 0, pulls each beat's emotion/intensity/duration default from
+    the narrative_intent arc (translating it, not duplicating/inventing it), guarantees a
+    complete beat per arc phase when the brain omits the map, and enforces the EXACTLY-ONE
+    #FFD000 highlighter invariant by construction. Off-vocabulary or missing values fall
+    back so the artifact is always complete + contract-valid.
+    """
+    out = llm_out if isinstance(llm_out, dict) else {}
+    intent = narrative_intent if isinstance(narrative_intent, dict) else {}
+    arc = intent.get("emotional_arc") if isinstance(intent.get("emotional_arc"), dict) else {}
+    vl_intent = intent.get("video_level") if isinstance(intent.get("video_level"), dict) else {}
+
+    vl_in = out.get("video_level") if isinstance(out.get("video_level"), dict) else {}
+    video_level = {
+        "global_tempo": _pick(vl_in.get("global_tempo"), TEMPOS,
+                              _TONE_TO_TEMPO.get(vl_intent.get("tone_profile"),
+                                                 "conversational")),
+        "global_texture": _pick_token(vl_in.get("global_texture"), MOOD_BOARD_TEXTURES,
+                                      "clean"),
+        "global_texture_justification":
+            str(vl_in.get("global_texture_justification", "")).strip()[:400],
+        "dominant_motion_philosophy":
+            str(vl_in.get("dominant_motion_philosophy", "")).strip()[:300],
+    }
+
+    raw_beats = out.get("beat_map")
+    if not (isinstance(raw_beats, list) and raw_beats):
+        # No beats from the brain -> one per arc phase the intent carries (else all five).
+        present = [p for p in ARC_PHASES if p in arc]
+        raw_beats = [{"arc_phase": p} for p in (present or ARC_PHASES)]
+
+    beats: list[dict] = []
+    seen_ids: set[str] = set()
+    for i, rb in enumerate(raw_beats[:_MMB_MAX_BEATS]):
+        rb = rb if isinstance(rb, dict) else {}
+        phase = _pick(rb.get("arc_phase"), ARC_PHASES,
+                      ARC_PHASES[min(i, len(ARC_PHASES) - 1)])
+        d = _MMB_PHASE_DEFAULTS[phase]
+        node = arc.get(phase) if isinstance(arc.get(phase), dict) else {}
+        node_emotion = node.get("dominant_emotion")
+
+        beat_id = str(rb.get("beat_id", "")).strip() or f"b-{phase}"
+        if beat_id in seen_ids:
+            beat_id = f"{beat_id}-{i}"
+        seen_ids.add(beat_id)
+
+        dominant = _pick_token(rb.get("dominant_effect"), MOOD_BOARD_EFFECTS,
+                               d["dominant_effect"])
+        secondary = _pick_token(rb.get("secondary_effect"), MOOD_BOARD_EFFECTS, "none")
+        if secondary == dominant and secondary != "none":
+            secondary = "none"   # a secondary must not compete with / duplicate the dominant
+
+        beat = {
+            "beat_id": beat_id,
+            "arc_phase": phase,
+            "primary_emotion": _pick(rb.get("primary_emotion"), EMOTIONS,
+                                     node_emotion if node_emotion in EMOTIONS
+                                     else d["primary_emotion"]),
+            "intensity": _clamp_intensity(rb.get("intensity"),
+                                          _clamp_intensity(node.get("intensity"),
+                                                           d["intensity"])),
+            "pacing_profile": _pick(rb.get("pacing_profile"), PACING_PROFILES,
+                                    d["pacing_profile"]),
+            "dominant_effect": dominant,
+            "secondary_effect": secondary,
+            "transition_in": _pick_token(rb.get("transition_in"), TRANSITIONS,
+                                         d["transition_in"]),
+            "layout_family": _pick_token(rb.get("layout_family"), LAYOUTS,
+                                         d["layout_family"]),
+            "scene_duration_target_sec":
+                _clamp_duration(rb.get("scene_duration_target_sec"),
+                                _clamp_duration(node.get("duration_goal_sec"),
+                                                d["duration"])),
+        }
+        mpo = rb.get("motion_parameter_overrides")
+        if isinstance(mpo, dict) and mpo:
+            beat["motion_parameter_overrides"] = mpo
+        if str(rb.get("visual_mood_ref", "")).strip():
+            beat["visual_mood_ref"] = str(rb["visual_mood_ref"]).strip()[:300]
+        beats.append(beat)
+
+    beats, sig_id = _enforce_single_highlighter(beats)
+    board = {"video_level": video_level, "beat_map": beats}
+
+    sbp_in = out.get("signature_beat_placement") \
+        if isinstance(out.get("signature_beat_placement"), dict) else {}
+    board["signature_beat_placement"] = {
+        "beat_id": sig_id or str(sbp_in.get("beat_id", "")).strip(),
+        "target_element": str(sbp_in.get("target_element", "")).strip()[:200],
+        "justification": str(sbp_in.get("justification", "")).strip()[:400],
+    }
+
+    overrides = []
+    for o in (out.get("palette_emotional_overrides") or [])[:8]:
+        if not isinstance(o, dict) or not _is_hex6(o.get("accent_override")):
+            continue
+        overrides.append({
+            "beat_id": str(o.get("beat_id", "")).strip(),
+            "accent_override": o["accent_override"].strip(),
+            "override_justification": str(o.get("override_justification", "")).strip()[:300],
+        })
+    if overrides:
+        board["palette_emotional_overrides"] = overrides
+
+    return board
+
+
+_MOOD_BOARD_SYSTEM = (
+    "You are Iris — but not the Iris who designs static style guides. You are Iris the "
+    "Cinematographer: you think about how the camera moves, how the eye travels the frame "
+    "over time, how motion lands a feeling. THE CORE PRINCIPLE: motion is emotional "
+    "grammar. Every animation curve, every transition, every effect must be JUSTIFIED by "
+    "the emotion of its beat — nothing is decorative, everything is communicative. You are "
+    "writing a TECHNICAL document other AI agents (the scriptwriter, the composition "
+    "engineer) will EXECUTE — not a creative brief for a human to interpret. Every choice "
+    "is a concrete token from the closed vocabularies; every parameter is a number. Honor "
+    "the vocabularies exactly — an off-vocabulary value is a lost instruction.")
+
+
+def _intent_digest_for_mood_board(intent: dict) -> str:
+    vl = intent.get("video_level") or {}
+    arc = intent.get("emotional_arc") or {}
+    lines = [f"CORE THESIS: {vl.get('core_thesis') or '(none)'}",
+             f"EMOTIONAL JOURNEY: {vl.get('emotional_journey') or '(none)'}",
+             f"TONE: {vl.get('tone_profile') or '(none)'}",
+             "THE EMOTIONAL ARC (translate each phase into a motion beat):"]
+    for p in ARC_PHASES:
+        node = arc.get(p) or {}
+        lines.append(f"  · {p}: emotion={node.get('dominant_emotion', '—')} "
+                     f"intensity={node.get('intensity', '—')}/10 "
+                     f"goal≈{node.get('duration_goal_sec', '—')}s")
+    return "\n".join(lines)
+
+
+def _mood_board_vocab_block() -> str:
+    return (
+        "GLOBAL_TEMPO (pick ONE for the whole video):\n  " + ", ".join(TEMPOS) + "\n"
+        "GLOBAL_TEXTURE (pick ONE, or 'clean' for none):\n  "
+        + ", ".join(MOOD_BOARD_TEXTURES) + "\n"
+        "PACING_PROFILE (per beat — how time feels; maps to sentence shape + animation "
+        "timing):\n  " + ", ".join(PACING_PROFILES) + "\n"
+        "DOMINANT_EFFECT / SECONDARY_EFFECT (per beat — ONE dominant; secondary optional, "
+        "must not compete; 'none' for none):\n  " + ", ".join(MOOD_BOARD_EFFECTS) + "\n"
+        "TRANSITION_IN (per beat — how the beat begins; must feel motivated by the "
+        "emotional shift):\n  " + ", ".join(MOOD_BOARD_TRANSITIONS) + "\n"
+        "LAYOUT_FAMILY (per beat — the spatial grammar):\n  "
+        + ", ".join(MOOD_BOARD_LAYOUTS) + "\n"
+        "PRIMARY_EMOTION (per beat — from the shared emotion vocabulary):\n  "
+        + ", ".join(EMOTIONS))
+
+
+def _build_mood_board_prompt(intent: dict, thematic_anchor: dict,
+                             style_guide: dict) -> str:
+    anchor = thematic_anchor or {}
+    thesis = str(anchor.get("thesis_statement", "")).strip()
+    payload = str(anchor.get("emotional_payload", "")).strip()
+    anchor_block = ""
+    if thesis or payload:
+        anchor_block = (f"=== THE THEMATIC ANCHOR (the motion must make this UNDENIABLE) ===\n"
+                        f"THESIS: {thesis or '(none)'}\n"
+                        f"EMOTIONAL PAYLOAD: {payload or '(none)'}\n\n")
+    palette = (style_guide or {}).get("palette") or {}
+    palette_note = (f"GLOBAL PALETTE (do NOT restate it — only justify a per-beat accent "
+                    f"override if one is truly earned): primary {palette.get('primary', '—')}, "
+                    f"bg {palette.get('bg', '—')}, signature {SIGNATURE_HIGHLIGHT}.\n\n"
+                    if palette else "")
+    return (
+        f"{anchor_block}"
+        f"=== THE NARRATIVE INTENT (the emotional blueprint — translate THIS into motion) ===\n"
+        f"{_intent_digest_for_mood_board(intent)}\n\n"
+        f"{palette_note}"
+        f"=== THE CLOSED VOCABULARY (use ONLY these tokens) ===\n{_mood_board_vocab_block()}\n\n"
+        "Design the MOTION MOOD BOARD — the visual architecture that governs BOTH the "
+        "scriptwriter's pacing AND the composition engineer's animation. Map every choice "
+        "to the emotion of its beat.\n\n"
+        "1. video_level: a global_tempo, a global_texture (+ a one-sentence "
+        "global_texture_justification tied to the thesis/payload), and a "
+        "dominant_motion_philosophy (one sentence guiding every motion decision).\n"
+        "2. beat_map: ONE entry per arc phase (hook → build → peak → breathe → cta), each "
+        "with a beat_id, its arc_phase, a primary_emotion + intensity (1-10), a "
+        "pacing_profile, ONE dominant_effect (+ optional non-competing secondary_effect), a "
+        "transition_in, a layout_family, a scene_duration_target_sec (a NUMBER), optional "
+        "motion_parameter_overrides keyed by effect name (concrete numbers, e.g. "
+        "{\"push-in\":{\"duration_sec\":1.8,\"easing\":\"exponential-out\"}}), and a "
+        "visual_mood_ref (a single film scene / photograph / painting that captures the "
+        "feeling — NOT a palette).\n"
+        "   RULES: the 'highlighter-FFD000' effect appears EXACTLY ONCE across the whole "
+        "board — on the beat where the thesis lands hardest (usually the peak). 'breathe' "
+        "pairs only with the breathe beat. 'count-up' pairs with a statistic. 'stutter-12fps' "
+        "pairs with urgency/technological unease. 'push-in' pairs with realization.\n"
+        "3. signature_beat_placement: the beat_id, the exact target_element (word/number) "
+        "the #FFD000 highlighter touches, and why it earns the signature.\n\n"
+        "Output ONLY this JSON object (no prose, no fences):\n"
+        '{"video_level":{"global_tempo":"…","global_texture":"…",'
+        '"global_texture_justification":"…","dominant_motion_philosophy":"…"},'
+        '"beat_map":[{"beat_id":"b-hook","arc_phase":"hook","primary_emotion":"curiosity",'
+        '"intensity":9,"pacing_profile":"rapid_staccato","dominant_effect":"stutter-12fps",'
+        '"secondary_effect":"none","transition_in":"cut","layout_family":"centered-statement",'
+        '"scene_duration_target_sec":8,"motion_parameter_overrides":{},"visual_mood_ref":"…"}],'
+        '"signature_beat_placement":{"beat_id":"b-peak","target_element":"…","justification":"…"}}'
+    )
+
+
+def design_motion_mood_board(narrative_intent: dict, thematic_anchor: dict,
+                             style_guide: dict, *, chat_fn=llm.chat) -> dict:
+    """Turn a narrative_intent (+ the thematic anchor + the global palette) into a
+    motion_mood_board dict (frozen shape, minus schema_version).
+
+    The design-first inversion: the emotional blueprint becomes a concrete motion
+    architecture that GOVERNS the script's pacing and the render's motion design. Validates
+    the intent, makes ONE call to the strong creative model under a crafted "cinematographer"
+    system prompt, then enforces every vocabulary/clamp/exactly-one-highlighter invariant in
+    code. Envelope-free; Atlas stamps schema_version + validates at the boundary.
+    """
+    ok, reason = validate_intent_for_mood_board(narrative_intent)
+    if not ok:
+        raise ValueError(reason)
+    llm_out = _chat_json(_MOOD_BOARD_SYSTEM,
+                         _build_mood_board_prompt(narrative_intent, thematic_anchor or {},
+                                                  style_guide or {}),
+                         chat_fn=chat_fn)
+    return assemble_motion_mood_board(narrative_intent, llm_out)
 
 
 # ======================================================================

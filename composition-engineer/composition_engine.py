@@ -45,6 +45,7 @@ the frozen contract at the adapter boundary.
 from __future__ import annotations
 
 import html as _html
+import logging
 import math
 import os
 import pathlib
@@ -61,6 +62,8 @@ import shader_transition  # deterministic WebGL signature transitions (assembly 
                    # atlas loader's import window — a lazy import at call time would fail
                    # after the loader restores sys.path. hf_tools is stdlib-only, so this
                    # is harmless for the pure unit tests too.
+
+logger = logging.getLogger(__name__)
 
 HERE = pathlib.Path(__file__).parent
 SKILL = (HERE / "SKILL.md").read_text()
@@ -1723,8 +1726,81 @@ _HYPERFRAMES_JSON = (
     '"assets": "assets" }\n}\n')
 
 
+# ----------------------------------------------------------------------
+# Motion mood board governance (Task 4). The design-first artifact GOVERNS Mason's
+# per-scene motion. Two authorities are kept honest:
+#   - DATA layouts (the shape of numbers/chronology/concepts) are content-driven and
+#     come ONLY from the storyboard (which read the scene's real signals) — the beat can
+#     never force one on, nor override one the storyboard chose.
+#   - the #FFD000 signature highlighter stays the STORYBOARD's authority (it already
+#     enforces exactly-one + the gate), so a beat's effects never mint a second one.
+# The beat governs the rest: the dominant/secondary EFFECT, the TRANSITION, the global
+# TEXTURE, and an EXPRESSIVE (non-data) layout when the storyboard chose a generic one.
+# ----------------------------------------------------------------------
+_DATA_LAYOUTS = frozenset({"data-chart", "big-number", "timeline", "diagram"})
+# content layouts the beat must never override (data layouts + the head-to-head/map ones
+# that also depend on the scene's specific shots).
+_CONTENT_LAYOUTS = _DATA_LAYOUTS | {"comparison-2up", "map-focus"}
+
+
+def build_scene_beat_map(narrative_intent: dict, motion_mood_board: dict) -> dict:
+    """Map scene_no -> the governing mood-board beat, via narrative_intent's per-scene
+    arc_phase (scene_index 0-based -> scene_no = index+1 -> arc_phase -> the beat with
+    that phase). Returns {} when either input is missing/empty (fallback-safe)."""
+    if not (isinstance(narrative_intent, dict) and isinstance(motion_mood_board, dict)):
+        return {}
+    by_phase: dict[str, dict] = {}
+    for b in motion_mood_board.get("beat_map") or []:
+        ph = b.get("arc_phase") if isinstance(b, dict) else None
+        if ph and ph not in by_phase:
+            by_phase[ph] = b
+    out: dict[int, dict] = {}
+    for sc in narrative_intent.get("per_scene_intent") or []:
+        if not isinstance(sc, dict):
+            continue
+        idx, phase = sc.get("scene_index"), sc.get("arc_phase")
+        if isinstance(idx, int) and phase in by_phase:
+            out[idx + 1] = by_phase[phase]
+    return out
+
+
+def _govern_effects(board_scene: dict, beat: dict | None) -> list[dict]:
+    """Base effects for a scene: the beat's dominant (+ non-competing secondary) when a
+    beat governs, else the storyboard's effects. The signature highlighter is excluded
+    here (it stays the storyboard's authority — added back on the signature scene by the
+    caller); motion_parameter_overrides are merged into the matching effect's params."""
+    if beat is None:
+        return _as_named(board_scene.get("effects"))
+    overrides = beat.get("motion_parameter_overrides")
+    overrides = overrides if isinstance(overrides, dict) else {}
+    out: list[dict] = []
+    seen: set[str] = set()
+    for key in ("dominant_effect", "secondary_effect"):
+        name = beat.get(key)
+        if name in (None, "none", SIGNATURE_EFFECT) or name not in EFFECTS or name in seen:
+            continue
+        params = overrides.get(name)
+        out.append({"name": name, "params": params if isinstance(params, dict) else {}})
+        seen.add(name)
+    return out
+
+
+def _govern_layout(board_layout: str, beat: dict | None) -> str:
+    """The scene's layout under beat governance. A beat's expressive layout_family
+    governs ONLY when the storyboard chose a generic (non-content) layout AND the beat's
+    family is not a data layout — so content-driven layouts on either side are preserved."""
+    if beat is None:
+        return board_layout
+    fam = beat.get("layout_family")
+    if (fam in LAYOUTS and board_layout not in _CONTENT_LAYOUTS
+            and fam not in _DATA_LAYOUTS):
+        return fam
+    return board_layout
+
+
 def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets,
-               pdir, scene_dir) -> dict:
+               pdir, scene_dir, *, beat: dict | None = None,
+               global_texture: str | None = None) -> dict:
     palette = (style_guide or {}).get("palette", {}) or {}
     typ = (style_guide or {}).get("typography", {}) or {}
     # Iris emits typography as nested dicts: display/body/caption = {family, weight}
@@ -1741,9 +1817,17 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
                or DEFAULT_MAX_PER_SCENE)
     textures = _as_named((style_guide or {}).get("textures")) or \
         [{"name": t, "params": {}} for t in DEFAULT_TEXTURES]
+    # The mood board's global texture (when set + valid) overrides the style guide's set.
+    if global_texture in TEXTURES:
+        textures = [{"name": global_texture, "params": {}}]
     signature = bool(board_scene.get("signature_beat"))
+    # The governing beat (when present) supplies the transition + base effects; otherwise
+    # the storyboard does. The signature highlighter + the motion budget are enforced AFTER,
+    # exactly as before — so beat governance never breaks an invariant.
     transition = board_scene.get("transition") or "cut"
-    effects = _as_named(board_scene.get("effects"))
+    if beat is not None and beat.get("transition_in") in TRANSITIONS:
+        transition = beat["transition_in"]
+    effects = _govern_effects(board_scene, beat)
     if signature and not any(e["name"] == SIGNATURE_EFFECT for e in effects):
         effects = [{"name": SIGNATURE_EFFECT, "params": {}}] + effects
     effects = trim_effects(effects, transition, max_per, signature)
@@ -1783,9 +1867,10 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
         "scene_no": n, "comp_id": f"scene-{n:02d}", "duration": duration,
         "fps": clamp_fps((style_guide or {}).get("fps", DEFAULT_FPS)),
         "title": script_scene.get("on_screen_text") or script_scene.get("point") or "",
-        "layout": board_scene.get("layout") or "centered-statement",
+        "layout": _govern_layout(board_scene.get("layout") or "centered-statement", beat),
         "transition": transition, "effects": effects, "textures": textures,
         "signature": signature,
+        "governed_by_beat": (beat.get("beat_id") if isinstance(beat, dict) else None),
         "palette": {**palette, "font": heading_font, "body_font": body_font},
         "highlight": highlight,
         "captions": scene_captions(segments, n), "assets": resolved,
@@ -1827,6 +1912,18 @@ def compose(pdir, *, render: bool = True, gate: bool = True) -> dict:
     asset_manifest = chat_state.load_json(pdir / "asset_manifest.json", {})
     transcript = chat_state.load_json(pdir / "audio" / "narration.transcript.json", {})
     segments = transcript.get("segments", [])
+    # The design-first motion mood board (optional) GOVERNS per-scene motion. It maps to
+    # scenes via the narrative_intent's per-scene arc_phase. Absent either file -> the
+    # map is empty and every scene falls back to the storyboard (backward-compatible).
+    narrative_intent = chat_state.load_json(pdir / "narrative_intent.json", {})
+    motion_mood_board = chat_state.load_json(pdir / "motion_mood_board.json", {})
+    beat_by_scene = build_scene_beat_map(narrative_intent, motion_mood_board)
+    global_texture = (motion_mood_board.get("video_level") or {}).get("global_texture")
+    if global_texture not in TEXTURES:
+        global_texture = None
+    if beat_by_scene:
+        logger.info("motion mood board governing %d scene(s); global texture=%s",
+                    len(beat_by_scene), global_texture or "clean")
 
     ok, errors = validate_inputs(script, style_guide, storyboard, asset_manifest)
     if not ok:
@@ -1842,8 +1939,14 @@ def compose(pdir, *, render: bool = True, gate: bool = True) -> dict:
         scene_dir.mkdir(parents=True, exist_ok=True)
         board_scene = board_by_no.get(n, {})
         scene_assets = resolve_scene_assets(asset_manifest, n, pdir)
+        beat = beat_by_scene.get(n)
         ctx = _scene_ctx(n, sc, style_guide, board_scene, segments, scene_assets,
-                         pdir, scene_dir)
+                         pdir, scene_dir, beat=beat, global_texture=global_texture)
+        if beat is not None:
+            logger.info("scene %s governed by beat '%s': effect=%s, transition=%s, "
+                        "layout=%s", n, ctx["governed_by_beat"],
+                        ctx["effects"][0]["name"] if ctx["effects"] else "—",
+                        ctx["transition"], ctx["layout"])
         html = compose_scene_html(ctx)
         (scene_dir / "index.html").write_text(html)
         (scene_dir / "hyperframes.json").write_text(_HYPERFRAMES_JSON)
@@ -1887,6 +1990,7 @@ def compose(pdir, *, render: bool = True, gate: bool = True) -> dict:
             "layout": ctx["layout"], "transition": ctx["transition"],
             "effects": [e["name"] for e in ctx["effects"]],
             "signature_beat": ctx["signature"],
+            "governed_by_beat": ctx.get("governed_by_beat"),
             "self_scan": {"ok": scan_ok, "violations": self_scan},
             "gate": gate_res,
             "assets": {
@@ -1994,7 +2098,10 @@ def build_assembly_plan(manifest: dict, storyboard: dict, audio_manifest: dict) 
         steps.append({"scene_no": n, "render": s.get("render_path")})
         if i < len(scenes) - 1:
             nxt = scenes[i + 1]
-            trans = (board_by_no.get(n, {}).get("transition") or "cut")
+            # Prefer the (mood-board-governed) transition recorded on the manifest scene;
+            # fall back to the storyboard's when the manifest carries none (older runs).
+            trans = (s.get("transition") or board_by_no.get(n, {}).get("transition")
+                     or "cut")
             spec = TRANSITION_ASSEMBLY.get(trans)
             if spec is None:
                 flags.append(f"scene {n}->{nxt.get('scene_no')}: unknown "
@@ -2074,6 +2181,13 @@ def plan(pdir) -> dict:
     asset_manifest = chat_state.load_json(pdir / "asset_manifest.json", {})
     transcript = chat_state.load_json(pdir / "audio" / "narration.transcript.json", {})
     segments = transcript.get("segments", [])
+    # Mirror compose()'s mood-board governance so the preview matches what will render.
+    narrative_intent = chat_state.load_json(pdir / "narrative_intent.json", {})
+    motion_mood_board = chat_state.load_json(pdir / "motion_mood_board.json", {})
+    beat_by_scene = build_scene_beat_map(narrative_intent, motion_mood_board)
+    global_texture = (motion_mood_board.get("video_level") or {}).get("global_texture")
+    if global_texture not in TEXTURES:
+        global_texture = None
     ok, errors = validate_inputs(script, style_guide, storyboard, asset_manifest)
     if not ok:
         raise ValueError("cannot compose — " + "; ".join(errors))
@@ -2085,24 +2199,30 @@ def plan(pdir) -> dict:
     for sc in script.get("scenes", []):
         n = sc.get("scene_no")
         b = board_by_no.get(n, {})
+        beat = beat_by_scene.get(n)
         signature = bool(b.get("signature_beat"))
         transition = b.get("transition") or "cut"
-        effects = _as_named(b.get("effects"))
+        if beat is not None and beat.get("transition_in") in TRANSITIONS:
+            transition = beat["transition_in"]
+        effects = _govern_effects(b, beat)
         if signature and not any(e["name"] == SIGNATURE_EFFECT for e in effects):
             effects = [{"name": SIGNATURE_EFFECT, "params": {}}] + effects
         effects = trim_effects(effects, transition, max_per, signature)
         assets = resolve_scene_assets(asset_manifest, n, pdir)
         out.append({
-            "scene_no": n, "layout": b.get("layout") or "centered-statement",
+            "scene_no": n,
+            "layout": _govern_layout(b.get("layout") or "centered-statement", beat),
             "transition": transition, "effects": [e["name"] for e in effects],
             "duration_sec": scene_duration(sc, segments), "signature_beat": signature,
+            "governed_by_beat": (beat.get("beat_id") if isinstance(beat, dict) else None),
             "captions": len(scene_captions(segments, n)),
             "placeholders": [a["asset_id"] for a in assets if a["placeholder"]],
             "integrity_flags": [a["integrity_flag"] for a in assets if a.get("integrity_flag")],
         })
     sig = next((s["scene_no"] for s in out if s["signature_beat"]), None)
     return {"total": len(out), "fps": clamp_fps((style_guide or {}).get("fps", DEFAULT_FPS)),
-            "signature_scene": sig, "scenes": out}
+            "signature_scene": sig, "global_texture": global_texture or "clean",
+            "scenes": out}
 
 
 def run_compose(path: str, *, render: bool = True) -> tuple[dict, pathlib.Path]:

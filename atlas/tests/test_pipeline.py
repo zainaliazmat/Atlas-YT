@@ -79,6 +79,8 @@ def _offline_script(monkeypatch):
 @pytest.fixture(autouse=True)
 def _offline_art_director(monkeypatch):
     for key, producer in (("treatment", stubs.produce_treatment),
+                          ("narrative_intent", stubs.produce_narrative_intent),
+                          ("motion_mood_board", stubs.produce_motion_mood_board),
                           ("style", stubs.produce_style),
                           ("storyboard", stubs.produce_storyboard)):
         stage = next(s for s in pipeline.STAGES if s.key == key)
@@ -113,8 +115,9 @@ def _offline_audio(monkeypatch):
     mix_stage = next(s for s in pipeline.STAGES if s.key == "audiomix")
     monkeypatch.setattr(mix_stage, "producer", stubs.produce_audiomix)
 
-EXPECTED_ORDER = ["research", "treatment", "script", "factcheck", "style", "storyboard",
-                  "assets", "narration", "compose", "audiomix", "render"]
+EXPECTED_ORDER = ["research", "treatment", "narrative_intent", "motion_mood_board",
+                  "script", "factcheck", "style", "storyboard", "assets", "narration",
+                  "compose", "audiomix", "render"]
 
 ARTIFACT_CONTRACTS = {
     "research_brief.json": "research_brief",
@@ -150,11 +153,41 @@ def test_assets_and_narration_are_a_parallel_group():
 
 
 # ----------------------------------------------------------------------
+# Thematic-anchor awareness — informs (returns a tier), never blocks.
+# ----------------------------------------------------------------------
+def test_check_thematic_anchor_true_when_present(tmp_path):
+    (tmp_path / "research_brief.json").write_text(
+        '{"thematic_anchor": {"thesis_statement": "A long enough thesis to count here.", '
+        '"confidence": "high"}}')
+    assert pipeline._check_thematic_anchor(tmp_path) is True
+
+
+def test_check_thematic_anchor_false_when_absent(tmp_path):
+    (tmp_path / "research_brief.json").write_text('{"topic": "x", "verified_facts": []}')
+    assert pipeline._check_thematic_anchor(tmp_path) is False
+
+
+def test_check_thematic_anchor_low_confidence_still_true(tmp_path, caplog=None):
+    (tmp_path / "research_brief.json").write_text(
+        '{"thematic_anchor": {"thesis_statement": "A long enough thesis to count here.", '
+        '"confidence": "low"}}')
+    # Low confidence is a warning, not a downgrade: the anchor still counts as present.
+    assert pipeline._check_thematic_anchor(tmp_path) is True
+
+
+def test_check_thematic_anchor_missing_file_is_false(tmp_path):
+    assert pipeline._check_thematic_anchor(tmp_path) is False
+
+
+# ----------------------------------------------------------------------
 # Stub producers each write a CONTRACT-VALID artifact
 # ----------------------------------------------------------------------
 def test_each_stub_producer_writes_a_valid_artifact(tmp_path):
     # Run them in dependency order; each reads upstream + writes its own.
     stubs.produce_research(tmp_path, "espresso")
+    mmb = stubs.produce_motion_mood_board(tmp_path, "espresso")
+    ok, errors = contracts.validate("motion_mood_board", mmb.data)
+    assert ok, errors
     stubs.produce_script(tmp_path, "espresso")
     stubs.produce_factcheck(tmp_path, "espresso")
     stubs.produce_style(tmp_path, "espresso")

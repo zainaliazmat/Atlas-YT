@@ -22,10 +22,45 @@ former stub slot was filled). The only stub that survives is `research`, and onl
 an OPT-IN offline fallback behind the `ATLAS_RESEARCH_STUB` env flag (dev / no-network);
 by default `research` runs Sage's real engine like every other stage. Each stage is one
 producer, so swapping a specialist later = replacing ONE producer; nothing else changes.
+
+CREATIVE DATA FLOW (Tasks 1-5 integration — how the creative intent survives the
+handoffs). Each producer reads its upstream artifacts off disk through
+`chat_state.load_json(path, {}) or None`, so a MISSING upstream artifact leaves the
+downstream stage on its prior, backward-compatible behavior — every new creative stage
+is additive:
+
+  research_brief.json  (Sage; now carries thematic_anchor — the surprising thesis)
+      │
+      ├─→ treatment: Iris reads the brief + thematic_anchor
+      │     └─→ creative_treatment.json (the poetic vision, orbiting the thesis)
+      │           │
+      │           └─→ narrative_intent: Iris expands the treatment into an emotional SCORE
+      │                 └─→ narrative_intent.json (per-scene emotion/intensity/pacing/texture)
+      │                       │
+      │                       ├─→ motion_mood_board: Iris translates emotion → visual architecture
+      │                       │     └─→ motion_mood_board.json (beat_map: per-beat effect/
+      │                       │           transition/layout/duration, design-first)
+      │                       │           │
+      │                       │           ├─→ script: Marlow writes governed by BOTH
+      │                       │           │     narrative_intent (tone/pacing) AND
+      │                       │           │     motion_mood_board (duration targets); his
+      │                       │           │     internal Critic→Researcher→Craftsman
+      │                       │           │     roundtable runs here → roundtable_log.json
+      │                       │           │     (the eval system's window into the process)
+      │                       │           ├─→ storyboard: Iris assigns layouts/effects per scene
+      │                       │           └─→ compose: Mason renders the board as source of truth
+      │                       │
+      │                       └─→ narration: Cadence reads narrative_intent for TTS pacing/EQ/music
+      │
+      └─→ factcheck: Sage validates claims (unaffected by the creative layer)
+
+Stage order is FIXED in STAGES below; the creative-architecture stages (treatment →
+narrative_intent → motion_mood_board) are sequential because each builds on the last.
 """
 from __future__ import annotations
 
 import contextlib
+import logging
 import pathlib
 import time
 import uuid
@@ -38,6 +73,8 @@ import registry
 from adapters import (art_director, asset_sourcer, audio, composition_engineer, sage,
                       scriptwriter)
 from progress import Progress
+
+logger = logging.getLogger(__name__)
 
 HERE = pathlib.Path(__file__).parent
 PROJECTS_DIR = HERE / "projects"
@@ -72,6 +109,25 @@ STAGES: list[Stage] = [
     # stage on its prior behavior (backward-compatible).
     Stage("treatment", "art_director", "writing the creative treatment",
           art_director.produce_treatment, "creative_treatment"),
+    # REAL narrative-intent stage: Iris's engine translates the poetic creative_treatment
+    # into a parameterized emotional SCORE (video thesis/journey/tone, a 5-phase emotional
+    # arc, and per-scene emotion+intensity+pacing+texture+delivery directives) in closed
+    # vocabularies. Marlow (word choice / sentence length) and Cadence (TTS pacing, voice
+    # EQ/reverb, music genre, SFX) both consume it — so the emotional intent SURVIVES the
+    # handoffs instead of evaporating. Advisory + optional: a missing intent leaves every
+    # downstream stage on its prior behavior (backward-compatible). Runs after treatment,
+    # before script.
+    Stage("narrative_intent", "art_director", "scoring the narrative intent",
+          art_director.produce_narrative_intent, "narrative_intent"),
+    # REAL motion-mood-board stage: Iris the Cinematographer translates the emotional
+    # blueprint (narrative_intent) into a concrete VISUAL ARCHITECTURE — a beat_map of
+    # HyperFrames directives (tempo/texture, per-beat pacing/effect/transition/layout/
+    # duration) in the same closed vocabularies Mason renders. This inverts the creative
+    # logic (design-first): the artifact GOVERNS both Marlow's pacing AND Mason's motion.
+    # Runs after narrative_intent, before script. Advisory + optional: a missing board
+    # leaves every downstream stage on its prior behavior (backward-compatible).
+    Stage("motion_mood_board", "art_director", "designing the motion mood board",
+          art_director.produce_motion_mood_board, "motion_mood_board"),
     # REAL script stage: Marlow's engine drafts script.json from the brief (+ treatment if
     # present). (The other stages stay offline stubs until their specialist lands.)
     Stage("script", "scriptwriter", "drafting the script", scriptwriter.produce_script,
@@ -385,7 +441,10 @@ def produce(brief: str | None = None, *, slug: str | None = None,
             progress.emit("✖ Cancelled by operator.")
             return _result(project, pdir, status="cancelled", stage=stage.key)
 
-        st = project["stages"][stage.key]
+        # A project minted before a new stage was added won't carry its key — default it
+        # to pending so a resume picks the new stage up cleanly instead of KeyError-ing.
+        st = project["stages"].setdefault(
+            stage.key, {"status": "pending", "artifact": None, "validated": False})
 
         # --- human gate BEFORE the final render (checkpoint) ----------------
         if stage.key == "render":
@@ -406,6 +465,14 @@ def produce(brief: str | None = None, *, slug: str | None = None,
                 failed = _run_stage(stage, st, project, pdir, topic, progress, who, emoji)
             if failed is not None:
                 return failed
+            # Quality-tier awareness (NOT a gate): once the brief is on disk + validated,
+            # note whether it carries a thematic anchor. Informs; never blocks.
+            if stage.key == "research":
+                if _check_thematic_anchor(pdir):
+                    progress.emit("🎯 Thematic anchor set — the video has a thesis to orbit.")
+                else:
+                    progress.emit("ℹ️  No thematic anchor — standard information mode "
+                                  "(comprehensive, but without a central thesis).")
 
         # --- human gate AFTER fact-check (checkpoint) -----------------------
         if stage.key == "factcheck":
@@ -420,6 +487,33 @@ def produce(brief: str | None = None, *, slug: str | None = None,
     _save(project, pdir)
     progress.emit(f"🎬 Done — {pdir / video}")
     return _result(project, pdir, status="done", video=str(pdir / video))
+
+
+# ----------------------------------------------------------------------
+# Quality-tier awareness — NOT a gate. After research validates, note whether the
+# brief carries a thematic anchor (a thesis the whole video can orbit) or not. This
+# never blocks the line; it makes the system honest about the tier it's operating at:
+# a thesis-driven argument vs. comprehensive-but-flat "standard information mode".
+# ----------------------------------------------------------------------
+def _check_thematic_anchor(project_dir: pathlib.Path) -> bool:
+    brief_path = pathlib.Path(project_dir) / "research_brief.json"
+    brief = chat_state.load_json(brief_path, {})
+
+    anchor = brief.get("thematic_anchor")
+    if not anchor:
+        logger.warning(
+            "No thematic anchor found in research brief. "
+            "Video will be produced in 'standard information mode' — "
+            "comprehensive but without a central thesis. "
+            "Consider re-running with a more focused topic angle.")
+        return False
+
+    thesis = str(anchor.get("thesis_statement", ""))
+    if anchor.get("confidence") == "low":
+        logger.warning("Thematic anchor present but low confidence: %s...", thesis[:100])
+
+    logger.info("Thematic anchor set: %s...", thesis[:100])
+    return True
 
 
 # ----------------------------------------------------------------------

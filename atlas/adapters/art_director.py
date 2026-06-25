@@ -68,6 +68,40 @@ def run_design_treatment(pdir: pathlib.Path) -> dict:
     return treatment
 
 
+def run_design_narrative_intent(pdir: pathlib.Path) -> dict:
+    """Read creative_treatment.json (+ research_brief.json) from `pdir`, run Iris's engine,
+    stamp + write narrative_intent.json. Returns the stamped intent dict. Runs AFTER the
+    treatment and BEFORE the script; Marlow (word/sentence) + Cadence (TTS/EQ/music/SFX)
+    consume it. Backward-compatible: absent treatment leaves downstream on prior behavior."""
+    from contracts import version_for
+    pdir = pathlib.Path(pdir)
+    treatment = chat_state.load_json(pdir / "creative_treatment.json", {})
+    brief = chat_state.load_json(pdir / "research_brief.json", {})
+    intent = _art_engine().design_narrative_intent(treatment, brief)
+    intent = {"schema_version": version_for("narrative_intent"), **intent}
+    chat_state.atomic_write_json(pdir / "narrative_intent.json", intent)
+    return intent
+
+
+def run_design_motion_mood_board(pdir: pathlib.Path) -> dict:
+    """Read narrative_intent.json (+ research_brief.json for the thematic anchor, +
+    style_guide.json for the palette if it exists yet) from `pdir`, run Iris's engine,
+    stamp + write motion_mood_board.json. Returns the stamped board dict. Runs AFTER the
+    narrative_intent and BEFORE the script; Marlow (pacing) + Mason (motion) consume it.
+    Backward-compatible: the style guide need not exist yet (the board works from the
+    intent alone)."""
+    from contracts import version_for
+    pdir = pathlib.Path(pdir)
+    intent = chat_state.load_json(pdir / "narrative_intent.json", {})
+    brief = chat_state.load_json(pdir / "research_brief.json", {})
+    style_guide = chat_state.load_json(pdir / "style_guide.json", {})  # may be {} this early
+    anchor = brief.get("thematic_anchor", {}) if isinstance(brief, dict) else {}
+    board = _art_engine().design_motion_mood_board(intent, anchor, style_guide)
+    board = {"schema_version": version_for("motion_mood_board"), **board}
+    chat_state.atomic_write_json(pdir / "motion_mood_board.json", board)
+    return board
+
+
 def run_build_storyboard(pdir: pathlib.Path) -> dict:
     """Read script.json (+ the on-disk style_guide.json) from `pdir`, run Iris's engine,
     stamp + write storyboard.json. Returns the stamped storyboard dict."""
@@ -91,6 +125,39 @@ def _treatment_digest(t: dict) -> str:
     for b in beats[:8]:
         lines.append(f"  · {b.get('beat', '?')}: {(b.get('concept') or '')[:70]} "
                      f"[lands '{b.get('emphasis_word', '')}']")
+    return "\n".join(lines)
+
+
+def _intent_digest(intent: dict) -> str:
+    vl = intent.get("video_level", {})
+    arc = intent.get("emotional_arc", {})
+    scenes = intent.get("per_scene_intent", [])
+    lines = [f"Narrative intent set: tone {vl.get('tone_profile') or '—'}; "
+             f"{len(scenes)} scenes scored.",
+             f"  Thesis: {(vl.get('core_thesis') or '—')[:100]}",
+             f"  Journey: {(vl.get('emotional_journey') or '—')[:100]}"]
+    arc_bits = [f"{p}:{(arc.get(p) or {}).get('dominant_emotion', '—')}"
+                f"@{(arc.get(p) or {}).get('intensity', '?')}"
+                for p in ("hook", "build", "peak", "breathe", "cta")]
+    lines.append("  Arc: " + " → ".join(arc_bits))
+    return "\n".join(lines)
+
+
+def _mood_board_digest(board: dict) -> str:
+    vl = board.get("video_level", {})
+    beats = board.get("beat_map", [])
+    sig = board.get("signature_beat_placement", {}).get("beat_id") or "?"
+    lines = [f"Motion mood board set: tempo {vl.get('global_tempo') or '—'}, "
+             f"texture {vl.get('global_texture') or '—'}; {len(beats)} beats; "
+             f"signature #FFD000 on beat {sig}."]
+    if vl.get("dominant_motion_philosophy"):
+        lines.append(f"  Philosophy: {vl['dominant_motion_philosophy'][:100]}")
+    for b in beats[:8]:
+        sec = b.get("secondary_effect")
+        sec_str = f"+{sec}" if sec and sec != "none" else ""
+        lines.append(f"  · {b.get('beat_id', '?')} ({b.get('arc_phase', '?')}): "
+                     f"{b.get('pacing_profile', '?')} · {b.get('dominant_effect', '?')}{sec_str} "
+                     f"· {b.get('transition_in', '?')} · {b.get('layout_family', '?')}")
     return "\n".join(lines)
 
 
@@ -127,6 +194,32 @@ def produce_treatment(pdir: pathlib.Path, topic: str):
     rhythm = treatment.get("rhythm") or "—"
     return Artifact("creative_treatment.json", "creative_treatment", treatment,
                     f"creative direction set; rhythm {rhythm}; {n} beats")
+
+
+def produce_narrative_intent(pdir: pathlib.Path, topic: str):
+    """REAL producer: Iris's engine writes narrative_intent.json — the emotional score that
+    translates the creative_treatment into closed-vocabulary parameters Marlow + Cadence act
+    on. Runs between treatment and script."""
+    from adapters.stubs import Artifact  # lazy: avoid an import cycle
+    intent = run_design_narrative_intent(pdir)
+    vl = intent.get("video_level", {})
+    n = len(intent.get("per_scene_intent", []))
+    return Artifact("narrative_intent.json", "narrative_intent", intent,
+                    f"emotional score set; tone {vl.get('tone_profile') or '—'}; "
+                    f"{n} scenes scored")
+
+
+def produce_motion_mood_board(pdir: pathlib.Path, topic: str):
+    """REAL producer: Iris's engine writes motion_mood_board.json — the design-first visual
+    architecture that governs BOTH Marlow's pacing AND Mason's motion. Runs between
+    narrative_intent and script."""
+    from adapters.stubs import Artifact  # lazy: avoid an import cycle
+    board = run_design_motion_mood_board(pdir)
+    vl = board.get("video_level", {})
+    n = len(board.get("beat_map", []))
+    return Artifact("motion_mood_board.json", "motion_mood_board", board,
+                    f"motion architecture set; tempo {vl.get('global_tempo') or '—'}; "
+                    f"{n} beats; signature #FFD000 placed")
 
 
 def produce_style(pdir: pathlib.Path, topic: str):
@@ -185,6 +278,10 @@ class ArtDirectorAdapter(Adapter):
     _JOBS = {
         "design_treatment": (run_design_treatment, "creative_treatment", _treatment_digest,
                              "writing the creative treatment"),
+        "design_narrative_intent": (run_design_narrative_intent, "narrative_intent",
+                                    _intent_digest, "scoring the narrative intent"),
+        "design_motion_mood_board": (run_design_motion_mood_board, "motion_mood_board",
+                                     _mood_board_digest, "designing the motion mood board"),
         "design_style": (run_design_style, "style_guide", _style_digest,
                          "designing the style"),
         "build_storyboard": (run_build_storyboard, "storyboard", _board_digest,

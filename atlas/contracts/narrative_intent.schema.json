@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/narrative_intent.schema.json",
+  "title": "narrative_intent.json — the parameterized emotional blueprint (the emotional score)",
+  "description": "v1.0. The machine-actionable bridge between Iris's poetic creative_treatment and every downstream agent. The treatment says a scene should feel 'awe-inspiring'; the script/audio engines only read structural keywords, so the EMOTIONAL objective evaporated at each handoff. This artifact translates the poetry into a closed-vocabulary emotional score that travels with the project: a video-level thesis + journey + tone, a five-phase emotional arc, and per-scene emotional directives (emotion + intensity + pacing + texture + a human delivery note). Produced AFTER the creative_treatment and BEFORE the script, on the strong creative model. The closed vocabularies (emotions, pacing directives, texture directives, arc phases, tone profile) are enumerated here so consumers can map a value deterministically. Every field beyond schema_version is OPTIONAL and additionalProperties:true throughout, so the pipeline stays backward-compatible when the stage is absent and nothing breaks if a producer adds a field.",
+  "type": "object",
+  "required": ["schema_version"],
+  "additionalProperties": true,
+  "$defs": {
+    "emotion": {
+      "type": "string",
+      "description": "the closed emotion vocabulary the whole pipeline shares",
+      "enum": [
+        "curiosity", "surprise", "awe", "satisfaction", "determination",
+        "tension", "dread", "hope", "nostalgia", "clarity",
+        "urgency", "wonder", "unease", "triumph", "melancholy", "empathy"
+      ]
+    },
+    "pacing_directive": {
+      "type": "string",
+      "description": "how the narration should be paced/voiced for this scene",
+      "enum": [
+        "punchy_staccato", "driving", "measured", "flowing",
+        "contemplative", "building", "breathless", "deliberate_pause"
+      ]
+    },
+    "texture_directive": {
+      "type": "string",
+      "description": "the visual + sonic surface texture this scene wears",
+      "enum": [
+        "clean_high_contrast", "warm_grain", "dark_moody", "bright_airy",
+        "gritty_raw", "cinematic_widescreen", "soft_focus", "stark_minimal"
+      ]
+    },
+    "arc_phase": {
+      "type": "string",
+      "description": "which of the five emotional-arc phases this scene belongs to",
+      "enum": ["hook", "build", "peak", "breathe", "cta"]
+    },
+    "intensity": {
+      "type": "integer",
+      "description": "felt emotional intensity, 1 (barely there) to 10 (overwhelming)",
+      "minimum": 1,
+      "maximum": 10
+    },
+    "arc_node": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "dominant_emotion": {"$ref": "#/$defs/emotion"},
+        "intensity": {"$ref": "#/$defs/intensity"},
+        "duration_goal_sec": {"type": "number", "minimum": 0,
+                              "description": "roughly how many seconds this phase should occupy"}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"type": "string"},
+    "video_level": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "the whole-video emotional contract",
+      "properties": {
+        "core_thesis": {"type": "string",
+                        "description": "the single sentence argument this video exists to make"},
+        "emotional_journey": {"type": "string",
+                              "description": "what the viewer should feel at the start vs. the end — be specific"},
+        "tone_profile": {
+          "type": "string",
+          "description": "the overall narrative tone, one of the closed set",
+          "enum": ["urgent_reveal", "thoughtful_unpacking", "dark_warning",
+                   "optimistic_march", "curious_exploration"]
+        }
+      }
+    },
+    "emotional_arc": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "the five-phase emotional spine of the video, each a dominant emotion + intensity + duration goal",
+      "properties": {
+        "hook": {"$ref": "#/$defs/arc_node"},
+        "build": {"$ref": "#/$defs/arc_node"},
+        "peak": {"$ref": "#/$defs/arc_node"},
+        "breathe": {"$ref": "#/$defs/arc_node"},
+        "cta": {"$ref": "#/$defs/arc_node"}
+      }
+    },
+    "per_scene_intent": {
+      "type": "array",
+      "description": "one emotional directive per anticipated scene, in order (scene_index is 0-based and contiguous)",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "scene_index": {"type": "integer", "minimum": 0},
+          "arc_phase": {"$ref": "#/$defs/arc_phase"},
+          "primary_emotion": {"$ref": "#/$defs/emotion"},
+          "intensity": {"$ref": "#/$defs/intensity"},
+          "pacing_directive": {"$ref": "#/$defs/pacing_directive"},
+          "texture_directive": {"$ref": "#/$defs/texture_directive"},
+          "delivery_note": {"type": "string",
+                            "description": "a concrete, human, actionable delivery instruction for this scene"}
+        }
+      }
+    }
+  }
+}

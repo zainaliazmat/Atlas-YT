@@ -27,19 +27,28 @@ that can run end-to-end with no human in the loop except at two sign-off points.
 **Who it's for:** a solo creator / "CEO of a one-person agency" who wants a fleet of
 agents to do the production grind while they stay in the director's chair.
 
-**Status (high level):** It works end-to-end. There is a real, completed example project in
-`atlas/projects/` that ran all 10 stages and produced a real `video.mp4`. **All 7 pipeline roles
-now run real engines** — Scout and Sage predate the pipeline; the other five specialists were built
-and dropped into their registered slots, and the former `research`-stage stub is now wired to
-Sage's real engine (the stub survives only as an opt-in offline fallback; see §12). Beyond the
-terminal, a **Chainlit web operator UI is fully built** as a second frontend (§12).
+**Status (high level):** It works end-to-end, and **multiple real `video.mp4` deliverables have
+shipped** (see §12 — both pilot videos and the first "upgraded" run on the live Opus seam reached a
+final cut). **All 7 pipeline roles run real engines** — Scout and Sage predate the pipeline; the
+other five specialists were built and dropped into their registered slots, and the former
+`research`-stage stub is now wired to Sage's real engine (the stub survives only as an opt-in offline
+fallback; see §12). The deterministic spine has since **grown a new `treatment` stage** (Iris's
+creative treatment), so the line is now **11 stages**, not 10. Beyond the terminal, a **Chainlit web
+operator UI** and a **FastAPI "Control Room" dashboard** are both fully built as additional
+frontends (§8, §12).
 
-The registry now holds **10 agents**: the 7 pipeline specialists plus three **additive, off-pipeline**
-agents that power a new **self-improvement / evaluation system** (§13): **Vera 🔬** the Reference
+The registry holds **10 agents**: the 7 pipeline specialists plus three **additive, off-pipeline**
+agents that power the **self-improvement / evaluation system** (§13): **Vera 🔬** the Reference
 Analyst (builds a `reference_rubric` from reference videos — defines the standard), and two domain
 coaches — **Quill 🖋️** (editorial/content) and **Flux 🎚️** (production/craft) — that author coaching
 addenda when the eval loop diagnoses a quality shortfall. None of the three is a pipeline stage; the
-10-stage line is unchanged.
+11-stage line is unchanged by them.
+
+> **Where this doc is "as of":** the live work is now on the **`control-room`** branch (≈63 commits
+> ahead of `main`, which remains the upstream default). The big things that landed since the previous
+> revision of this doc: the `treatment` stage, the **diagram generator** (flagged), the **eval /
+> self-improvement system committed and Phase-2-complete** (§13), and the dashboard's growth into a
+> full **Control Room** (§8). Earlier text that called those "uncommitted / in-flight" is now updated.
 
 ---
 
@@ -60,8 +69,8 @@ addenda when the eval loop diagnoses a quality shortfall. None of the three is a
 | **Package manager** | `pip` + per-project `requirements.txt` |
 | **Web UI (optional)** | **Chainlit** 2.11.1 (in-process, additive) — the web "meeting room" at `atlas/web/app.py`; deps in `atlas/requirements-web.txt`, runtime config in `.chainlit/`. The terminal REPL needs none of it. |
 | **Dashboard (optional)** | **FastAPI + uvicorn** (additive, read-mostly) — the "Control Room" monitoring service at `atlas/dashboard/`; deps in `atlas/dashboard/requirements.txt`; launched by `./yt-atlas` (port 8848). Playwright for its E2E tests. |
-| **Tests** | `pytest` (73 test files across the repo, 36 of them under `atlas/tests/` — plus the dashboard's own suite under `atlas/dashboard/tests/`; pure unit tests, no network) |
-| **Version control** | **Git** (active branch is **`main`**, which is also the upstream default). The owner-run fixes landed via PR #1; the self-improvement system (§13) is the current uncommitted in-flight work. |
+| **Tests** | `pytest` (~43 test files under `atlas/tests/` incl. 15 `test_eval_*`, plus 16 under `atlas/dashboard/tests/` incl. Playwright E2E, plus each specialist's own suite; pure unit tests, no network) |
+| **Version control** | **Git** (active branch is **`control-room`**, ≈63 commits ahead of **`main`**, which is the upstream default). Earlier work landed on `main`/`owner-run-fixes`; the eval/self-improvement system (§13), the diagram generator, the `treatment` stage, and the Control Room all live on `control-room` and are **committed** (no longer the uncommitted WIP the prior doc described). |
 
 A **web frontend now exists**: `atlas/session.py` is the UI-neutral core shared by both the
 terminal REPL (`atlas/chat.py`) and the Chainlit web operator UI (`atlas/web/app.py`). Both
@@ -103,7 +112,7 @@ one registry entry + one adapter, with **no orchestrator changes**.
               pipeline.py  ◄── validates each stage ──►  contracts/*.schema.json
               (deterministic spine)                      (frozen artifact shapes)
                     │
-   research → script → factcheck ★GATE → style → storyboard
+   research → treatment → script → factcheck ★GATE → style → storyboard
         → assets ∥ narration → compose ▲auto-gate → audiomix → render ★GATE → video.mp4
                     │  each stage's producer calls a specialist engine in-process
                     ▼
@@ -168,9 +177,13 @@ YT-AGENTS/
 │   │   ├── app.py             #   create_app(): FastAPI factory; serves typed JSON + the static Control Room UI
 │   │   ├── server.py          #   uvicorn launcher (python -m dashboard.server [--port 8848] [--projects DIR])
 │   │   ├── data.py media.py   #   reads live state (registry, project.json, artifacts, souls, eval scorecards)
-│   │   ├── security.py        #   read-mostly guardrails; the one sanctioned write is gate approval via the seam
+│   │   ├── atlas_request.py   #   the single typed front door: POST /api/atlas/request → handle_request(...)
+│   │   ├── intake.py          #   niche intake (#1.5): niche → Scout find_topics → candidate cards
+│   │   ├── settings_store.py  #   dashboard-owned settings JSON (#4): niches/defaults/channels → pipeline args
+│   │   ├── publish.py chat.py #   Herald T3 publish package (read-only, fires nothing) + chat surface
+│   │   ├── security.py        #   write guardrails; sanctioned writes routed through the existing seams
 │   │   ├── static/            #   the Control Room front-end assets
-│   │   ├── tests/             #   API + security + real-gate-write tests + Playwright E2E (e2e/)
+│   │   ├── tests/             #   API + security + intake + publish + real-gate-write + Playwright E2E (e2e/)
 │   │   ├── requirements.txt REPORT.md __init__.py
 │   ├── orchestrator.py        # Atlas's brain: SDK query() loop, system prompt, playbooks
 │   ├── registry.py            # ★ THE REGISTRY — one AgentEntry per agent; the source of truth
@@ -182,7 +195,7 @@ YT-AGENTS/
 │   ├── chat_state.py          # atomic JSON writes + tolerant loads (summary-only memory)
 │   ├── contracts/             # ★ FROZEN ARTIFACT CONTRACTS (JSON Schema) + validator
 │   │   ├── __init__.py        #   validate(name, obj), CONTRACT_VERSION, version_for()
-│   │   └── *.schema.json      #   project, research_brief, script, factcheck_report, …
+│   │   └── *.schema.json      #   project, research_brief, creative_treatment, script, factcheck_report, …
 │   ├── rubric/                # ★ FROZEN, CEO-OWNED QUALITY STANDARD (read-only; NO write path) — §13
 │   │   ├── __init__.py        #   deep-frozen accessors (load_rubric, bands, global_weights…); no writers
 │   │   └── rubric.json        #   v0.2.0-phase2-calibrated: 6 weighted dims + 1 floor + per-stage bands
@@ -229,12 +242,12 @@ YT-AGENTS/
 │   └── script_engine.py run.py chat.py llm.py SKILL.md soul/ tests/
 ├── art-director/              # "Iris" — script → style_guide.json + storyboard.json
 │   └── art_engine.py run.py chat.py llm.py SKILL.md soul/ tests/
-├── asset-sourcer/             # "Magpie" — storyboard → license-cleared asset_manifest.json
-│   └── source_engine.py sources.py run.py chat.py llm.py assets/ SKILL.md soul/ tests/
+├── asset-sourcer/             # "Magpie" — storyboard → license-cleared asset_manifest.json (+ diagram PLANs)
+│   └── source_engine.py sources.py diagram_engine.py run.py chat.py llm.py assets/ SKILL.md soul/ tests/
 ├── audio-designer/            # "Cadence" — narration (TTS) + documentary audio mix
 │   └── audio_engine.py audio_sources.py sfx_kit.py hf_audio.py run.py llm.py SKILL.md soul/
 ├── composition-engineer/      # "Mason" — artifacts → HyperFrames HTML + render → video.mp4
-│   └── composition_engine.py hf_tools.py run.py chat.py llm.py SKILL.md soul/ tests/
+│   └── composition_engine.py diagram_render.py hf_tools.py run.py chat.py llm.py SKILL.md soul/ tests/
 │
 ├── reference-analyst/         # "Vera" 🔬 — reference videos → reference_rubric (the STANDARD)
 │   └── *_engine.py run.py chat.py llm.py standards/ SKILL.md soul/ tests/
@@ -271,7 +284,7 @@ sidebar, and per-agent persona chat. It drives the same `session.py` core (no or
 changes). See §12 and `atlas/web/README.md`.
 
 **Core code path for a meeting turn:**
-1. `chat.py` → `session.AtlasSession.send()` ([atlas/session.py:250](atlas/session.py#L250)) —
+1. `chat.py` → `session.AtlasSession.send()` ([atlas/session.py:318](atlas/session.py#L318)) —
    builds bounded context (durable summary + fleet snapshot + recent window) and calls the orchestrator.
 2. `orchestrator.Orchestrator.run_turn_async()` ([atlas/orchestrator.py:171](atlas/orchestrator.py#L171)) —
    runs the Claude Agent SDK `query()` loop with `permission_mode="bypassPermissions"` (tools
@@ -280,9 +293,10 @@ changes). See §12 and `atlas/web/README.md`.
    one `<agent>_<job>` + one `ask_<agent>` per registry entry, plus the single `produce_video` tool.
 
 **Core code path for video production:**
-- `tools._make_produce_tool` → `pipeline.produce()` ([atlas/pipeline.py:182](atlas/pipeline.py#L182)) —
-  the deterministic runner. Its `STAGES` list ([atlas/pipeline.py:58](atlas/pipeline.py#L58)) is the
-  one fixed order; gate checkpoints are `_factcheck_gate()` and `_final_render_gate()`.
+- `tools._make_produce_tool` → `pipeline.produce()` ([atlas/pipeline.py:296](atlas/pipeline.py#L296)) —
+  the deterministic runner. Its `STAGES` list ([atlas/pipeline.py:61](atlas/pipeline.py#L61)) is the
+  one fixed order (now 11 stages — `treatment` sits between `research` and `script`); gate checkpoints
+  are `_factcheck_gate()` and `_final_render_gate()`.
 
 ---
 
@@ -306,7 +320,7 @@ changes). See §12 and `atlas/web/README.md`.
   the composition auto-gate, the two human gates (pause-and-resume via `project.json`), and resume
   logic. **Key rule:** a fact-check `block` verdict **can never be approved away** — it routes back
   upstream and re-blocks until the script is fixed and re-checked (`_factcheck_gate`,
-  [atlas/pipeline.py:341](atlas/pipeline.py#L341)).
+  [atlas/pipeline.py:430](atlas/pipeline.py#L430)).
 - **`contracts/`** — frozen JSON-Schema shapes for every artifact, `additionalProperties: true`
   (frozen-but-extensible). `validate(name, obj) -> (ok, errors)` never raises on bad data.
 - **`session.py`** — UI-neutral session core shared by both frontends: `AtlasSession`
@@ -333,7 +347,7 @@ agents for the self-improvement system (§13).
 | `youtube-topic-agent` | **Viral Scout** 🔎 | Topic intake | `agent.run(niche, deep=False)` → ranked ideas | YouTube + Trends → topic ideas (in memory) |
 | `topic-researcher` | **Sage** 📚 | Researcher & Fact-Checker | `researcher.run(topic, angle)` (Pass 1); `factcheck.factcheck(script, brief)` (Pass 2) | web → `research_brief`; script+brief → `factcheck_report` |
 | `scriptwriter` | **Marlow** 📝 | Scriptwriter | `script_engine.write_script(brief)` | `research_brief.json` → `script.json` |
-| `art-director` | **Iris** 🎨 | Art Director | `art_engine.design_style(script)`; `art_engine.build_storyboard(script, style_guide)` | `script.json` → `style_guide.json` + `storyboard.json` |
+| `art-director` | **Iris** 🎨 | Art Director | `art_engine.design_treatment(brief)`; `art_engine.design_style(script)`; `art_engine.build_storyboard(script, style_guide)` | `research_brief.json` → `creative_treatment.json`; `script.json` → `style_guide.json` + `storyboard.json` |
 | `asset-sourcer` | **Magpie** 🗂️ | Asset Sourcer & Licensing | `source_engine.source_assets(storyboard, style_guide, client, pdir)` | `storyboard.json` → `asset_manifest.json` + downloaded files |
 | `audio-designer` | **Cadence** 🎙️ | Audio / Sound Designer | `audio_engine.record_narration(script, pdir)`; `audio_engine.mix_audio(...)` | `script.json` → `narration.wav` + `narration.transcript.json` + `master.wav` + `audio_manifest.json` |
 | `composition-engineer` | **Mason** 🛠️ | Composition Engineer | `composition_engine.compose(pdir)`; `composition_engine.run_render(pdir)` | all artifacts → scene HTML + `composition_manifest.json` → `video.mp4` |
@@ -361,6 +375,21 @@ agents for the self-improvement system (§13).
 - **Mason's auto-gate:** before spending a render, each scene passes a self-scan (no network/fetch,
   no SMIL filters, no late `gsap.set`) + HyperFrames `lint` + `validate` (headless Chrome) + `inspect`
   (layout/overflow + motion assertions). A scene that fails the gate blocks the stage.
+- **Iris's creative treatment (new `treatment` stage):** before scripting, Iris's engine
+  (`art_engine.design_treatment(brief)`) expands the research brief into a grounded creative direction
+  — rhythm (e.g. `hook-BUILD-PEAK-breathe-CTA`), a visual world, mood refs, and per-beat
+  concept/mood/emphasis — distilled from the HyperFrames craft library and run on the strong creative
+  model. It is **advisory + optional + backward-compatible**: Marlow (script) and Iris's own
+  style/storyboard stages consume it when present, so the closed vocabularies get used intentionally; a
+  missing `creative_treatment.json` leaves every downstream stage on its prior behavior.
+- **The diagram generator (Magpie plans → Mason renders; behind `MAGPIE_DIAGRAM_GEN`):** a
+  plan-then-render path for *generated* visuals instead of sourced footage. Magpie's
+  `diagram_engine.plan_diagram(shot)` (the PLAN half) classifies each shot — data-viz/charts and
+  data-driven maps always **generate**; a *conceptual* diagram generates only when the flag is on — and
+  caches a `DiagramPlan` in the `plan` object of `asset_manifest` (v1.1). Mason's `diagram_render.py`
+  (the RENDER half) composes that plan to deterministic in-HTML SVG at render time (no fetch, frame-seek
+  safe). Charts (`bar`/`line`/`pie`, `CHART_KINDS`) are drawn natively by Mason from the scene's
+  numbers. The flag defaults **off**, so today's sourcing behavior is unchanged unless opted in.
 
 ---
 
@@ -373,11 +402,12 @@ The pipeline's "language" is a set of JSON artifacts, each pinned by a schema in
 |---|---|---|
 | `project.json` | `project` | **Master state** for one video: `project_id`, `slug`, `status`, `config.gates`, per-stage `stages{status, artifact, validated}`, `gates{factcheck, final_render}`, `artifacts`, `history`. |
 | `research_brief.json` | `research_brief` | Sage's pack shape (reused): `verified_facts[]`, `myths_and_corrections[]`, `contested_or_uncertain[]`, `key_statistics`, `sources[]`, `suggested_angles`. |
+| `creative_treatment.json` | `creative_treatment` | Iris's pre-script creative direction (advisory/optional): `rhythm`, `visual_world`, `mood_refs[]`, and per-beat `concept`/`mood`/`emphasis`. Consumed by the script + style + storyboard stages when present. |
 | `script.json` | `script` | `working_title`, `hook`, `cta`, `total_scenes`, `est_runtime_sec`, `scenes[]` where each scene has `scene_no`, `point`, `narration` (required), `on_screen_text`, `claims[{claim_id, text, source_ref}]`, `visual_note`, `duration_est_sec`. |
 | `factcheck_report.json` | `factcheck_report` | `verdict` (`pass`/`block`), `summary{verified, flagged, unverifiable}`, `claims[]`. **The fact-check gate reads this.** |
 | `style_guide.json` | `style_guide` (v1.1) | palette (incl. `signature_highlight: #FFD000`), typography, motion budget, layout, fps, textures, dos/donts. |
 | `storyboard.json` | `storyboard` (v1.1) | `total_scenes`, per-scene `layout`, `shots[{kind, content, asset_ref}]`, `transition`, `effects[]`, `signature_beat`. |
-| `asset_manifest.json` | `asset_manifest` | `assets[{asset_id, scene_no, type, source, uri, license, attribution, status}]` (`status` ∈ cleared/sourced/placeholder). |
+| `asset_manifest.json` | `asset_manifest` (v1.1) | `assets[{asset_id, scene_no, type, source, uri, license, attribution, status}]` (`status` ∈ cleared/sourced/placeholder). v1.1 adds the `"diagram"` asset type + an optional cached `plan` (a `DiagramPlan` Mason composes to SVG at render). |
 | `narration.transcript.json` | `narration_transcript` | `total_duration_sec`, `segments[{scene_no, start_sec, end_sec, text}]` — the **downstream timing authority** for captions. |
 | `audio_manifest.json` | `audio_manifest` (v1.1) | `total_duration_sec`, `master_uri`, `vo_uri`, `tracks[{role, uri, gain_db, ducking, license, status}]`. |
 | `composition_manifest.json` | `composition_manifest` | Mason's per-scene build + auto-gate record (additive). |
@@ -385,10 +415,12 @@ The pipeline's "language" is a set of JSON artifacts, each pinned by a schema in
 **Vocabulary is closed-set** across the art/composition stages (the three orthogonal axes):
 LAYOUTS (10: centered-statement, split-screen, full-bleed-image, lower-third, data-chart,
 quote-card, map-focus, list-stack, comparison-2up, title-card), TEXTURES (5 global static:
-paper, grain, halftone, vignette, scanlines), EFFECTS (7 per-scene: stutter-12fps, stepped-ease,
-highlighter-FFD000, map-draw, chromatic-aberration, push-in, parallax), TRANSITIONS (5 at
-boundaries: cut, match-cut, dip-to-black, push, wipe). Unknown tokens are an error, never
-silently dropped.
+paper, grain, halftone, vignette, scanlines), EFFECTS (now 13 per-scene: stutter-12fps, stepped-ease,
+highlighter-FFD000, map-draw, chromatic-aberration, push-in, parallax, count-up, breathe, bars-grow,
+drift, word-reveal — the last five widened from the local `hyperframes-animation` library +
+kinetic-typography work), CHART_KINDS (3 native data-chart sub-kinds Mason draws: bar, line, pie),
+TRANSITIONS (5 at boundaries: cut, match-cut, dip-to-black, push, wipe). Unknown tokens are an error,
+never silently dropped.
 
 **Agent memory model** (every agent): `chat_state.json` holds a single distilled `summary`
 (+ a `pending` backlog field for crash-safety); `memory.json` (Scout/Sage) logs past `runs`/`wins`.
@@ -400,17 +432,38 @@ The full transcript lives only in RAM and is distilled into the summary on every
 
 The project's main interfaces are CLIs, the in-process orchestrator tools, each engine's public
 functions, and two optional web frontends: a Chainlit "meeting room" and a FastAPI "Control Room"
-dashboard. Only the dashboard exposes an HTTP API, and it is **read-mostly** (one sanctioned write).
+dashboard. Only the dashboard exposes an HTTP API; it began read-mostly and has grown into a true
+operating console while keeping every guarantee in the deterministic spine (see below).
 
 **Control Room dashboard** (`./yt-atlas` → http://127.0.0.1:8848; or `cd atlas && python -m
-dashboard.server`): an **additive, read-mostly FastAPI service** that reads live system state
-(registry, `project.json`, artifacts, souls, **eval scorecards**) and serves six Control Room screens
-(+ a gate screen) as typed JSON + static assets; the API is browsable at `/api/docs`. The **only**
-mutation is gate approval, delegated unchanged to `session.AtlasSession.approve_gate` →
-`pipeline.produce(slug, approve=<gate>)`. It never reorders stages, edits a contract, touches gate
-logic, or writes `chat_state.json`. The whole deliverable lives in the new `atlas/dashboard/` package;
-the engine, pipeline, contracts, gates, registry, session, and Chainlit UI are all untouched. It turns
-the approved `yt-agents-dashboard.html` prototype into a real, tested service (its own API + security +
+dashboard.server`): an **additive FastAPI service** that reads live system state (registry,
+`project.json`, artifacts, souls, **eval scorecards**) and serves the Control Room screens (assembly
+line, projects, the two gates, coaches, settings, …) as typed JSON + static assets; the API is
+browsable at `/api/docs`. Across the `control-room` Slices it became the system's operating console:
+- **One front door** — `POST /api/atlas/request` (`dashboard/atlas_request.py`) is a single typed
+  request router; every dashboard button and chat intent becomes a `handle_request(...)` call that
+  Atlas (the dispatcher) executes. It does **not** bypass guarantees — it routes to the same methods
+  the per-action endpoints already call, so behavior is identical.
+- **Niche intake (#1.5)** — `dashboard/intake.py` runs the pre-project discovery step (niche → Scout
+  `find_topics` → candidate cards), and a picked candidate enters the belt via the normal T1 trigger.
+- **Settings (#4)** — `dashboard/settings_store.py` is a single dashboard-owned JSON of
+  niches/defaults/channels; the dashboard reads it and **passes values into the pipeline as args at
+  trigger time** (a pure engine never reads it globally — preserves the §3/§11 decoupling rule).
+- **Autonomous render under budget** — the final-render gate can auto-approve when an estimated render
+  cost is within a configurable `render_budget_sec` ceiling (default 600s); over budget it escalates a
+  draft-preview card for a human. The fact-check gate's `block` remains un-approvable (§6).
+- **Escalation surface** — fix-attempt snapshot history, a live Atlas-activity line, and Guide / Kill
+  actions on the gate card (`/api/gate/{slug}/guide` + `/kill`).
+- **Herald T3 publish package (#6, not yet firing)** — `dashboard/publish.py` assembles the exact
+  read-only package a human would review before anything could go live, but `fire_enabled` is
+  **always False**: real publishing (Herald) isn't built, so nothing ever fires.
+
+So the sanctioned writes are now gate approval (delegated unchanged to
+`session.AtlasSession.approve_gate` → `pipeline.produce(slug, approve=<gate>)`), production triggers
+via intake, and the settings JSON — all routed so they never reorder stages, edit a contract, touch
+gate logic, or write `chat_state.json`. The whole deliverable lives in `atlas/dashboard/`; the engine,
+pipeline, contracts, gates, registry, session, and Chainlit UI are untouched. It turns the approved
+`yt-agents-dashboard.html` prototype into a real, tested service (its own API + security +
 real-gate-write + Playwright E2E suites under `atlas/dashboard/tests/`).
 
 **Web operator UI** (`chainlit run web/app.py -w` → :8000): a browser meeting room over the same
@@ -527,8 +580,8 @@ python -m eval.inspector projects/<slug> [--judged] [--no-track]   # -> scorecar
 
 **Test** (per project; pure unit tests, no network/API):
 ```bash
-cd atlas && python -m pytest tests/ -q          # 36 atlas test files (incl. 15 test_eval_* + coaches)
-cd atlas && python -m pytest dashboard/tests/ -q  # the Control Room's own API/security/E2E suite
+cd atlas && python -m pytest tests/ -q          # ~43 atlas test files (incl. 15 test_eval_* + coaches + treatment)
+cd atlas && python -m pytest dashboard/tests/ -q  # 16 Control Room files: API/security/intake/publish/E2E
 # Atlas core is well over 100 tests green (incl. session/web-session/gate/eval tests); each
 # specialist has its own suite.
 ```
@@ -569,26 +622,37 @@ cd atlas && python -m pytest dashboard/tests/ -q  # the Control Room's own API/s
   gates as pause-and-resume + resume-by-gate.
 - **All seven pipeline roles have real engines** (Scout, Sage, Marlow, Iris, Magpie, Cadence, Mason). The
   registry's per-entry comments document each "stub slot was filled."
-- **An 8th agent — Vera 🔬 the Reference Analyst — is built and tested.** It is a standalone
-  delegable job + persona (job `reference_analyst_build_rubric`) that builds a `reference_rubric`
-  from reference videos via FFmpeg/OpenCV. It is a STANDARD/job, **not** a pipeline stage — the
-  10-stage line is unchanged. Adds `atlas/adapters/reference_analyst.py`,
-  `atlas/contracts/reference_rubric.schema.json`, and its tests; it surfaces through the registry
-  with no orchestrator change.
-- **An end-to-end run actually succeeded:** `atlas/projects/gpt-4o-vs-claude-vs-gemini-vs-deepseek-comparison--…/`
-  has `status: "done"`, all 10 stages `done`, both gates `approved`, and a real `video.mp4`
-  (11 scenes, ~72s audio).
+- **The pipeline is now 11 stages** — Iris's `treatment` (creative treatment) was added between
+  `research` and `script`. It's advisory/optional/backward-compatible (a missing treatment leaves every
+  downstream stage on its prior behavior), so the spine's order/validation/gate guarantees are unchanged.
+- **The diagram generator landed** (behind `MAGPIE_DIAGRAM_GEN`, off by default): Magpie plans a
+  `DiagramPlan` (cached in `asset_manifest` v1.1) and Mason renders it to deterministic in-HTML SVG;
+  native data-charts (bar/line/pie) draw from the scene's numbers. See §6.
+- **All three off-pipeline agents are built, tested, and committed** — Vera 🔬 the Reference Analyst
+  (job `reference_analyst_build_rubric`, builds a `reference_rubric` from reference videos via
+  FFmpeg/OpenCV — a STANDARD, not a stage) plus the two coaches Quill 🖋️ + Flux 🎚️ (§13). The
+  11-stage line is unchanged by them; they surface through the registry with no orchestrator change.
+- **Multiple real `video.mp4` deliverables have shipped:** the original end-to-end run
+  (`atlas/projects/gpt-4o-vs-claude-vs-gemini-vs-deepseek-comparison--…/`, all stages `done`, both gates
+  `approved`, ~72s), **both pilot videos** (render last-mile resolved — text-occlusion, motion-sidecar,
+  transient-gate-retry, text-forward fixes; see the `pilot-videos-shipped` memory), and the **first
+  "upgraded" run on the live Opus seam** with the treatment + diagram stages active
+  (`how-ai-agents`, `MAGPIE_DIAGRAM_GEN=1`).
 - **The web operator UI is fully built** (Chainlit, `atlas/web/app.py`). All planned phases are
   complete: **A** streaming chat · **B** the two pipeline gates as Approve/Revise buttons with inline
   artifact previews · **C-v1** roster sidebar + per-agent persona chat (`AgentSession`/`SessionRegistry`,
   resume-on-profile-switch) · **C-v2** Marlow's script job-gate as an approval button (injectable
   approver seam, terminal behavior byte-identical) · **D** inline media (swatches/thumbnails/draft MP4).
   It's additive: orchestrator, pipeline, contracts, registry, and every sibling engine are untouched.
-- **A FastAPI "Control Room" dashboard is built and tested** (`atlas/dashboard/`, launched by `./yt-atlas`
-  → :8848; see §8). It turns the approved `yt-agents-dashboard.html` prototype into a real, read-mostly
-  monitoring service over live state (registry, projects, artifacts, souls, eval scorecards), with the one
-  sanctioned write (gate approval) routed through the existing pipeline seam. It ships its own API/security/
-  real-gate-write/Playwright-E2E suites and touches nothing in the engine, pipeline, contracts, or registry.
+- **A FastAPI "Control Room" dashboard is built and tested, and has grown into the operating console**
+  (`atlas/dashboard/`, launched by `./yt-atlas` → :8848; see §8). It started as a read-mostly monitor
+  over live state (registry, projects, artifacts, souls, eval scorecards) and, across the `control-room`
+  Slices, gained: a single typed front door (`POST /api/atlas/request`), niche intake → Scout discovery
+  (#1.5), a settings store passed into the pipeline as args (#4), **autonomous render under a
+  `render_budget_sec` ceiling** with over-budget escalation, an escalation surface (fix-attempt history +
+  live Atlas line + Guide/Kill), and a **read-only Herald T3 publish package that fires nothing** (real
+  publishing isn't built). Every write is still routed so it never reorders stages, edits a contract, or
+  touches gate logic. It ships its own API/security/intake/publish/Playwright-E2E suites.
 
 **Recently resolved (owner run):**
 - **Issue #2 — "irrelevant footage" — now RESOLVED; both fix directions landed.**
@@ -602,8 +666,8 @@ cd atlas && python -m pytest dashboard/tests/ -q  # the Control Room's own API/s
     Magpie skips asset rows for render-kinds. A shot framing a model as de-emphasized ("dimmed into the
     background") gets a `dim` chip so named winners stand out. Known gap: generic "four logos" shots that
     name no specific model get no chips until the brain re-tags them.
-  - **Direction B — relevant sourcing (Magpie, `asset-sourcer/source_engine.py` — the current working
-    diff).** `rank_candidates` is now **relevance-first** (license-rank only breaks ties — inverts the
+  - **Direction B — relevant sourcing (Magpie, `asset-sourcer/source_engine.py`).**
+    `rank_candidates` is now **relevance-first** (license-rank only breaks ties — inverts the
     Van Eyck bug); relevance is a normalized fraction of query *subject* tokens; museum sources are
     dropped for non-historical queries; a `RELEVANCE_FLOOR` (0.20) ships a clean placeholder instead of
     junk and a `RELEVANCE_WEAK` (0.50) flags weak-but-present assets for the human gate.
@@ -617,20 +681,22 @@ cd atlas && python -m pytest dashboard/tests/ -q  # the Control Room's own API/s
   - **Mason render fixes:** font handling, a native data-chart render, a contrast-blocking gate, and
     caption legibility.
 
-**In flight — the self-improvement / evaluation system (uncommitted working diff; full detail in §13):**
-- **Phase 1 (foundation) built and proven:** the frozen, CEO-owned `atlas/rubric/` (read-only, no write path)
-  plus the `atlas/eval/` analyzers + inspector + roll-up + diagnose + loop. A real scorecard runs against a
-  finished project; the loop is write-boundary-safe (can only touch soft-tier persona/prompt markdown).
-- **Phase 2 in progress:** step 1 = band **calibration** from the `ReferanceVideos/` set (`calibrate.py` →
-  `rubric.proposal.json`, never the rubric itself); step 2 = **hardened loop** (holdout split + judged
-  noise-floor gate + held-out verifier) with a real accept demonstrated; step 3 = **split coaching** — the loop
-  now delegates a diagnosed fix to one of two sibling coaches (**Quill 🖋️** editorial / **Flux 🎚️** production)
-  by stage (`coach_for_stage` / `delegate_to_coach` / `use_coaches`); step 4 = **bounded research/self-study
-  has begun** (a `research` flag widens what the coach tries, but a hypothesis is adopted only if it beats
-  the held-out gate). The rubric numbers are still partly placeholders pending the visual CEO interview.
-- This work is **additive and uncommitted** (new `atlas/rubric/`, `atlas/eval/`, two coach adapters, three new
-  sibling projects, `docs/`, and the two root design docs). The pipeline, contracts, and registry-of-7-specialists
-  are untouched; the registry gained only the three off-pipeline agents.
+**Landed on `control-room` (committed) since the previous doc revision:**
+- **The `treatment` stage + the diagram generator** (above), and a **widened motion vocabulary**
+  (kinetic-typography `word-reveal`, plus `breathe`/`bars-grow`/`drift` from the local
+  `hyperframes-animation` library; `count-up`) — EFFECTS is now 13 (§7).
+- **Audio normalized to −14 LUFS** (a final `loudnorm` pass; it was shipping ~−22, too quiet).
+- **Render last-mile + diagram-label legibility fixes** (text-occlusion in data-chart/comparison,
+  transient-Chrome-crash retry in the auto-gate, text-forward fallback for photo-less scenes,
+  contrast failures surface rather than hard-block, and the `_on_fill_ink` node-label contrast fix).
+- **The eval / self-improvement system is committed and Phase-2-complete** (full detail in §13): the
+  frozen `atlas/rubric/` (read-only, no write path) + the `atlas/eval/` analyzers/inspector/roll-up/
+  diagnose/hardened-loop, **all four Phase-2 steps done** — band calibration, the hardened loop (holdout
+  split + judged noise-floor gate + held-out verifier, with a real accept demonstrated end-to-end),
+  split coaching (Quill/Flux by stage), and the bounded research/self-study seam. It is additive: the
+  pipeline, contracts, and registry-of-7-specialists are untouched; the registry gained only the three
+  off-pipeline agents. The remaining open item is the **visual CEO interview** to replace the
+  placeholder rubric bands with chosen targets.
 
 **Known gaps / tech debt:**
 - **The `research` stage now runs Sage's REAL engine** (was a stub when this doc was first written).
@@ -639,17 +705,19 @@ cd atlas && python -m pytest dashboard/tests/ -q  # the Control Room's own API/s
   (`stubs.produce_research`) is retained only as an **opt-in fallback**: set `ATLAS_RESEARCH_STUB` truthy
   to force it (dev / no-network), and that path logs loudly so a stub run is never mistaken for real
   research. So a `produce_video` run now researches the topic for real before scripting.
-- **Docs now reconciled to the code:** `atlas/README.md` and `atlas/PLAN.md` were updated to the full
-  8-agent fleet + 10-stage pipeline + gates + web UI (PLAN.md keeps its pre-build review as a clearly
-  marked historical record), and `CHANGELOG.md` gained a `0.3.0 — Full fleet, real engines` entry. The
-  registry/adapters remain the ground truth, but the prose no longer contradicts them.
+- **Docs lag the code in places** — `atlas/README.md`/`atlas/PLAN.md`/`CHANGELOG.md` were reconciled
+  during the owner run (full fleet + real engines), but predate the `control-room` work (the `treatment`
+  stage, diagram generator, committed eval system, and Control Room growth). The registry/adapters and
+  `pipeline.STAGES` remain the ground truth; treat the per-project prose as historical where it conflicts.
 - **Per-scene TTS is sequential** (~11s/scene overhead); a 10+ scene script can run minutes
   (narration job timeout is raised to 900s). Parallelizing per-scene TTS is a documented follow-up.
 - **Web UI is complete but shares state with the terminal** — `atlas/web/app.py` (Chainlit) is a
   full second frontend, but it shares one `chat_state.json` with the terminal Atlas (last-writer-wins);
   don't run both at once. It also pulls in a dormant `opentelemetry-instrumentation-ollama` shim via
   `literalai`/`traceloop` (not actual Ollama — can't be dropped cleanly).
-- Model IDs are inconsistent across agents' `llm.py` (see §9 note).
+- Model IDs were normalized during the owner run (creative agents on `claude-opus-4-8`, the rest on
+  `claude-sonnet-4-6`), but values still vary per agent — read the relevant `llm.py` rather than
+  assuming (see §9 note).
 - Provider-fallback chains (e.g. a transition `xfade` vs hard `cut`, `whisper.cpp` word timing) are
   best-effort and degrade silently — verify behavior when debugging render/caption issues.
 
@@ -657,7 +725,7 @@ cd atlas && python -m pytest dashboard/tests/ -q  # the Control Room's own API/s
 
 ## 13. The Self-Improvement & Evaluation System
 
-> This is the newest layer (uncommitted working diff). It adds a "self-improvement department" that
+> This is the newest layer (built, tested, and **committed on `control-room`** — Phase 2 complete). It adds a "self-improvement department" that
 > learns what *good* means from reference videos and continuously tunes the fleet toward that standard —
 > **without ever being able to trade away reliability.** Design docs: `rubric-decomposition.md` and
 > `self-improvement-enhancement-decisions.md` at the repo root; phase reports under `docs/`.
@@ -729,10 +797,10 @@ cd atlas && python -m pytest dashboard/tests/ -q  # the Control Room's own API/s
   *standard* from the `ReferanceVideos/` set — she defines "good", she does not improve videos.
 
 ### The path / current phase
-- **Phase 1** (establish the standard + the basic measurement) — **done**. **Phase 2**: step 1 calibration ·
-  step 2 hardened loop (a real accept was demonstrated end-to-end) · step 3 split coaching — **done/in
-  progress**; **step 4 bounded research/self-study has begun** — a `research` flag threads through to the
-  owning coach to widen what's tried, but a researched hypothesis is **adopted only when it beats the
+- **Phase 1** (establish the standard + the basic measurement) — **done**. **Phase 2** — **all four steps
+  done**: step 1 calibration · step 2 hardened loop (a real accept demonstrated end-to-end) · step 3 split
+  coaching (Quill/Flux by stage) · step 4 bounded research/self-study — a `research` flag threads through to
+  the owning coach to widen what's tried, but a researched hypothesis is **adopted only when it beats the
   held-out gate** (research widens; the rubric + held-out set prune). See `atlas/tests/test_eval_research.py`.
 - Still ahead: the **visual CEO interview** to replace the placeholder rubric bands with chosen targets; until
   it lands the bands remain partly placeholders.
@@ -757,6 +825,12 @@ cd atlas && python -m pytest dashboard/tests/ -q  # the Control Room's own API/s
 - **Gate** — a mandatory checkpoint. **Fact-check gate** (after fact-check; a `block` can't be approved
   away) and **final-render gate** (before spending the render). Both pause-and-resume via `project.json`.
 - **Auto-gate** — Mason's automatic per-scene check (self-scan + lint + validate + inspect) before a render.
+- **Creative treatment** — Iris's pre-script `treatment` stage output (`creative_treatment.json`): rhythm,
+  visual world, mood, per-beat concept. Advisory/optional; consumed by script + style + storyboard when present.
+- **Diagram generator / DiagramPlan** — the flagged (`MAGPIE_DIAGRAM_GEN`) plan-then-render path: Magpie
+  plans a `DiagramPlan` (cached in `asset_manifest` v1.1), Mason renders it to deterministic in-HTML SVG.
+- **Control Room** — the FastAPI dashboard (`atlas/dashboard/`) as the operating console: monitoring +
+  intake + settings + autonomous-render-under-budget + escalation, all routed through the spine's seams.
 - **Slug** — a project directory name under `atlas/projects/`; identifies one video for resume.
 - **Soul / SOUL.md / STYLE.md** — an agent's persona bundle (identity / voice + calibration examples).
 - **SKILL.md** — an agent's engine job contract / method (the "how it works" for the engine).
