@@ -787,6 +787,83 @@ def test_data_chart_scene_with_data_is_not_bare_text():
 
 
 # ----------------------------------------------------------------------
+# data-chart kinds: line + pie (ported from the HF data-chart registry block).
+# Mason stays the deterministic emitter — pure build-time SVG geometry, draw-on
+# reveal on the paused timeline. Iris (the art director) picks the chart_kind.
+# ----------------------------------------------------------------------
+_CHART_DATA = [{"label": "Coffee", "value": 95}, {"label": "Black tea", "value": 48},
+               {"label": "Green tea", "value": 29}]
+
+
+def test_chart_kinds_vocab_matches_the_art_director():
+    assert set(engine.CHART_KINDS) == {"bar", "line", "pie"}
+    vocab = _extract_art_director_vocab()
+    if vocab is not None and "CHART_KINDS" in vocab:
+        assert set(vocab["CHART_KINDS"]) == set(engine.CHART_KINDS)
+
+
+def test_render_line_chart_is_a_drawon_ready_polyline():
+    svg = engine.render_line_chart(_CHART_DATA)
+    assert "line-chart" in svg and "line-path" in svg
+    assert 'pathLength="1"' in svg                    # normalized for stroke-dashoffset draw-on
+    assert svg.count("line-dot") == 3                 # one marker per point
+    assert "Coffee" in svg and "95" in svg
+    assert engine.render_line_chart([]) == ""         # nothing chartable
+    assert engine.render_line_chart([{"label": "x", "value": 1}]) == ""   # a line needs >=2 pts
+
+
+def test_render_pie_chart_slices_cover_the_whole_circle():
+    svg = engine.render_pie_chart(_CHART_DATA)
+    assert "pie-chart" in svg
+    assert svg.count("pie-slice") == 3                # one arc per datum
+    assert engine.render_pie_chart([]) == ""
+    # percentages shown and the largest datum carries the signature tint
+    assert "%" in svg
+    assert engine.SIGNATURE_HIGHLIGHT in svg
+
+
+def test_data_chart_line_kind_renders_line_and_draws_on():
+    ctx = _ctx(layout="data-chart", signature=False, effects=[], assets=[],
+               chart_kind="line", chart_data=_CHART_DATA)
+    html = engine.compose_scene_html(ctx)
+    assert 'class="media line-chart"' in html and '<rect class="bar"' not in html
+    assert 'strokeDashoffset' in html                 # baked draw-on reveal in the timeline
+    assert engine.scan_determinism(html) == []
+
+
+def test_data_chart_pie_kind_renders_pie_and_reveals():
+    ctx = _ctx(layout="data-chart", signature=False, effects=[], assets=[],
+               chart_kind="pie", chart_data=_CHART_DATA)
+    html = engine.compose_scene_html(ctx)
+    assert 'class="media pie-chart"' in html and '<rect class="bar"' not in html
+    assert "pie-slice" in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_data_chart_defaults_to_bar_when_kind_absent():
+    ctx = _ctx(layout="data-chart", signature=False, effects=[], assets=[],
+               chart_data=_CHART_DATA)                # no chart_kind
+    html = engine.compose_scene_html(ctx)
+    assert "bar-chart" in html
+
+
+def test_chart_kinds_are_byte_deterministic():
+    for kind in ("line", "pie"):
+        ctx = dict(layout="data-chart", chart_kind=kind, chart_data=_CHART_DATA)
+        a = engine.compose_scene_html(_ctx(**ctx))
+        b = engine.compose_scene_html(_ctx(**ctx))
+        assert a == b, f"{kind} chart is not byte-stable"
+
+
+def test_unknown_chart_kind_is_rejected():
+    script, style, board, assets = _good_inputs()
+    board["scenes"][0]["layout"] = "data-chart"
+    board["scenes"][0]["chart_kind"] = "radar"
+    ok, errors = engine.validate_inputs(script, style, board, assets)
+    assert not ok and any("chart_kind" in e for e in errors)
+
+
+# ----------------------------------------------------------------------
 # C4 — caption legibility: a scrim/background panel behind the caption text
 # ----------------------------------------------------------------------
 def test_captions_have_a_legibility_scrim():

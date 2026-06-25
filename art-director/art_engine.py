@@ -111,6 +111,9 @@ EFFECTS = (
     "drift",                # slow Ken-Burns pan-zoom on a still
     "word-reveal",          # kinetic typography: the title reveals one word at a time
 )
+# data-chart sub-kinds Mason can render natively (chosen ONLY on a data-chart scene).
+# Kept in lock-step with composition_engine.CHART_KINDS (cross-engine parity test).
+CHART_KINDS = ("bar", "line", "pie")
 TEXTURES = (
     "paper",
     "grain",
@@ -463,7 +466,9 @@ def _vocab_block() -> str:
         "EFFECTS (per-scene, varying techniques — choose sparingly within the budget):\n  "
         + ", ".join(EFFECTS) + "\n"
         "TEXTURES (global, always-on hand-made layer — set once in the style guide):\n  "
-        + ", ".join(TEXTURES))
+        + ", ".join(TEXTURES) + "\n"
+        "CHART_KINDS (ONLY on a 'data-chart' scene — set chart_kind to one of these):\n  "
+        + ", ".join(CHART_KINDS))
 
 
 def _build_style_prompt(script: dict) -> str:
@@ -503,7 +508,9 @@ def _build_storyboard_prompt(script: dict, style_guide: dict) -> str:
         "/ on_screen_text density / claims. Layout heuristics: a single dominant "
         "statistic -> 'big-number'; a chronological history or an ordered process "
         "-> 'timeline'; a magnitude comparison of several numbers -> 'data-chart'; a "
-        "head-to-head -> 'comparison-2up'. Define its shots (each a `kind` + a "
+        "head-to-head -> 'comparison-2up'. On a 'data-chart' scene set chart_kind from "
+        "CHART_KINDS: 'bar' for category magnitude (default), 'line' for a trend over an "
+        "ordered sequence (>=2 points), 'pie' for parts of a whole. Define its shots (each a `kind` + a "
         "content description — you reference assets, you do NOT resolve URLs or "
         "licenses). For any shot that shows a product/model LOGO or BRAND (e.g. a named "
         "AI model, a company logo), set kind:'brand' and NAME the model(s) in `content` "
@@ -611,8 +618,13 @@ def assemble_storyboard(script: dict, style_guide: dict, llm_out: dict) -> dict:
             transition = "cut"
         on_screen_text = (str(raw.get("on_screen_text", "")).strip()
                           or (ss.get("on_screen_text") or "").strip())
+        # data-chart sub-kind (bar|line|pie) — only meaningful on a data-chart scene;
+        # unknown/absent snaps to "bar" (Mason's default). Dropped on non-chart layouts.
+        chart_kind = str(raw.get("chart_kind", "")).strip()
+        if chart_kind not in CHART_KINDS:
+            chart_kind = "bar"
 
-        scenes.append({
+        scene = {
             "scene_no": n,
             "layout": layout,
             "shots": ensure_shots(raw.get("shots"), n, on_screen_text),
@@ -620,7 +632,10 @@ def assemble_storyboard(script: dict, style_guide: dict, llm_out: dict) -> dict:
             "transition": transition,
             "effects": normalize_effects(raw.get("effects")),
             "signature_beat": bool(raw.get("signature_beat")),
-        })
+        }
+        if layout == "data-chart":
+            scene["chart_kind"] = chart_kind
+        scenes.append(scene)
 
     # EXACTLY ONE signature beat — and the signature EFFECT lives on exactly it.
     sig_idx = choose_signature_scene(scenes)

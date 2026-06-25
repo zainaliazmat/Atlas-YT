@@ -45,6 +45,7 @@ the frozen contract at the adapter boundary.
 from __future__ import annotations
 
 import html as _html
+import math
 import os
 import pathlib
 import re
@@ -116,6 +117,10 @@ LAYOUTS = (
     "title-card", "big-number", "timeline",
 )
 TRANSITIONS = ("cut", "dip-to-black", "push", "wipe", "match-cut")
+# data-chart sub-kinds (ported from the HF `data-chart` registry block). NOT one of the
+# four storyboard axes — a property of a `data-chart` scene, chosen by Iris (the creative
+# layer), rendered by Mason as deterministic build-time SVG. Defaults to "bar".
+CHART_KINDS = ("bar", "line", "pie")
 EFFECTS = (
     "stutter-12fps", "stepped-ease", SIGNATURE_EFFECT, "map-draw",
     "chromatic-aberration", "push-in", "parallax", "count-up",
@@ -375,6 +380,9 @@ def validate_inputs(script: dict, style_guide: dict, storyboard: dict,
         for fx in _names(sc.get("effects")):
             if fx not in EFFECTS:
                 errors.append(f"scene {n}: unknown effect token {fx!r}.")
+        ckind = sc.get("chart_kind")
+        if ckind is not None and ckind not in CHART_KINDS:
+            errors.append(f"scene {n}: unknown chart_kind token {ckind!r}.")
 
     # Assets: no remote URIs (Phase 0 proved a remote 404 silently ships a broken,
     # non-reproducible MP4). Missing-local is NOT blocked here — it becomes a
@@ -809,6 +817,95 @@ def render_bar_chart(data: list[dict], *, cls: str = "media") -> str:
             f'y2="{vh - pad_b:.1f}" />' + "".join(bars) + "</svg>")
 
 
+def render_line_chart(data: list[dict], *, cls: str = "media") -> str:
+    """A deterministic, build-time native LINE chart (pure inline SVG). The trend path is
+    `pathLength="1"` + dashed so it draws on via stroke-dashoffset on the paused timeline
+    (the HF data-chart 'line stroke-dashoffset draw-on' technique, ported). Point markers
+    + value/axis labels. Returns '' with fewer than two points (a line needs a segment)."""
+    pts = [d for d in (data or []) if isinstance(d.get("value"), (int, float))]
+    if len(pts) < 2:
+        return ""
+    vw, vh = 1000.0, 600.0
+    pad_l, pad_r, pad_b, pad_t = 60.0, 50.0, 90.0, 56.0
+    n = len(pts)
+    vmax = max(d["value"] for d in pts) or 1.0
+    plot_w, plot_h = vw - pad_l - pad_r, vh - pad_b - pad_t
+    coords = [(pad_l + plot_w * (i / (n - 1)),
+               pad_t + (plot_h - (float(d["value"]) / vmax) * plot_h))
+              for i, d in enumerate(pts)]
+    dpath = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+    marks = []
+    for (x, y), d in zip(coords, pts):
+        marks.append(
+            f'<circle class="line-dot" cx="{x:.1f}" cy="{y:.1f}" r="9" '
+            f'fill="{SIGNATURE_HIGHLIGHT}" />'
+            f'<text class="line-val" x="{x:.1f}" y="{y - 20:.1f}" '
+            f'text-anchor="middle">{_esc(_fmt_num(d["value"]))}</text>'
+            f'<text class="line-lbl" x="{x:.1f}" y="{vh - 30:.1f}" '
+            f'text-anchor="middle">{_esc(d["label"])}</text>')
+    return (f'<svg class="{cls} line-chart" viewBox="0 0 {vw:.0f} {vh:.0f}" '
+            f'preserveAspectRatio="xMidYMid meet" role="img">'
+            f'<line class="axis" x1="{pad_l:.1f}" y1="{vh - pad_b:.1f}" '
+            f'x2="{vw - pad_r:.1f}" y2="{vh - pad_b:.1f}" />'
+            f'<path class="line-path" pathLength="1" fill="none" '
+            f'stroke="{SIGNATURE_HIGHLIGHT}" d="{dpath}" />'
+            + "".join(marks) + "</svg>")
+
+
+def _arc_xy(cx: float, cy: float, r: float, frac: float) -> tuple[float, float]:
+    """Point on a circle at `frac` of a full turn, starting at 12 o'clock, clockwise.
+    Pure trig — fully deterministic (no randomness, no clock)."""
+    ang = 2.0 * math.pi * frac - math.pi / 2.0
+    return cx + r * math.cos(ang), cy + r * math.sin(ang)
+
+
+def render_pie_chart(data: list[dict], *, cls: str = "media") -> str:
+    """A deterministic, build-time native PIE chart (pure inline SVG arc geometry). Slices
+    are sized by share of the total and reveal by a staggered scale-in on the paused
+    timeline (the HF data-chart radial-reveal technique, ported as a seek-safe stagger).
+    The largest slice carries the signature tint. Returns '' when there's nothing
+    chartable. Single-datum input degrades to one full-circle slice."""
+    pts = [d for d in (data or [])
+           if isinstance(d.get("value"), (int, float)) and float(d["value"]) > 0]
+    total = sum(float(d["value"]) for d in pts)
+    if not pts or total <= 0:
+        return ""
+    vw = vh = 600.0
+    cx, cy, r = 300.0, 300.0, 250.0
+    vmax = max(float(d["value"]) for d in pts)
+    # a muted neutral ramp for the non-winner slices (deterministic, by index)
+    ramp = ("#9aa0a6", "#c7ccd1", "#6b7077", "#e4e7ea", "#80868b", "#b0b5ba")
+    slices, acc = [], 0.0
+    ci = 0
+    for i, d in enumerate(pts):
+        frac = float(d["value"]) / total
+        start, end = acc, acc + frac
+        acc = end
+        fill = SIGNATURE_HIGHLIGHT if float(d["value"]) == vmax else ramp[ci % len(ramp)]
+        if float(d["value"]) != vmax:
+            ci += 1
+        if len(pts) == 1:                                # one datum -> a full disc
+            body = f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="{fill}" />'
+        else:
+            x0, y0 = _arc_xy(cx, cy, r, start)
+            x1, y1 = _arc_xy(cx, cy, r, end)
+            large = 1 if frac > 0.5 else 0
+            body = (f'<path d="M{cx:.1f},{cy:.1f} L{x0:.1f},{y0:.1f} '
+                    f'A{r:.1f},{r:.1f} 0 {large} 1 {x1:.1f},{y1:.1f} Z" fill="{fill}" />')
+        # a label at the slice mid-angle, pulled toward the rim
+        lx, ly = _arc_xy(cx, cy, r * 0.62, (start + end) / 2.0)
+        pct = round(frac * 100.0)
+        slices.append(
+            f'<g class="pie-slice">{body}'
+            f'<text class="pie-lbl" x="{lx:.1f}" y="{ly:.1f}" text-anchor="middle">'
+            f'{_esc(d["label"])}</text>'
+            f'<text class="pie-pct" x="{lx:.1f}" y="{ly + 34:.1f}" '
+            f'text-anchor="middle">{pct}%</text></g>')
+    return (f'<svg class="{cls} pie-chart" viewBox="0 0 {vw:.0f} {vh:.0f}" '
+            f'preserveAspectRatio="xMidYMid meet" role="img">'
+            + "".join(slices) + "</svg>")
+
+
 def _fmt_num(v) -> str:
     f = float(v)
     return str(int(f)) if f.is_integer() else f"{f:g}"
@@ -867,19 +964,43 @@ def _layout_lower_third(ctx):
             f'</h2></div></div>', "tl": []}
 
 
+def _chart_reveal_tl(kind: str) -> list:
+    """The chart's own reveal motion, baked into the data-chart layout timeline so a
+    native line/pie chart always animates in (build-time GSAP on the paused timeline —
+    seek-deterministic, no clock/randomness/SMIL). bar reveal stays the opt-in `bars-grow`
+    effect Iris chooses, so bar returns nothing here (no double-animation)."""
+    if kind == "line":
+        # the trend path draws on (stroke-dashoffset 1->0), then dots + labels fade up
+        return ['tl.to(".line-path",{strokeDashoffset:0,duration:1.1,ease:"power1.inOut"},0.2);',
+                'tl.from(".line-dot,.line-val,.line-lbl",{opacity:0,y:16,duration:0.4,'
+                'ease:"power2.out",stagger:0.06},0.9);']
+    if kind == "pie":
+        # slices scale in from the centre, staggered (a seek-safe radial-style reveal)
+        return ['tl.from(".pie-slice",{opacity:0,scale:0.6,duration:0.5,ease:"back.out(1.5)",'
+                'stagger:0.12,transformOrigin:"300px 300px"},0.15);']
+    return []
+
+
 def _layout_data_chart(ctx):
     # A data-chart scene must render an actual VISUAL, never bare centered text (C5).
-    # Precedence: a PRESENT data-viz/image asset -> a deterministic native bar chart
-    # built from the scene's data -> the standard media/placeholder fallback. Brand
-    # scenes still get chips (handled inside _media_html).
+    # Precedence: a PRESENT data-viz/image asset -> a deterministic native chart of the
+    # scene's chosen kind (bar|line|pie) built from the scene's data -> the standard
+    # media/placeholder fallback. Brand scenes still get chips (via _media_html).
+    kind = ctx.get("chart_kind") or "bar"
+    tl: list = []
     if not ctx.get("brand_keys"):
         asset = next((a for a in ctx["assets"]
                       if a["type"] in ("data-viz", "image") and a.get("src_rel")), None)
         if asset:
             inner = f'<img class="media" src="{_esc(asset["src_rel"])}" alt="" />'
         else:
-            chart = render_bar_chart(ctx.get("chart_data") or [])
-            inner = chart if chart else _media_html(ctx)
+            data = ctx.get("chart_data") or []
+            chart = _render_chart(kind, data)
+            if chart:
+                inner = chart
+                tl = _chart_reveal_tl(kind)
+            else:
+                inner = _media_html(ctx)
     else:
         inner = _media_html(ctx)
     # Title ABOVE the chart: a centered column drops a below-chart title into the
@@ -889,7 +1010,18 @@ def _layout_data_chart(ctx):
     return {"css": "", "html":
             f'<div class="layout data-chart">'
             f'<h2 class="scene-title">{_esc(ctx["title"])}</h2>'
-            f'<div class="chart-frame">{inner}</div></div>', "tl": []}
+            f'<div class="chart-frame">{inner}</div></div>', "tl": tl}
+
+
+def _render_chart(kind: str, data: list) -> str:
+    """Dispatch to the deterministic SVG emitter for the chosen kind. line/pie fall back
+    to a bar chart when the data can't support them (e.g. a single point) so a data-chart
+    scene is never bare text."""
+    if kind == "line":
+        return render_line_chart(data) or render_bar_chart(data)
+    if kind == "pie":
+        return render_pie_chart(data) or render_bar_chart(data)
+    return render_bar_chart(data)
 
 
 def _layout_quote(ctx):
@@ -1262,6 +1394,18 @@ _BASE_CSS = (
     ".bar-chart .axis{stroke:#ffffff44;stroke-width:2;}"
     ".bar-chart .bar-val{fill:#fff;font-size:34px;font-weight:800;}"
     ".bar-chart .bar-lbl{fill:#cfcfcf;font-size:30px;font-weight:600;}"
+    # Native LINE chart (ported data-chart line technique): a draw-on trend path
+    # (dashed initial state -> stroke-dashoffset animated on the timeline) + dots/labels.
+    ".line-chart{width:100%;height:100%;max-height:74%;}"
+    ".line-chart .axis{stroke:#ffffff44;stroke-width:2;}"
+    ".line-chart .line-path{stroke-width:6;stroke-linecap:round;stroke-linejoin:round;"
+    "stroke-dasharray:1;stroke-dashoffset:1;}"
+    ".line-chart .line-val{fill:#fff;font-size:32px;font-weight:800;}"
+    ".line-chart .line-lbl{fill:#cfcfcf;font-size:30px;font-weight:600;}"
+    # Native PIE chart (ported data-chart radial technique): arc slices + share labels.
+    ".pie-chart{width:100%;height:100%;max-height:78%;}"
+    ".pie-chart .pie-lbl{fill:#0d0d0d;font-size:30px;font-weight:800;}"
+    ".pie-chart .pie-pct{fill:#0d0d0d;font-size:26px;font-weight:600;}"
     # Brand chips (issue #2, Direction A): a clean logo card — the real inline SVG mark
     # over the model name, framed by the brand color. A row of them when several models
     # appear (the matchup); dim cards de-emphasize a scene's non-winners. Static —
@@ -1559,6 +1703,9 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
         "shots": shots, "brand_keys": scene_brand_keys(shots),
         "brand_specs": scene_brand_specs(shots),
         "chart_data": chart_data,
+        # data-chart sub-kind chosen by Iris (bar|line|pie); unknown/absent -> bar.
+        "chart_kind": (board_scene.get("chart_kind")
+                       if board_scene.get("chart_kind") in CHART_KINDS else "bar"),
         "hero_stat": hero_stat, "timeline_data": timeline_data,
     }
 
