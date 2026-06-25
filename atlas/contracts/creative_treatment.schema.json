@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/creative_treatment.schema.json",
+  "title": "creative_treatment.json — the director's creative treatment (prompt-expansion)",
+  "description": "v1.0. A grounded creative-direction layer produced AFTER research and BEFORE the script, on the strong creative model, distilled from the HyperFrames craft library. It enriches a thin brief into an intentional production direction (rhythm, visual world, per-beat concept/mood/emphasis, recurring motifs) that BOTH the scriptwriter and the art director read the same way — so they use the full closed vocabulary deliberately instead of defaulting to restraint. It is DIRECTION ONLY: no pixel coordinates, no freeform per-scene decoratives, nothing outside the agents' closed vocabularies. All fields beyond schema_version are advisory and OPTIONAL, so the pipeline stays backward-compatible when the stage is absent.",
+  "type": "object",
+  "required": ["schema_version"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "rhythm": {"type": "string", "description": "the pacing arc, e.g. 'hook-BUILD-PEAK-breathe-CTA'"},
+    "visual_world": {"type": "string", "description": "the mood/metaphor world in 1-2 sentences"},
+    "mood_refs": {"type": "array", "items": {"type": "string"},
+                  "description": "cultural/design references (NOT hex), e.g. 'editorial calm', 'cinematic title sequence'"},
+    "motifs": {"type": "array", "items": {"type": "string"},
+               "description": "recurring visual threads across the video"},
+    "emphasis": {"type": "string", "description": "the one idea the whole video must land"},
+    "beats": {
+      "type": "array",
+      "description": "per narrative beat (derived from the brief's arc), in order",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "beat": {"type": "string", "description": "the beat's role, e.g. 'hook', 'build', 'peak', 'cta'"},
+          "concept": {"type": "string", "description": "the big idea of this beat in 1-2 sentences"},
+          "mood": {"type": "string", "description": "the felt tone / energy of this beat"},
+          "emphasis_word": {"type": "string", "description": "the single word/phrase that should land"},
+          "intent": {"type": "string", "description": "the visual/pacing intent (plain English, vocabulary-agnostic)"}
+        }
+      }
+    },
+    "negative": {"type": "array", "items": {"type": "string"},
+                 "description": "what to avoid (clichés, off-tone choices)"}
+  }
+}

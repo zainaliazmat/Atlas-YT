@@ -33,6 +33,34 @@ def test_valid_artifacts_pass():
     assert ok, errors
 
 
+def test_research_brief_accepts_a_thematic_anchor():
+    brief = _valid_research_brief()
+    brief["thematic_anchor"] = {
+        "thesis_statement": "We are about to mine the deep ocean before we have even seen it.",
+        "supporting_pillar_1": "Under 0.001% of the deep seafloor has been directly observed.",
+        "supporting_pillar_2": "31 ISA exploration licenses already cover the deep sea.",
+        "counter_intuitive_angle": "We assume mapping precedes extraction; here it's reversed.",
+        "emotional_payload": "the quiet dread of a frontier sold off before it's been seen",
+        "confidence": "high",
+    }
+    ok, errors = contracts.validate("research_brief", brief)
+    assert ok, errors
+
+
+def test_research_brief_rejects_a_half_built_anchor():
+    # If thematic_anchor is present it must carry all five legs of the argument.
+    brief = _valid_research_brief()
+    brief["thematic_anchor"] = {"thesis_statement": "An argument with no evidence."}
+    ok, errors = contracts.validate("research_brief", brief)
+    assert not ok
+
+
+def test_research_brief_without_anchor_still_validates():
+    # Backward-compatible: an older brief with no anchor remains valid.
+    ok, errors = contracts.validate("research_brief", _valid_research_brief())
+    assert ok, errors
+
+
 def test_missing_required_field_is_rejected():
     bad = _valid_factcheck()
     del bad["verdict"]
@@ -77,6 +105,70 @@ def test_contracts_are_additively_extensible():
                          "effects": ["push-in",                       # bare-string form
                                      {"name": "highlighter-FFD000"}]}]}  # {name,params} form
     ok, errors = contracts.validate("storyboard", board)
+    assert ok, errors
+
+
+def _valid_motion_mood_board():
+    return {
+        "schema_version": "1.0",
+        "video_level": {
+            "global_tempo": "brisk_and_urgent",
+            "global_texture": "grain",
+            "global_texture_justification": "grain evokes archival memory of a future "
+                                            "that hasn't happened yet",
+            "dominant_motion_philosophy": "motion is punctuation, not decoration",
+        },
+        "beat_map": [
+            {"beat_id": "b-hook", "arc_phase": "hook", "primary_emotion": "curiosity",
+             "intensity": 9, "pacing_profile": "rapid_staccato",
+             "dominant_effect": "stutter-12fps", "secondary_effect": "none",
+             "transition_in": "cut", "layout_family": "centered-statement",
+             "scene_duration_target_sec": 8.0,
+             "motion_parameter_overrides": {"stutter-12fps": {"apply_to": "entire_beat"}},
+             "visual_mood_ref": "the cold open of Fincher's Social Network"},
+            {"beat_id": "b-peak", "arc_phase": "peak", "primary_emotion": "awe",
+             "intensity": 10, "pacing_profile": "slow_reveal",
+             "dominant_effect": "highlighter-FFD000", "transition_in": "dip-to-black",
+             "layout_family": "big-number", "scene_duration_target_sec": 15.0},
+        ],
+        "signature_beat_placement": {
+            "beat_id": "b-peak", "target_element": "41%",
+            "justification": "the thesis lands hardest on this number",
+        },
+    }
+
+
+def test_motion_mood_board_valid_artifact_passes():
+    ok, errors = contracts.validate("motion_mood_board", _valid_motion_mood_board())
+    assert ok, errors
+
+
+def test_motion_mood_board_rejects_off_vocabulary_effect():
+    bad = _valid_motion_mood_board()
+    bad["beat_map"][0]["dominant_effect"] = "explode"   # not a HyperFrames effect
+    ok, errors = contracts.validate("motion_mood_board", bad)
+    assert not ok
+    assert any("explode" in e for e in errors)
+
+
+def test_motion_mood_board_rejects_off_vocabulary_layout():
+    bad = _valid_motion_mood_board()
+    bad["beat_map"][1]["layout_family"] = "carousel"
+    ok, errors = contracts.validate("motion_mood_board", bad)
+    assert not ok
+
+
+def test_motion_mood_board_beat_requires_core_fields():
+    bad = _valid_motion_mood_board()
+    del bad["beat_map"][0]["dominant_effect"]
+    ok, errors = contracts.validate("motion_mood_board", bad)
+    assert not ok
+    assert any("dominant_effect" in e for e in errors)
+
+
+def test_motion_mood_board_without_optional_blocks_still_validates():
+    # Backward-compatible: a minimal mood board (just the envelope) is valid.
+    ok, errors = contracts.validate("motion_mood_board", {"schema_version": "1.0"})
     assert ok, errors
 
 

@@ -171,7 +171,8 @@ def coach_for_stage(stage: str) -> Optional[str]:
 
 
 def delegate_to_coach(target: dict, direction: str, preserve: str,
-                      *, research: bool = False) -> Optional[dict]:
+                      *, research: bool = False,
+                      roundtable_context: Optional[dict] = None) -> Optional[dict]:
     """Route to the owning domain coach via its registry adapter and return its
     proposed addendum dict, or None if no coach is available / the call fails
     (the caller then falls back to the deterministic rule addendum).
@@ -193,7 +194,8 @@ def delegate_to_coach(target: dict, direction: str, preserve: str,
         res = adapter.run_job("propose_addendum", None,
                               band_id=target["band_id"], direction=direction,
                               preserve=preserve, measured_value=target.get("measured_value"),
-                              owner=target.get("owner", ""), research=research)
+                              owner=target.get("owner", ""), research=research,
+                              roundtable_context=roundtable_context)
         if res.get("ok") and (res.get("text") or "").strip():
             return {"addendum": res["text"], "coach": name,
                     "source": res.get("source"), "research": res.get("research")}
@@ -205,7 +207,8 @@ def delegate_to_coach(target: dict, direction: str, preserve: str,
 def propose_fix(target: dict, *, coach_chat_fn: Optional[Callable] = None,
                 preserve_bands: Optional[set] = None,
                 coach_fn: Optional[Callable] = None,
-                use_coaches: bool = False, research: bool = False) -> dict:
+                use_coaches: bool = False, research: bool = False,
+                roundtable_context: Optional[dict] = None) -> dict:
     """Propose a soft-tier prompt addendum that should move `target` into band.
 
     Authoring priority (the band/direction always comes from the rubric, never the
@@ -274,7 +277,8 @@ def propose_fix(target: dict, *, coach_chat_fn: Optional[Callable] = None,
     # 2. delegate to the owning SIBLING coach (the Phase-2 split); research=True
     #    lets the coach study current best practice (bounded) — the eval still prunes.
     elif use_coaches:
-        res = delegate_to_coach(target, direction, preserve, research=research)
+        res = delegate_to_coach(target, direction, preserve, research=research,
+                                roundtable_context=roundtable_context)
         if res is not None:
             addendum = res["addendum"]
             coach_name = res.get("coach")
@@ -465,7 +469,8 @@ def run_loop(*, baseline_measurements: list[Measurement], target: dict,
              spot_check_fn: Optional[Callable[[dict, dict], bool]] = None,
              use_coaches: bool = False,
              coach_fn: Optional[Callable] = None,
-             research: bool = False) -> dict:
+             research: bool = False,
+             roundtable_context: Optional[dict] = None) -> dict:
     """Run the bounded improvement loop for ONE target, HARDENED (Phase 2 step 2).
 
     `remeasure_fn(addendum) -> list[Measurement]` re-runs the owning engine with
@@ -493,7 +498,8 @@ def run_loop(*, baseline_measurements: list[Measurement], target: dict,
         proposal = propose_fix(target, coach_chat_fn=coach_chat_fn,
                                preserve_bands=preserve_bands,
                                use_coaches=use_coaches, coach_fn=coach_fn,
-                               research=research)
+                               research=research,
+                               roundtable_context=roundtable_context)
         if soft_path:
             proposal["soft_path"] = soft_path
         soft_written = None

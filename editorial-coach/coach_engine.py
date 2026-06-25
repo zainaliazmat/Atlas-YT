@@ -102,6 +102,38 @@ def _distill_hypotheses(band_id, direction, results, chat_fn, max_hypotheses) ->
     return [s.lstrip("- ") for s in snippets[:max_hypotheses]]
 
 
+def _roundtable_block(roundtable_context: Optional[dict]) -> str:
+    """Render the specialist's internal Critic→Researcher→Craftsman record into a
+    prompt block + a coaching directive. Empty string when no roundtable ran.
+
+    This is the hyper-granular signal: instead of seeing only the final draft, the
+    coach sees WHERE in the creative process a weakness originated and can target
+    the right link in the chain (Critic / Researcher / Craftsman)."""
+    if not roundtable_context:
+        return ""
+    import json
+    crits = roundtable_context.get("criticisms", []) or []
+    rq = roundtable_context.get("research_quality", {}) or {}
+    impact = roundtable_context.get("craftsman_impact", {}) or {}
+    return (
+        "\n\n=== INTERNAL CREATIVE PROCESS DATA (Creative Roundtable) ===\n"
+        "This project ran an internal Critic→Researcher→Craftsman review. You can see "
+        "the process, not just the final artifact — use it to coach the exact link that "
+        "broke.\n"
+        f"- Specialist: {roundtable_context.get('specialist')}\n"
+        f"- Process health: {roundtable_context.get('process_health')}\n"
+        f"- Critic's findings:\n{json.dumps(crits, indent=2)}\n"
+        f"- Research quality: {rq.get('total_findings', 0)} findings, "
+        f"{rq.get('findings_with_sources', 0)} sourced\n"
+        f"- Craftsman's impact: {json.dumps(impact)}\n"
+        "Coaching directive: If the Critic flagged a weakness the Craftsman didn't fix, "
+        "coach the synthesis discipline. If the Critic MISSED a weakness still visible in "
+        "the output, your note should strengthen the Critic's eye. If the Researcher found "
+        "good sourced material the Craftsman ignored, require it be used or rejected with a "
+        "reason. If the Researcher found nothing sourced, coach a better research strategy. "
+        "The named band + direction still govern.")
+
+
 def _wrap(band_id: str, body: str) -> str:
     return f"## Coach note (Quill · editorial · target {band_id})\n{body.strip()}\n"
 
@@ -115,13 +147,17 @@ def propose_addendum(*, band_id: str, direction: str, preserve: str = "",
                      measured_value=None, owner: str = "",
                      chat_fn: Optional[Callable] = None,
                      research: bool = False, search_fn: Optional[Callable] = None,
-                     max_queries: int = RESEARCH_MAX_QUERIES) -> dict:
+                     max_queries: int = RESEARCH_MAX_QUERIES,
+                     roundtable_context: Optional[dict] = None) -> dict:
     """Author a soft-tier editorial coaching addendum. Returns
     {band_id, direction, domain, owner, addendum, source, research}. source is 'llm'
     when the brain authored it, else 'rule' (deterministic fallback). When
     research=True the coach STUDIES current best practice (bounded web search) and
     folds the hypotheses into the note — but the rubric/held-out set still prunes
-    (research only widens what's tried). Never raises."""
+    (research only widens what's tried). When `roundtable_context` is supplied (the
+    specialist ran an internal Critic→Researcher→Craftsman review), the coach SEES
+    that process and targets the link that broke — purely additive; absent it the
+    coach behaves exactly as before. Never raises."""
     out = {"band_id": band_id, "direction": direction, "domain": DOMAIN,
            "owner": owner, "addendum": _rule_addendum(band_id, direction, preserve),
            "source": "rule", "research": None}
@@ -136,6 +172,8 @@ def propose_addendum(*, band_id: str, direction: str, preserve: str = "",
                               "options to try — the eval will prune what doesn't help):\n"
                               + "\n".join(f"- {h}" for h in r["hypotheses"]))
 
+    process_block = _roundtable_block(roundtable_context)
+
     fn = chat_fn or llm.chat
     system = (COACHING_PHILOSOPHY + "\n\nWrite ONLY the coaching addendum: 2-4 crisp "
               "imperative sentences in markdown. Respect the band and the direction "
@@ -144,7 +182,7 @@ def propose_addendum(*, band_id: str, direction: str, preserve: str = "",
               "but the named band + direction still govern.")
     user = (f"Specialist being coached: {owner or 'the content specialist'}\n"
             f"Metric to fix: {band_id}\nCurrent measured value: {measured_value}\n"
-            f"Needed change: {direction}\n{preserve}{research_block}\n\n"
+            f"Needed change: {direction}\n{preserve}{research_block}{process_block}\n\n"
             "Write the coaching addendum only.")
     try:
         txt = fn(system, user)

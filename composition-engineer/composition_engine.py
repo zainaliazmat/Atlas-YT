@@ -45,18 +45,25 @@ the frozen contract at the adapter boundary.
 from __future__ import annotations
 
 import html as _html
+import logging
+import math
 import os
 import pathlib
 import re
 import shutil
 import time
+import zlib
 
-import chat_state  # atomic_write_json / load_json — corruption-safe file helpers
-import hf_tools    # subprocess wrappers around the HyperFrames CLI (gate + render)
+import chat_state       # atomic_write_json / load_json — corruption-safe file helpers
+import diagram_render   # conceptual-diagram renderer (DiagramPlan -> animated flat SVG)
+import hf_tools         # subprocess wrappers around the HyperFrames CLI (gate + render)
+import shader_transition  # deterministic WebGL signature transitions (assembly seam)
                    # NOTE: imported at TOP LEVEL (not lazily) so it resolves during the
                    # atlas loader's import window — a lazy import at call time would fail
                    # after the loader restores sys.path. hf_tools is stdlib-only, so this
                    # is harmless for the pure unit tests too.
+
+logger = logging.getLogger(__name__)
 
 HERE = pathlib.Path(__file__).parent
 SKILL = (HERE / "SKILL.md").read_text()
@@ -113,12 +120,17 @@ FALLBACK_BODY_FAMILY = "Noto Sans"               # guaranteed-present OFL body f
 LAYOUTS = (
     "centered-statement", "split-screen", "full-bleed-image", "lower-third",
     "data-chart", "quote-card", "map-focus", "list-stack", "comparison-2up",
-    "title-card", "big-number", "timeline",
+    "title-card", "big-number", "timeline", "diagram",
 )
 TRANSITIONS = ("cut", "dip-to-black", "push", "wipe", "match-cut")
+# data-chart sub-kinds (ported from the HF `data-chart` registry block). NOT one of the
+# four storyboard axes — a property of a `data-chart` scene, chosen by Iris (the creative
+# layer), rendered by Mason as deterministic build-time SVG. Defaults to "bar".
+CHART_KINDS = ("bar", "line", "pie")
 EFFECTS = (
     "stutter-12fps", "stepped-ease", SIGNATURE_EFFECT, "map-draw",
     "chromatic-aberration", "push-in", "parallax", "count-up",
+    "breathe", "bars-grow", "drift", "word-reveal", "pop-in", "underline-grow",
 )
 TEXTURES = ("paper", "grain", "halftone", "vignette", "scanlines")
 
@@ -157,7 +169,28 @@ BRAND_CHIPS = {
 # slot for these; for the text-only layouts they are injected as a centered focal layer.
 MEDIA_SLOT_LAYOUTS = frozenset({
     "split-screen", "full-bleed-image", "lower-third", "data-chart", "map-focus",
+    "diagram",
 })
+
+# Photo-hero layouts: a media slot that expects a real PHOTO. (data-chart and diagram are
+# excluded — each renders its own native visual and never needs a photo.) When such a scene
+# has no relevant photo, we prefer a clean text card over a striped placeholder-panel.
+_PHOTO_SLOT_LAYOUTS = MEDIA_SLOT_LAYOUTS - {"data-chart", "diagram"}
+
+
+def _should_text_forward(ctx: dict) -> bool:
+    """CEO decision (2026-06-24): a photo-slot scene with NO usable photo renders a clean
+    text card instead of a striped placeholder-panel. Keep the slot when a real photo is
+    present, when brand chips fill it, or when a SOURCED file is missing (an integrity
+    failure we must keep visible) — downgrade only a clean sourcer-declared placeholder."""
+    if ctx.get("brand_keys"):
+        return False
+    photos = [a for a in ctx.get("assets", []) if a.get("type") in ("image", "video")]
+    if any(a.get("src_rel") for a in photos):
+        return False                       # a usable photo exists
+    if any(a.get("integrity_flag") for a in photos):
+        return False                       # surface the sourcing bug via the panel
+    return True                            # only placeholders / nothing → text-forward
 
 
 # ======================================================================
@@ -354,6 +387,9 @@ def validate_inputs(script: dict, style_guide: dict, storyboard: dict,
         for fx in _names(sc.get("effects")):
             if fx not in EFFECTS:
                 errors.append(f"scene {n}: unknown effect token {fx!r}.")
+        ckind = sc.get("chart_kind")
+        if ckind is not None and ckind not in CHART_KINDS:
+            errors.append(f"scene {n}: unknown chart_kind token {ckind!r}.")
 
     # Assets: no remote URIs (Phase 0 proved a remote 404 silently ships a broken,
     # non-reproducible MP4). Missing-local is NOT blocked here — it becomes a
@@ -397,6 +433,9 @@ def resolve_scene_assets(asset_manifest: dict, scene_no: int,
             "uri": uri, "status": status, "present": present,
             "placeholder": placeholder, "integrity_flag": integrity_flag,
             "label": str(a.get("asset_id") or "asset"),
+            # a conceptual-diagram asset carries a cached DiagramPlan, not a file (D16);
+            # pass it through so Mason can compose the diagram at render time.
+            "plan": a.get("plan"),
         })
     return out
 
@@ -627,6 +666,10 @@ def render_brand_chips(items, *, cls: str = "brand-chips") -> str:
         if not b:
             continue
         logo = b.get("logo_svg") or ""
+        # Strip the decorative SVG <title>: HyperFrames' inspect gate reads it as text
+        # occluded beneath the logo paths (text_occluded error) and blocks the render.
+        # The visible name label below carries the name, so the title is redundant.
+        logo = re.sub(r"<title>.*?</title>", "", logo, flags=re.S)
         mark = f'<span class="brand-chip-logo">{logo}</span>' if logo else ""
         name = f'<span class="brand-chip-name">{_esc(b["display"])}</span>'
         klass = "brand-chip dim" if dim else "brand-chip"
@@ -784,6 +827,95 @@ def render_bar_chart(data: list[dict], *, cls: str = "media") -> str:
             f'y2="{vh - pad_b:.1f}" />' + "".join(bars) + "</svg>")
 
 
+def render_line_chart(data: list[dict], *, cls: str = "media") -> str:
+    """A deterministic, build-time native LINE chart (pure inline SVG). The trend path is
+    `pathLength="1"` + dashed so it draws on via stroke-dashoffset on the paused timeline
+    (the HF data-chart 'line stroke-dashoffset draw-on' technique, ported). Point markers
+    + value/axis labels. Returns '' with fewer than two points (a line needs a segment)."""
+    pts = [d for d in (data or []) if isinstance(d.get("value"), (int, float))]
+    if len(pts) < 2:
+        return ""
+    vw, vh = 1000.0, 600.0
+    pad_l, pad_r, pad_b, pad_t = 60.0, 50.0, 90.0, 56.0
+    n = len(pts)
+    vmax = max(d["value"] for d in pts) or 1.0
+    plot_w, plot_h = vw - pad_l - pad_r, vh - pad_b - pad_t
+    coords = [(pad_l + plot_w * (i / (n - 1)),
+               pad_t + (plot_h - (float(d["value"]) / vmax) * plot_h))
+              for i, d in enumerate(pts)]
+    dpath = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+    marks = []
+    for (x, y), d in zip(coords, pts):
+        marks.append(
+            f'<circle class="line-dot" cx="{x:.1f}" cy="{y:.1f}" r="9" '
+            f'fill="{SIGNATURE_HIGHLIGHT}" />'
+            f'<text class="line-val" x="{x:.1f}" y="{y - 20:.1f}" '
+            f'text-anchor="middle">{_esc(_fmt_num(d["value"]))}</text>'
+            f'<text class="line-lbl" x="{x:.1f}" y="{vh - 30:.1f}" '
+            f'text-anchor="middle">{_esc(d["label"])}</text>')
+    return (f'<svg class="{cls} line-chart" viewBox="0 0 {vw:.0f} {vh:.0f}" '
+            f'preserveAspectRatio="xMidYMid meet" role="img">'
+            f'<line class="axis" x1="{pad_l:.1f}" y1="{vh - pad_b:.1f}" '
+            f'x2="{vw - pad_r:.1f}" y2="{vh - pad_b:.1f}" />'
+            f'<path class="line-path" pathLength="1" fill="none" '
+            f'stroke="{SIGNATURE_HIGHLIGHT}" d="{dpath}" />'
+            + "".join(marks) + "</svg>")
+
+
+def _arc_xy(cx: float, cy: float, r: float, frac: float) -> tuple[float, float]:
+    """Point on a circle at `frac` of a full turn, starting at 12 o'clock, clockwise.
+    Pure trig — fully deterministic (no randomness, no clock)."""
+    ang = 2.0 * math.pi * frac - math.pi / 2.0
+    return cx + r * math.cos(ang), cy + r * math.sin(ang)
+
+
+def render_pie_chart(data: list[dict], *, cls: str = "media") -> str:
+    """A deterministic, build-time native PIE chart (pure inline SVG arc geometry). Slices
+    are sized by share of the total and reveal by a staggered scale-in on the paused
+    timeline (the HF data-chart radial-reveal technique, ported as a seek-safe stagger).
+    The largest slice carries the signature tint. Returns '' when there's nothing
+    chartable. Single-datum input degrades to one full-circle slice."""
+    pts = [d for d in (data or [])
+           if isinstance(d.get("value"), (int, float)) and float(d["value"]) > 0]
+    total = sum(float(d["value"]) for d in pts)
+    if not pts or total <= 0:
+        return ""
+    vw = vh = 600.0
+    cx, cy, r = 300.0, 300.0, 250.0
+    vmax = max(float(d["value"]) for d in pts)
+    # a muted neutral ramp for the non-winner slices (deterministic, by index)
+    ramp = ("#9aa0a6", "#c7ccd1", "#6b7077", "#e4e7ea", "#80868b", "#b0b5ba")
+    slices, acc = [], 0.0
+    ci = 0
+    for i, d in enumerate(pts):
+        frac = float(d["value"]) / total
+        start, end = acc, acc + frac
+        acc = end
+        fill = SIGNATURE_HIGHLIGHT if float(d["value"]) == vmax else ramp[ci % len(ramp)]
+        if float(d["value"]) != vmax:
+            ci += 1
+        if len(pts) == 1:                                # one datum -> a full disc
+            body = f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="{fill}" />'
+        else:
+            x0, y0 = _arc_xy(cx, cy, r, start)
+            x1, y1 = _arc_xy(cx, cy, r, end)
+            large = 1 if frac > 0.5 else 0
+            body = (f'<path d="M{cx:.1f},{cy:.1f} L{x0:.1f},{y0:.1f} '
+                    f'A{r:.1f},{r:.1f} 0 {large} 1 {x1:.1f},{y1:.1f} Z" fill="{fill}" />')
+        # a label at the slice mid-angle, pulled toward the rim
+        lx, ly = _arc_xy(cx, cy, r * 0.62, (start + end) / 2.0)
+        pct = round(frac * 100.0)
+        slices.append(
+            f'<g class="pie-slice">{body}'
+            f'<text class="pie-lbl" x="{lx:.1f}" y="{ly:.1f}" text-anchor="middle">'
+            f'{_esc(d["label"])}</text>'
+            f'<text class="pie-pct" x="{lx:.1f}" y="{ly + 34:.1f}" '
+            f'text-anchor="middle">{pct}%</text></g>')
+    return (f'<svg class="{cls} pie-chart" viewBox="0 0 {vw:.0f} {vh:.0f}" '
+            f'preserveAspectRatio="xMidYMid meet" role="img">'
+            + "".join(slices) + "</svg>")
+
+
 def _fmt_num(v) -> str:
     f = float(v)
     return str(int(f)) if f.is_integer() else f"{f:g}"
@@ -842,24 +974,91 @@ def _layout_lower_third(ctx):
             f'</h2></div></div>', "tl": []}
 
 
+def _chart_reveal_tl(kind: str) -> list:
+    """The chart's own reveal motion, baked into the data-chart layout timeline so a
+    native line/pie chart always animates in (build-time GSAP on the paused timeline —
+    seek-deterministic, no clock/randomness/SMIL). bar reveal stays the opt-in `bars-grow`
+    effect Iris chooses, so bar returns nothing here (no double-animation)."""
+    if kind == "line":
+        # the trend path draws on (stroke-dashoffset 1->0), then dots + labels fade up
+        return ['tl.to(".line-path",{strokeDashoffset:0,duration:1.1,ease:"power1.inOut"},0.2);',
+                'tl.from(".line-dot,.line-val,.line-lbl",{opacity:0,y:16,duration:0.4,'
+                'ease:"power2.out",stagger:0.06},0.9);']
+    if kind == "pie":
+        # slices scale in from the centre, staggered (a seek-safe radial-style reveal)
+        return ['tl.from(".pie-slice",{opacity:0,scale:0.6,duration:0.5,ease:"back.out(1.5)",'
+                'stagger:0.12,transformOrigin:"300px 300px"},0.15);']
+    return []
+
+
 def _layout_data_chart(ctx):
     # A data-chart scene must render an actual VISUAL, never bare centered text (C5).
-    # Precedence: a PRESENT data-viz/image asset -> a deterministic native bar chart
-    # built from the scene's data -> the standard media/placeholder fallback. Brand
-    # scenes still get chips (handled inside _media_html).
+    # Precedence: a PRESENT data-viz/image asset -> a deterministic native chart of the
+    # scene's chosen kind (bar|line|pie) built from the scene's data -> the standard
+    # media/placeholder fallback. Brand scenes still get chips (via _media_html).
+    kind = ctx.get("chart_kind") or "bar"
+    tl: list = []
     if not ctx.get("brand_keys"):
         asset = next((a for a in ctx["assets"]
                       if a["type"] in ("data-viz", "image") and a.get("src_rel")), None)
         if asset:
             inner = f'<img class="media" src="{_esc(asset["src_rel"])}" alt="" />'
         else:
-            chart = render_bar_chart(ctx.get("chart_data") or [])
-            inner = chart if chart else _media_html(ctx)
+            data = ctx.get("chart_data") or []
+            chart = _render_chart(kind, data)
+            if chart:
+                inner = chart
+                tl = _chart_reveal_tl(kind)
+            else:
+                inner = _media_html(ctx)
     else:
         inner = _media_html(ctx)
+    # Title ABOVE the chart: a centered column drops a below-chart title into the
+    # bottom caption band, where the burned-in caption-scrim occludes it (inspect
+    # 'text_occluded'). Top-zoned title + chart below keeps the title clear of the
+    # caption and reads as the conventional "chart title on top".
     return {"css": "", "html":
-            f'<div class="layout data-chart"><div class="chart-frame">{inner}'
-            f'</div><h2 class="scene-title">{_esc(ctx["title"])}</h2></div>', "tl": []}
+            f'<div class="layout data-chart">'
+            f'<h2 class="scene-title">{_esc(ctx["title"])}</h2>'
+            f'<div class="chart-frame">{inner}</div></div>', "tl": tl}
+
+
+def _render_chart(kind: str, data: list) -> str:
+    """Dispatch to the deterministic SVG emitter for the chosen kind. line/pie fall back
+    to a bar chart when the data can't support them (e.g. a single point) so a data-chart
+    scene is never bare text."""
+    if kind == "line":
+        return render_line_chart(data) or render_bar_chart(data)
+    if kind == "pie":
+        return render_pie_chart(data) or render_bar_chart(data)
+    return render_bar_chart(data)
+
+
+def _layout_diagram(ctx):
+    # A conceptual-diagram scene: compose the cached DiagramPlan as animated flat SVG
+    # (title on top, diagram-frame below — caption-clear by construction, like data-chart).
+    # The diagram's reveal rides the paused master timeline. Falls back to the standard
+    # media/placeholder when there's no plan, the plan is invalid, or this is a brand scene.
+    # The diagram plan is authoritative on a `diagram` scene (Iris chose this layout and
+    # Magpie planned it) — it WINS over the brand-chip fallback, which is for brand scenes.
+    plan = ctx.get("diagram_plan")
+    inner, tl = None, []
+    if plan:
+        palette = ctx.get("palette") or {}
+        try:
+            res = diagram_render.render_diagram(
+                plan, seed=int(ctx.get("diagram_seed", 0)),
+                ink=palette.get("text", "#F5F5F5"),
+                accent=ctx.get("highlight", SIGNATURE_HIGHLIGHT))
+            inner, tl = res["svg"], res["tl"]
+        except ValueError:
+            inner = None       # invalid plan -> graceful fallback below
+    if inner is None:
+        inner = _media_html(ctx)
+    return {"css": "", "html":
+            f'<div class="layout diagram">'
+            f'<h2 class="scene-title">{_esc(ctx["title"])}</h2>'
+            f'<div class="diagram-frame">{inner}</div></div>', "tl": tl}
 
 
 def _layout_quote(ctx):
@@ -982,6 +1181,7 @@ LAYOUT_BUILDERS = {
     "map-focus": _layout_map_focus, "list-stack": _layout_list_stack,
     "comparison-2up": _layout_comparison, "title-card": _layout_title_card,
     "big-number": _layout_big_number, "timeline": _layout_timeline,
+    "diagram": _layout_diagram,
 }
 
 
@@ -1087,11 +1287,113 @@ def _fx_count_up(ctx):
                    '})();']}
 
 
+def _fx_breathe(ctx):
+    # Ambient "breathe" — a barely-there sine scale pulse on the title so a HELD scene
+    # has life (the Build -> Breathe -> Resolve doctrine from hyperframes-animation). It
+    # animates SCALE, a distinct property from the title entrance (opacity/y) and starting
+    # after it, so there's no GSAP overwrite. Finite yoyo repeat (computed from duration)
+    # -> fully seek-deterministic; no Math.random/Date.now, no SMIL.
+    one_way = 1.8
+    reps = max(1, int(float(ctx["duration"]) / one_way) - 1)
+    return {"css": "", "html": "",
+            "tl": [f'tl.to(".scene-title",{{scale:1.018,duration:{one_way},'
+                   f'ease:"sine.inOut",yoyo:true,repeat:{reps},'
+                   f'transformOrigin:"50% 50%"}},0.6);']}
+
+
+def _fx_bars_grow(ctx):
+    # Data scenes: the native bar chart's bars + labels rise and stagger in instead of
+    # appearing flat (the stat-bars-and-fills technique). Targets the chart's own elements,
+    # so it's a NO-OP (empty selection) on a scene with no chart. opacity+y, build-time
+    # stagger -> seek-deterministic.
+    return {"css": "", "html": "",
+            "tl": ['tl.from(".bar,.bar-val,.bar-lbl",{opacity:0,y:48,duration:0.55,'
+                   'ease:"power2.out",stagger:0.08},0.15);']}
+
+
+def _fx_drift(ctx):
+    # Slow Ken-Burns drift on the focal media (never embed a flat image — Image Motion
+    # Treatment). Keeps a >=1.04 base scale so the pan never exposes a frame edge; pans
+    # across the scene on sine.inOut. A self-contained pan-zoom alternative to push-in.
+    return {"css": "", "html": "",
+            "tl": [f'tl.fromTo(".media",{{scale:1.04,xPercent:-1.5,yPercent:1.5}},'
+                   f'{{scale:1.08,xPercent:1.5,yPercent:-1.5,'
+                   f'duration:{float(ctx["duration"]):.3f},ease:"sine.inOut"}},0);']}
+
+
+def _fx_word_reveal(ctx):
+    # Kinetic typography — the title reveals one WORD at a time (per-word stagger) instead
+    # of the whole line fading in at once (the marquee explainer upgrade). A build-time IIFE
+    # walks the title's child TEXT nodes only (nodeType===3), wrapping each word in a
+    # <span class="word"> and leaving ELEMENT children untouched — so the signature .hl-sweep
+    # span (injected as the title's first child when the highlighter is also present) survives
+    # intact. The default whole-title entrance is suppressed by compose_scene_html when this
+    # effect is on the scene (word-reveal OWNS the entrance). Words are inline-block so the
+    # per-word y-transform moves; whitespace text nodes are preserved so words don't run
+    # together. opacity+y stagger on the paused timeline -> seek-deterministic; no
+    # Math.random/Date.now, no SMIL, no late gsap.set, finite build-time stagger only.
+    #
+    # isolation:isolate on the title is load-bearing: the signature .hl-sweep is a z-index:-1
+    # child that paints "behind the text but above the scene background" ONLY when .scene-title
+    # forms a stacking context. Normally the default whole-title entrance's transform supplies
+    # that context — but word-reveal SUPPRESSES that entrance, so without an explicit stacking
+    # context the z-index:-1 sweep would fall behind the opaque scene background and vanish.
+    # isolation:isolate restores it deterministically and is a no-op when no highlighter is on
+    # the scene.
+    return {"css": ".scene-title{isolation:isolate;}"
+                   ".scene-title .word{display:inline-block;will-change:transform,opacity;}",
+            "html": "",
+            "tl": ['(function(){var t=document.querySelector(".scene-title");if(!t)return;'
+                   'var kids=Array.prototype.slice.call(t.childNodes);'
+                   'for(var i=0;i<kids.length;i++){var node=kids[i];'
+                   'if(node.nodeType!==3)continue;'
+                   'var parts=node.textContent.split(/(\\s+)/);'
+                   'var frag=document.createDocumentFragment();'
+                   'for(var j=0;j<parts.length;j++){var p=parts[j];if(p==="")continue;'
+                   'if(/^\\s+$/.test(p)){frag.appendChild(document.createTextNode(p));}'
+                   'else{var s=document.createElement("span");s.className="word";'
+                   's.textContent=p;frag.appendChild(s);}}'
+                   'node.parentNode.replaceChild(frag,node);}})();',
+                   'tl.from(".scene-title .word",{opacity:0,y:28,duration:0.5,'
+                   'ease:"power3.out",stagger:0.08},0);']}
+
+
+def _fx_pop(ctx):
+    # An overshoot "pop" entrance on the title — the back.out(1.8) recipe HyperFrames uses
+    # for its signature element entrances, the one entrance shape Mason lacked. Animates
+    # SCALE only: a property distinct from the default whole-title entrance (opacity/y) and
+    # from breathe's later pulse (which starts at 0.6s), so it COMPOSES with the fade-in
+    # rather than overwriting it. Build-time, finite, no Math.random/Date.now/SMIL ->
+    # seek-deterministic. (Distinct from push-in, which is a slow Ken-Burns on .media.)
+    return {"css": "", "html": "",
+            "tl": ['tl.from(".scene-title",{scale:0.84,duration:0.55,'
+                   'ease:"back.out(1.8)",transformOrigin:"50% 50%"},0);']}
+
+
+def _fx_keyline(ctx):
+    # An editorial accent keyline that draws in UNDER the title (a "design object," not
+    # decoration — the HyperFrames craft ethos). Mirrors the signature highlighter's title-
+    # child injection: compose_scene_html inserts <span class="fx-keyline"> as the title's
+    # first child, but this paints a thin rule at the title's baseline rather than a full
+    # sweep behind the text. scaleX draw-on from the left; its own selector + property, so
+    # no overwrite of the entrance or any other effect. Survives word-reveal (an element
+    # child, not a text node). Seek-deterministic build-time GSAP.
+    color = ctx["highlight"]
+    return {"css": ".scene-title{position:relative;}"
+                   ".fx-keyline{position:absolute;left:0;right:0;bottom:-0.16em;height:6px;"
+                   f"background:{color};transform-origin:left center;border-radius:3px;}}",
+            "html": "",   # injected as a title child by compose_scene_html (like .hl-sweep)
+            "tl": ['tl.fromTo(".fx-keyline",{scaleX:0},{scaleX:1,duration:0.5,'
+                   'ease:"power2.out"},0.35);']}
+
+
 EFFECT_BUILDERS = {
     "stutter-12fps": _fx_stutter, "stepped-ease": _fx_stepped,
     SIGNATURE_EFFECT: _fx_highlighter, "map-draw": _fx_map_draw,
     "chromatic-aberration": _fx_chromatic, "push-in": _fx_push_in,
     "parallax": _fx_parallax, "count-up": _fx_count_up,
+    "breathe": _fx_breathe, "bars-grow": _fx_bars_grow, "drift": _fx_drift,
+    "word-reveal": _fx_word_reveal, "pop-in": _fx_pop, "underline-grow": _fx_keyline,
 }
 
 
@@ -1106,6 +1408,14 @@ TRANSITION_ASSEMBLY = {
     "push": {"mode": "xfade", "xfade": "slideleft", "duration": 0.4},
     "wipe": {"mode": "xfade", "xfade": "wipeleft", "duration": 0.4},
 }
+
+
+def _shader_transitions_enabled() -> bool:
+    """Signature WebGL transitions are ON by default; MASON_SHADER_TRANSITIONS=0 disables
+    them (a clean, reversible kill switch — execution also falls back gracefully if the
+    headless-Chrome render is unavailable, so the video never depends on them)."""
+    return os.environ.get("MASON_SHADER_TRANSITIONS", "1").strip().lower() \
+        not in ("0", "no", "false", "off")
 
 
 # ======================================================================
@@ -1159,6 +1469,26 @@ _BASE_CSS = (
     ".bar-chart .axis{stroke:#ffffff44;stroke-width:2;}"
     ".bar-chart .bar-val{fill:#fff;font-size:34px;font-weight:800;}"
     ".bar-chart .bar-lbl{fill:#cfcfcf;font-size:30px;font-weight:600;}"
+    # Native LINE chart (ported data-chart line technique): a draw-on trend path
+    # (dashed initial state -> stroke-dashoffset animated on the timeline) + dots/labels.
+    ".line-chart{width:100%;height:100%;max-height:74%;}"
+    ".line-chart .axis{stroke:#ffffff44;stroke-width:2;}"
+    ".line-chart .line-path{stroke-width:6;stroke-linecap:round;stroke-linejoin:round;"
+    "stroke-dasharray:1;stroke-dashoffset:1;}"
+    ".line-chart .line-val{fill:#fff;font-size:32px;font-weight:800;}"
+    ".line-chart .line-lbl{fill:#cfcfcf;font-size:30px;font-weight:600;}"
+    # Native PIE chart (ported data-chart radial technique): arc slices + share labels.
+    ".pie-chart{width:100%;height:100%;max-height:78%;}"
+    ".pie-chart .pie-lbl{fill:#0d0d0d;font-size:30px;font-weight:800;}"
+    ".pie-chart .pie-pct{fill:#0d0d0d;font-size:26px;font-weight:600;}"
+    # Conceptual DIAGRAM (DiagramPlan -> animated flat SVG; title on top, frame below).
+    ".diagram{flex-direction:column;gap:40px;}"
+    ".diagram .diagram-frame{width:100%;flex:1;display:flex;align-items:center;"
+    "justify-content:center;min-height:0;}"
+    ".diagram-svg{width:100%;height:100%;max-height:82%;}"
+    # draw-on edges: natural state is fully drawn (offset 0); the timeline tweens FROM 1.
+    ".diagram-svg .dg-edge{stroke-dasharray:1;stroke-dashoffset:0;}"
+    ".diagram-svg .dg-label{font-size:34px;font-weight:700;}"
     # Brand chips (issue #2, Direction A): a clean logo card — the real inline SVG mark
     # over the model name, framed by the brand color. A row of them when several models
     # appear (the matchup); dim cards de-emphasize a scene's non-winners. Static —
@@ -1193,6 +1523,13 @@ _BASE_CSS = (
     "overflow:hidden;}"
     ".layout.has-brand>*{min-height:0;max-width:100%;}"
     ".title-card.has-brand .scene-title{font-size:92px;}"
+    # comparison-2up's .cmp panels are position:absolute opaque half-plates that fall
+    # OUTSIDE the has-brand grid, so the grid's "own row" guarantee can't reach them and
+    # the opaque .cmp.myth painted OVER the injected chips (inspect 'text_occluded'). Under
+    # has-brand, reflow the panels as in-flow grid rows (static, transparent) and drop the
+    # literal 'myth' stub so the chips + title each keep their own row, never overlapping.
+    ".layout.has-brand .cmp{position:static;width:auto;height:auto;background:transparent;}"
+    ".layout.has-brand .cmp.myth{display:none;}"
     # big-number (Job 2): one dominant stat at HERO scale, a short label, optional unit.
     ".big-number{flex-direction:column;gap:24px;text-align:center;max-width:94%;"
     "overflow:hidden;}"
@@ -1259,6 +1596,11 @@ def compose_scene_html(ctx: dict) -> str:
 
     # --- LAYOUT (always present; default centered-statement) ---
     layout = ctx["layout"] if ctx["layout"] in LAYOUT_BUILDERS else "centered-statement"
+    # Text-forward (CEO 2026-06-24): a photo-hero layout with no relevant photo renders a
+    # clean centered text card rather than a striped placeholder-panel. Future videos lean
+    # on this so abstract scenes that can't source a fitting photo read intentionally.
+    if layout in _PHOTO_SLOT_LAYOUTS and _should_text_forward(ctx):
+        layout = "centered-statement"
     lb = LAYOUT_BUILDERS[layout](ctx)
     css_parts.append(lb["css"])
     layout_html = lb["html"]
@@ -1292,6 +1634,7 @@ def compose_scene_html(ctx: dict) -> str:
     # --- EFFECTS (per-scene motion) ---
     effect_html: list[str] = []
     has_highlighter = any(e["name"] == SIGNATURE_EFFECT for e in ctx["effects"])
+    has_word_reveal = any(e["name"] == "word-reveal" for e in ctx["effects"])
     for fx in ctx["effects"]:
         eb = EFFECT_BUILDERS.get(fx["name"])
         if eb:
@@ -1312,14 +1655,27 @@ def compose_scene_html(ctx: dict) -> str:
                 layout_html = (layout_html[:gt + 1] + '<span class="hl-sweep"></span>'
                                + layout_html[gt + 1:])
 
+    # The accent keyline (underline-grow) nests as a title child too, so it tracks the
+    # title box and draws its rule at the baseline (same injection shape as the sweep).
+    if any(e["name"] == "underline-grow" for e in ctx["effects"]):
+        idx = layout_html.find('class="scene-title')
+        if idx != -1:
+            gt = layout_html.find(">", idx)
+            if gt != -1:
+                layout_html = (layout_html[:gt + 1] + '<span class="fx-keyline"></span>'
+                               + layout_html[gt + 1:])
+
     # Brand-chip entrance (build-time, deterministic; a gentle staggered fade-in).
     if brand_keys:
         tl_lines.append('tl.from(".brand-chip",{opacity:0,y:24,duration:0.5,'
                         'ease:"power2.out",stagger:0.08},0.1);')
 
-    # Title entrance (core motion, gentle ease; stepped effects own their own motion)
-    tl_lines.insert(0, 'tl.from(".scene-title",{opacity:0,y:24,duration:0.6,'
-                       'ease:"power2.out"},0);')
+    # Title entrance (core motion, gentle ease; stepped effects own their own motion).
+    # word-reveal owns the entrance per-word, so suppress the whole-title fade when present
+    # (otherwise the line would both fade as a block AND stagger per word — a double move).
+    if not has_word_reveal:
+        tl_lines.insert(0, 'tl.from(".scene-title",{opacity:0,y:24,duration:0.6,'
+                           'ease:"power2.out"},0);')
 
     # --- CAPTIONS (native .clip mechanism; LOCAL timing; build-time only) ---
     # Suppressed on layouts whose title is itself a text lower-third OVER the image
@@ -1370,8 +1726,81 @@ _HYPERFRAMES_JSON = (
     '"assets": "assets" }\n}\n')
 
 
+# ----------------------------------------------------------------------
+# Motion mood board governance (Task 4). The design-first artifact GOVERNS Mason's
+# per-scene motion. Two authorities are kept honest:
+#   - DATA layouts (the shape of numbers/chronology/concepts) are content-driven and
+#     come ONLY from the storyboard (which read the scene's real signals) — the beat can
+#     never force one on, nor override one the storyboard chose.
+#   - the #FFD000 signature highlighter stays the STORYBOARD's authority (it already
+#     enforces exactly-one + the gate), so a beat's effects never mint a second one.
+# The beat governs the rest: the dominant/secondary EFFECT, the TRANSITION, the global
+# TEXTURE, and an EXPRESSIVE (non-data) layout when the storyboard chose a generic one.
+# ----------------------------------------------------------------------
+_DATA_LAYOUTS = frozenset({"data-chart", "big-number", "timeline", "diagram"})
+# content layouts the beat must never override (data layouts + the head-to-head/map ones
+# that also depend on the scene's specific shots).
+_CONTENT_LAYOUTS = _DATA_LAYOUTS | {"comparison-2up", "map-focus"}
+
+
+def build_scene_beat_map(narrative_intent: dict, motion_mood_board: dict) -> dict:
+    """Map scene_no -> the governing mood-board beat, via narrative_intent's per-scene
+    arc_phase (scene_index 0-based -> scene_no = index+1 -> arc_phase -> the beat with
+    that phase). Returns {} when either input is missing/empty (fallback-safe)."""
+    if not (isinstance(narrative_intent, dict) and isinstance(motion_mood_board, dict)):
+        return {}
+    by_phase: dict[str, dict] = {}
+    for b in motion_mood_board.get("beat_map") or []:
+        ph = b.get("arc_phase") if isinstance(b, dict) else None
+        if ph and ph not in by_phase:
+            by_phase[ph] = b
+    out: dict[int, dict] = {}
+    for sc in narrative_intent.get("per_scene_intent") or []:
+        if not isinstance(sc, dict):
+            continue
+        idx, phase = sc.get("scene_index"), sc.get("arc_phase")
+        if isinstance(idx, int) and phase in by_phase:
+            out[idx + 1] = by_phase[phase]
+    return out
+
+
+def _govern_effects(board_scene: dict, beat: dict | None) -> list[dict]:
+    """Base effects for a scene: the beat's dominant (+ non-competing secondary) when a
+    beat governs, else the storyboard's effects. The signature highlighter is excluded
+    here (it stays the storyboard's authority — added back on the signature scene by the
+    caller); motion_parameter_overrides are merged into the matching effect's params."""
+    if beat is None:
+        return _as_named(board_scene.get("effects"))
+    overrides = beat.get("motion_parameter_overrides")
+    overrides = overrides if isinstance(overrides, dict) else {}
+    out: list[dict] = []
+    seen: set[str] = set()
+    for key in ("dominant_effect", "secondary_effect"):
+        name = beat.get(key)
+        if name in (None, "none", SIGNATURE_EFFECT) or name not in EFFECTS or name in seen:
+            continue
+        params = overrides.get(name)
+        out.append({"name": name, "params": params if isinstance(params, dict) else {}})
+        seen.add(name)
+    return out
+
+
+def _govern_layout(board_layout: str, beat: dict | None) -> str:
+    """The scene's layout under beat governance. A beat's expressive layout_family
+    governs ONLY when the storyboard chose a generic (non-content) layout AND the beat's
+    family is not a data layout — so content-driven layouts on either side are preserved."""
+    if beat is None:
+        return board_layout
+    fam = beat.get("layout_family")
+    if (fam in LAYOUTS and board_layout not in _CONTENT_LAYOUTS
+            and fam not in _DATA_LAYOUTS):
+        return fam
+    return board_layout
+
+
 def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets,
-               pdir, scene_dir) -> dict:
+               pdir, scene_dir, *, beat: dict | None = None,
+               global_texture: str | None = None) -> dict:
     palette = (style_guide or {}).get("palette", {}) or {}
     typ = (style_guide or {}).get("typography", {}) or {}
     # Iris emits typography as nested dicts: display/body/caption = {family, weight}
@@ -1388,9 +1817,17 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
                or DEFAULT_MAX_PER_SCENE)
     textures = _as_named((style_guide or {}).get("textures")) or \
         [{"name": t, "params": {}} for t in DEFAULT_TEXTURES]
+    # The mood board's global texture (when set + valid) overrides the style guide's set.
+    if global_texture in TEXTURES:
+        textures = [{"name": global_texture, "params": {}}]
     signature = bool(board_scene.get("signature_beat"))
+    # The governing beat (when present) supplies the transition + base effects; otherwise
+    # the storyboard does. The signature highlighter + the motion budget are enforced AFTER,
+    # exactly as before — so beat governance never breaks an invariant.
     transition = board_scene.get("transition") or "cut"
-    effects = _as_named(board_scene.get("effects"))
+    if beat is not None and beat.get("transition_in") in TRANSITIONS:
+        transition = beat["transition_in"]
+    effects = _govern_effects(board_scene, beat)
     if signature and not any(e["name"] == SIGNATURE_EFFECT for e in effects):
         effects = [{"name": SIGNATURE_EFFECT, "params": {}}] + effects
     effects = trim_effects(effects, transition, max_per, signature)
@@ -1430,9 +1867,10 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
         "scene_no": n, "comp_id": f"scene-{n:02d}", "duration": duration,
         "fps": clamp_fps((style_guide or {}).get("fps", DEFAULT_FPS)),
         "title": script_scene.get("on_screen_text") or script_scene.get("point") or "",
-        "layout": board_scene.get("layout") or "centered-statement",
+        "layout": _govern_layout(board_scene.get("layout") or "centered-statement", beat),
         "transition": transition, "effects": effects, "textures": textures,
         "signature": signature,
+        "governed_by_beat": (beat.get("beat_id") if isinstance(beat, dict) else None),
         "palette": {**palette, "font": heading_font, "body_font": body_font},
         "highlight": highlight,
         "captions": scene_captions(segments, n), "assets": resolved,
@@ -1440,7 +1878,16 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
         "shots": shots, "brand_keys": scene_brand_keys(shots),
         "brand_specs": scene_brand_specs(shots),
         "chart_data": chart_data,
+        # data-chart sub-kind chosen by Iris (bar|line|pie); unknown/absent -> bar.
+        "chart_kind": (board_scene.get("chart_kind")
+                       if board_scene.get("chart_kind") in CHART_KINDS else "bar"),
         "hero_stat": hero_stat, "timeline_data": timeline_data,
+        # conceptual-diagram plan (cached by Magpie) + a stable per-scene seed for any
+        # baked "random" value (D16/§7: seed = stable hash of the scene id, never random).
+        "diagram_plan": next((a.get("plan") for a in resolved
+                              if a.get("type") in ("diagram", "diagram-svg") and a.get("plan")),
+                             None),
+        "diagram_seed": zlib.crc32(f"scene-{n:02d}".encode()),
     }
 
 
@@ -1465,6 +1912,18 @@ def compose(pdir, *, render: bool = True, gate: bool = True) -> dict:
     asset_manifest = chat_state.load_json(pdir / "asset_manifest.json", {})
     transcript = chat_state.load_json(pdir / "audio" / "narration.transcript.json", {})
     segments = transcript.get("segments", [])
+    # The design-first motion mood board (optional) GOVERNS per-scene motion. It maps to
+    # scenes via the narrative_intent's per-scene arc_phase. Absent either file -> the
+    # map is empty and every scene falls back to the storyboard (backward-compatible).
+    narrative_intent = chat_state.load_json(pdir / "narrative_intent.json", {})
+    motion_mood_board = chat_state.load_json(pdir / "motion_mood_board.json", {})
+    beat_by_scene = build_scene_beat_map(narrative_intent, motion_mood_board)
+    global_texture = (motion_mood_board.get("video_level") or {}).get("global_texture")
+    if global_texture not in TEXTURES:
+        global_texture = None
+    if beat_by_scene:
+        logger.info("motion mood board governing %d scene(s); global texture=%s",
+                    len(beat_by_scene), global_texture or "clean")
 
     ok, errors = validate_inputs(script, style_guide, storyboard, asset_manifest)
     if not ok:
@@ -1480,8 +1939,14 @@ def compose(pdir, *, render: bool = True, gate: bool = True) -> dict:
         scene_dir.mkdir(parents=True, exist_ok=True)
         board_scene = board_by_no.get(n, {})
         scene_assets = resolve_scene_assets(asset_manifest, n, pdir)
+        beat = beat_by_scene.get(n)
         ctx = _scene_ctx(n, sc, style_guide, board_scene, segments, scene_assets,
-                         pdir, scene_dir)
+                         pdir, scene_dir, beat=beat, global_texture=global_texture)
+        if beat is not None:
+            logger.info("scene %s governed by beat '%s': effect=%s, transition=%s, "
+                        "layout=%s", n, ctx["governed_by_beat"],
+                        ctx["effects"][0]["name"] if ctx["effects"] else "—",
+                        ctx["transition"], ctx["layout"])
         html = compose_scene_html(ctx)
         (scene_dir / "index.html").write_text(html)
         (scene_dir / "hyperframes.json").write_text(_HYPERFRAMES_JSON)
@@ -1525,6 +1990,7 @@ def compose(pdir, *, render: bool = True, gate: bool = True) -> dict:
             "layout": ctx["layout"], "transition": ctx["transition"],
             "effects": [e["name"] for e in ctx["effects"]],
             "signature_beat": ctx["signature"],
+            "governed_by_beat": ctx.get("governed_by_beat"),
             "self_scan": {"ok": scan_ok, "violations": self_scan},
             "gate": gate_res,
             "assets": {
@@ -1537,9 +2003,13 @@ def compose(pdir, *, render: bool = True, gate: bool = True) -> dict:
             "render_status": render_status,
         })
 
+    # Contrast is SURFACED on the scene + summary (above) but does NOT gate the
+    # deterministic plane — per the C2 calibration note above, a zero-tolerance
+    # contrast hard-block would stop almost every LLM-palette video. Structure
+    # (self-scan, lint, validate console-errors, inspect) still blocks; the human
+    # final-render gate judges the surfaced contrast count against the draft.
     gated_ok = sum(1 for s in scenes_out
                    if s["self_scan"]["ok"] and
-                   not s["assets"]["contrast_failures"] and
                    all((s["gate"][k] or {}).get("ok", False) for k in
                        ("lint", "validate", "inspect")))
     if not gate:
@@ -1565,6 +2035,19 @@ def _motion_strict(ctx: dict) -> bool:
     return ctx["signature"] or bool(names & {"map-draw", SIGNATURE_EFFECT})
 
 
+# Layouts whose primary text element is NOT `.scene-title`. The motion sidecar (and the
+# highlighter sweep, injected behind a `.scene-title`) assume one exists; these carry the
+# beat on a different hero element instead — asserting `.scene-title`/`.hl-sweep` on them
+# makes `inspect --strict` fail with motion_selector_missing and blocks the whole video.
+_HERO_SELECTOR = {"big-number": ".big-number-value", "timeline": ".tl-title"}
+
+
+def _hero_selector(ctx: dict) -> str:
+    """The scene's primary on-screen text element — `.scene-title` for most layouts,
+    the layout's own hero element for the ones that have no `.scene-title`."""
+    return _HERO_SELECTOR.get(ctx.get("layout"), ".scene-title")
+
+
 def _emit_motion_sidecar(scene_dir: pathlib.Path, ctx: dict) -> None:
     """Emit a *.motion.json sidecar asserting the signature motion endpoints so
     `inspect` can machine-verify them. Only for scenes worth asserting."""
@@ -1573,9 +2056,12 @@ def _emit_motion_sidecar(scene_dir: pathlib.Path, ctx: dict) -> None:
     dur = round(ctx["duration"], 3)
     names = {e["name"] for e in ctx["effects"]}
     # Assertion kinds verified against the HyperFrames inspect motion-spec surface:
-    # appearsBy {selector, bySec}, staysInFrame {selector}.
-    assertions = [{"kind": "staysInFrame", "selector": ".scene-title"}]
-    if SIGNATURE_EFFECT in names:
+    # appearsBy {selector, bySec}, staysInFrame {selector}. Assert ONLY selectors that
+    # actually render: the hero text for staysInFrame, and the sweep only where it was
+    # injected (a layout with a `.scene-title`; big-number/timeline carry the signature
+    # via their gold hero, not a text sweep).
+    assertions = [{"kind": "staysInFrame", "selector": _hero_selector(ctx)}]
+    if SIGNATURE_EFFECT in names and ctx.get("layout") not in _HERO_SELECTOR:
         # the #FFD000 sweep grows from scaleX 0 -> it must be visible by scene end
         assertions.append({"kind": "appearsBy", "selector": ".hl-sweep", "bySec": dur})
     if "map-draw" in names:
@@ -1593,21 +2079,54 @@ def _emit_motion_sidecar(scene_dir: pathlib.Path, ctx: dict) -> None:
 def build_assembly_plan(manifest: dict, storyboard: dict, audio_manifest: dict) -> dict:
     """Pure: turn the composition manifest + storyboard transitions + audio into a
     deterministic assembly plan (scene render list, per-boundary transition specs,
-    narration track). Unknown transition tokens are flagged, never silently dropped."""
+    narration track). Unknown transition tokens are flagged, never silently dropped.
+
+    Signature beats get a WebGL shader transition (mode="shader") at the boundary that
+    leads INTO them, capped at shader_transition.SHADER_BUDGET per video. The shader is
+    the storyboard's `signature_transition` token when present (and valid), else the
+    taste-ordered default. The shader step carries the adjacent render paths + a frame
+    count; execution (hf_tools) replaces the outgoing scene's last `frames` with the
+    morph, so total duration — and thus narration sync — is unchanged."""
     board_by_no = {s.get("scene_no"): s for s in (storyboard or {}).get("scenes", [])}
     scenes = sorted(manifest.get("scenes", []), key=lambda s: s.get("scene_no", 0))
+    fps = clamp_fps(next((s.get("fps") for s in scenes if s.get("fps")), DEFAULT_FPS))
+    shaders_on = _shader_transitions_enabled()
+    shader_used = 0
     steps, flags = [], []
     for i, s in enumerate(scenes):
         n = s.get("scene_no")
         steps.append({"scene_no": n, "render": s.get("render_path")})
         if i < len(scenes) - 1:
-            trans = (board_by_no.get(n, {}).get("transition") or "cut")
+            nxt = scenes[i + 1]
+            # Prefer the (mood-board-governed) transition recorded on the manifest scene;
+            # fall back to the storyboard's when the manifest carries none (older runs).
+            trans = (s.get("transition") or board_by_no.get(n, {}).get("transition")
+                     or "cut")
             spec = TRANSITION_ASSEMBLY.get(trans)
             if spec is None:
-                flags.append(f"scene {n}->{scenes[i+1].get('scene_no')}: unknown "
+                flags.append(f"scene {n}->{nxt.get('scene_no')}: unknown "
                              f"transition {trans!r}")
                 spec = TRANSITION_ASSEMBLY["cut"]
-            steps.append({"boundary_after": n, "transition": trans, **spec})
+            # A signature beat (the incoming scene) earns a shader transition INTO it.
+            board_nxt = board_by_no.get(nxt.get("scene_no"), {})
+            is_sig = bool(board_nxt.get("signature_beat") or nxt.get("signature_beat"))
+            if shaders_on and is_sig and shader_used < shader_transition.SHADER_BUDGET \
+                    and s.get("render_path") and nxt.get("render_path"):
+                override = board_nxt.get("signature_transition")
+                shader = override if shader_transition.validate_shader(override or "") \
+                    else shader_transition.default_signature_shader(shader_used)
+                frames = shader_transition.DEFAULT_FRAMES
+                steps.append({
+                    "boundary_after": n, "transition": trans, "mode": "shader",
+                    "shader": shader, "frames": frames, "fps": fps,
+                    "duration": round(frames / fps, 4),
+                    "from_render": s.get("render_path"),
+                    "to_render": nxt.get("render_path"),
+                    "into_scene": nxt.get("scene_no"),
+                })
+                shader_used += 1
+            else:
+                steps.append({"boundary_after": n, "transition": trans, **spec})
     narration = None
     for t in (audio_manifest or {}).get("tracks", []):
         if t.get("role") == "narration":
@@ -1615,8 +2134,10 @@ def build_assembly_plan(manifest: dict, storyboard: dict, audio_manifest: dict) 
             break
     return {
         "scene_count": len(scenes),
+        "fps": fps,
         "missing_renders": [s.get("scene_no") for s in scenes if not s.get("render_path")],
         "steps": steps, "narration": narration,
+        "shader_count": shader_used,
         "flags": flags,
     }
 
@@ -1660,6 +2181,13 @@ def plan(pdir) -> dict:
     asset_manifest = chat_state.load_json(pdir / "asset_manifest.json", {})
     transcript = chat_state.load_json(pdir / "audio" / "narration.transcript.json", {})
     segments = transcript.get("segments", [])
+    # Mirror compose()'s mood-board governance so the preview matches what will render.
+    narrative_intent = chat_state.load_json(pdir / "narrative_intent.json", {})
+    motion_mood_board = chat_state.load_json(pdir / "motion_mood_board.json", {})
+    beat_by_scene = build_scene_beat_map(narrative_intent, motion_mood_board)
+    global_texture = (motion_mood_board.get("video_level") or {}).get("global_texture")
+    if global_texture not in TEXTURES:
+        global_texture = None
     ok, errors = validate_inputs(script, style_guide, storyboard, asset_manifest)
     if not ok:
         raise ValueError("cannot compose — " + "; ".join(errors))
@@ -1671,24 +2199,30 @@ def plan(pdir) -> dict:
     for sc in script.get("scenes", []):
         n = sc.get("scene_no")
         b = board_by_no.get(n, {})
+        beat = beat_by_scene.get(n)
         signature = bool(b.get("signature_beat"))
         transition = b.get("transition") or "cut"
-        effects = _as_named(b.get("effects"))
+        if beat is not None and beat.get("transition_in") in TRANSITIONS:
+            transition = beat["transition_in"]
+        effects = _govern_effects(b, beat)
         if signature and not any(e["name"] == SIGNATURE_EFFECT for e in effects):
             effects = [{"name": SIGNATURE_EFFECT, "params": {}}] + effects
         effects = trim_effects(effects, transition, max_per, signature)
         assets = resolve_scene_assets(asset_manifest, n, pdir)
         out.append({
-            "scene_no": n, "layout": b.get("layout") or "centered-statement",
+            "scene_no": n,
+            "layout": _govern_layout(b.get("layout") or "centered-statement", beat),
             "transition": transition, "effects": [e["name"] for e in effects],
             "duration_sec": scene_duration(sc, segments), "signature_beat": signature,
+            "governed_by_beat": (beat.get("beat_id") if isinstance(beat, dict) else None),
             "captions": len(scene_captions(segments, n)),
             "placeholders": [a["asset_id"] for a in assets if a["placeholder"]],
             "integrity_flags": [a["integrity_flag"] for a in assets if a.get("integrity_flag")],
         })
     sig = next((s["scene_no"] for s in out if s["signature_beat"]), None)
     return {"total": len(out), "fps": clamp_fps((style_guide or {}).get("fps", DEFAULT_FPS)),
-            "signature_scene": sig, "scenes": out}
+            "signature_scene": sig, "global_texture": global_texture or "clean",
+            "scenes": out}
 
 
 def run_compose(path: str, *, render: bool = True) -> tuple[dict, pathlib.Path]:

@@ -133,9 +133,13 @@ def test_stub_only_via_explicit_flag(tmp_path, fake_engine, monkeypatch, caplog)
 
 
 # ----------------------------------------------------------------------
-# Guardrail: a thin/placeholder-looking brief is flagged LOUDLY (not hard-blocked)
+# Root-cause guardrail: a brief with ZERO verified facts is a FAILED research run
+# (search unreachable / rate-limited), not a weak one. The producer must RAISE so the
+# spine attributes the failure to `research` (transient → re-runnable) instead of
+# silently flowing an empty brief downstream to Marlow, who would then fail at `script`
+# with a confusing "send it back to research" message.
 # ----------------------------------------------------------------------
-def _thin_pack(topic, angle):
+def _empty_pack(topic, angle):
     return {
         "topic": topic, "angle": angle or "", "generated": "2026-06-21 00:00:00",
         "overview": "No sources could be gathered. Nothing is verified here.",
@@ -146,23 +150,28 @@ def _thin_pack(topic, angle):
     }
 
 
-def test_thin_brief_is_flagged_loudly_but_not_blocked(tmp_path, monkeypatch, caplog):
+def test_empty_brief_raises_a_transient_research_failure(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(sage, "_research_engine",
-                        lambda: _FakeResearchEngine(_thin_pack))
+                        lambda: _FakeResearchEngine(_empty_pack))
     with caplog.at_level("WARNING"):
-        art = sage.produce_research(tmp_path, "obscure topic")
+        with pytest.raises(sage.ThinResearchError) as exc:
+            sage.produce_research(tmp_path, "obscure topic")
 
-    # still a valid artifact that flows on (no hard block) ...
-    ok, errors = contracts.validate("research_brief", art.data)
-    assert ok, errors
-    # ... but the thin-ness is loud: a warning log, the narrated summary, and a
-    # persisted flag on the artifact.
+    # the failure reason names WHY (so the operator sees a re-runnable research failure)
+    assert "verified" in str(exc.value).lower()
     assert any("thin" in r.message.lower() for r in caplog.records)
-    assert art.summary.startswith("⚠️")
+    # the brief is STILL persisted (for inspection) with the thin flag, even though the
+    # stage failed — so the Inspector can show what came back.
     on_disk = chat_state.load_json(tmp_path / "research_brief.json", {})
     assert on_disk["research_quality"]["thin"] is True
     assert "zero verified facts" in on_disk["research_quality"]["reasons"]
     assert "no sources" in on_disk["research_quality"]["reasons"]
+
+
+def test_thin_research_error_is_seen_as_transient_by_the_spine():
+    # the spine maps a producer RAISE to failure_kind="transient" (re-runnable); a
+    # ThinResearchError must therefore be an ordinary Exception (no special exemption).
+    assert issubclass(sage.ThinResearchError, Exception)
 
 
 def test_all_example_org_sources_are_flagged_thin(tmp_path, monkeypatch):

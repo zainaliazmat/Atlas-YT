@@ -9,6 +9,19 @@ validation blocks the stage, it does not crash the run.
 CONTRACTS (artifact name -> schema file):
 - project              project.json            (the master state)
 - research_brief       research_brief.json     (Sage's pack shape, reused + envelope)
+- creative_treatment   creative_treatment.json (the director's creative direction; runs
+                       AFTER research, BEFORE script; Marlow + Iris both consume it;
+                       advisory/optional so it's backward-compatible when absent)
+- narrative_intent     narrative_intent.json   (the emotional score; runs AFTER the
+                       creative_treatment, BEFORE the script; Marlow (word/sentence) +
+                       Cadence (TTS pacing, EQ, music, SFX) both consume it; advisory/
+                       optional so it's backward-compatible when absent)
+- motion_mood_board    motion_mood_board.json  (the design-first visual architecture;
+                       runs AFTER narrative_intent, BEFORE the script; governs BOTH
+                       Marlow's pacing AND Mason's motion design — a beat_map of concrete
+                       HyperFrames directives (effect/transition/layout/duration) mirroring
+                       the engine's real closed vocabularies; advisory/optional so it's
+                       backward-compatible when absent)
 - script               script.json
 - factcheck_report     factcheck_report.json   (the fact-check gate reads its verdict)
 - style_guide          style_guide.json        (additively extensible via schema_version)
@@ -57,6 +70,9 @@ CONTRACT_VERSIONS: dict[str, str] = {
     "style_guide": "1.1",
     "storyboard": "1.1",
     "audio_manifest": "1.1",
+    # Magpie bumped asset_manifest to "1.1" when she added the "diagram" asset type +
+    # the optional `plan` object (a cached DiagramPlan Mason composes to SVG at render).
+    "asset_manifest": "1.1",
 }
 
 
@@ -73,6 +89,9 @@ def version_for(name: str) -> str:
 SCHEMA_FILES: dict[str, str] = {
     "project": "project.schema.json",
     "research_brief": "research_brief.schema.json",
+    "creative_treatment": "creative_treatment.schema.json",
+    "narrative_intent": "narrative_intent.schema.json",
+    "motion_mood_board": "motion_mood_board.schema.json",
     "script": "script.schema.json",
     "factcheck_report": "factcheck_report.schema.json",
     "style_guide": "style_guide.schema.json",

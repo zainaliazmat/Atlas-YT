@@ -26,6 +26,19 @@
         }
       }
     },
+    "thematic_anchor": {
+      "type": "object",
+      "required": ["thesis_statement", "supporting_pillar_1", "supporting_pillar_2", "counter_intuitive_angle", "emotional_payload"],
+      "additionalProperties": true,
+      "properties": {
+        "thesis_statement": {"type": "string"},
+        "supporting_pillar_1": {"type": "string"},
+        "supporting_pillar_2": {"type": "string"},
+        "counter_intuitive_angle": {"type": "string"},
+        "emotional_payload": {"type": "string"},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
+      }
+    },
     "myths_and_corrections": {"type": "array"},
     "contested_or_uncertain": {"type": "array"},
     "key_statistics": {"type": "array"},

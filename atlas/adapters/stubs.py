@@ -198,6 +198,111 @@ def produce_factcheck(pdir: pathlib.Path, topic: str) -> Artifact:
                     f"{unverifiable} unverifiable")
 
 
+def produce_treatment(pdir: pathlib.Path, topic: str) -> Artifact:
+    data = {
+        "schema_version": CONTRACT_VERSION,
+        "rhythm": "hook-BUILD-PEAK-breathe-CTA",
+        "visual_world": "clean editorial explainer — calm, confident, one idea at a time",
+        "mood_refs": ["editorial calm", "documentary clarity"],
+        "emphasis": f"the core takeaway about {topic or 'the topic'}",
+        "motifs": ["a single recurring accent color"],
+        "negative": ["clutter", "uniform pacing"],
+        "beats": [
+            {"beat": "hook", "concept": "open on the tension", "mood": "alert",
+             "emphasis_word": "why", "intent": "snap in, earn the first five seconds"},
+            {"beat": "build", "concept": "lay out the mechanism", "mood": "steady",
+             "emphasis_word": "how", "intent": "even, legible pacing"},
+            {"beat": "peak", "concept": "the one number/claim that lands", "mood": "weighty",
+             "emphasis_word": "this", "intent": "hold it — the signature moment"},
+            {"beat": "cta", "concept": "the clean close", "mood": "resolved",
+             "emphasis_word": "now", "intent": "settle, breathe, end"},
+        ],
+    }
+    _write_json(pdir, "creative_treatment.json", data)
+    return Artifact("creative_treatment.json", "creative_treatment", data,
+                    "creative direction set; rhythm hook-BUILD-PEAK-breathe-CTA; 4 beats")
+
+
+def produce_narrative_intent(pdir: pathlib.Path, topic: str) -> Artifact:
+    data = {
+        "schema_version": CONTRACT_VERSION,
+        "video_level": {
+            "core_thesis": f"the single argument about {topic or 'the topic'}",
+            "emotional_journey": "from curious unease at the open to settled determination by the end",
+            "tone_profile": "curious_exploration",
+        },
+        "emotional_arc": {
+            "hook": {"dominant_emotion": "curiosity", "intensity": 9, "duration_goal_sec": 8},
+            "build": {"dominant_emotion": "surprise", "intensity": 7, "duration_goal_sec": 25},
+            "peak": {"dominant_emotion": "awe", "intensity": 10, "duration_goal_sec": 15},
+            "breathe": {"dominant_emotion": "satisfaction", "intensity": 4, "duration_goal_sec": 10},
+            "cta": {"dominant_emotion": "determination", "intensity": 8, "duration_goal_sec": 12},
+        },
+        "per_scene_intent": [
+            {"scene_index": 0, "arc_phase": "hook", "primary_emotion": "curiosity",
+             "intensity": 9, "pacing_directive": "punchy_staccato",
+             "texture_directive": "clean_high_contrast",
+             "delivery_note": "open like you just learned a secret"},
+            {"scene_index": 1, "arc_phase": "build", "primary_emotion": "surprise",
+             "intensity": 7, "pacing_directive": "measured",
+             "texture_directive": "clean_high_contrast",
+             "delivery_note": "lay it out plainly, one idea at a time"},
+        ],
+    }
+    _write_json(pdir, "narrative_intent.json", data)
+    return Artifact("narrative_intent.json", "narrative_intent", data,
+                    "emotional score set; tone curious_exploration; 2 scenes scored")
+
+
+def produce_motion_mood_board(pdir: pathlib.Path, topic: str) -> Artifact:
+    data = {
+        "schema_version": CONTRACT_VERSION,
+        "video_level": {
+            "global_tempo": "conversational",
+            "global_texture": "grain",
+            "global_texture_justification": "a light grain keeps the explainer warm, "
+                                            "not clinical",
+            "dominant_motion_philosophy": "motion is punctuation — every animation lands "
+                                          "on a key word",
+        },
+        "beat_map": [
+            {"beat_id": "b-hook", "arc_phase": "hook", "primary_emotion": "curiosity",
+             "intensity": 9, "pacing_profile": "rapid_staccato",
+             "dominant_effect": "stutter-12fps", "secondary_effect": "none",
+             "transition_in": "cut", "layout_family": "centered-statement",
+             "scene_duration_target_sec": 8},
+            {"beat_id": "b-build", "arc_phase": "build", "primary_emotion": "surprise",
+             "intensity": 7, "pacing_profile": "steady_build",
+             "dominant_effect": "stepped-ease", "secondary_effect": "none",
+             "transition_in": "cut", "layout_family": "list-stack",
+             "scene_duration_target_sec": 25},
+            {"beat_id": "b-peak", "arc_phase": "peak", "primary_emotion": "awe",
+             "intensity": 10, "pacing_profile": "slow_reveal",
+             "dominant_effect": "highlighter-FFD000", "secondary_effect": "push-in",
+             "transition_in": "dip-to-black", "layout_family": "big-number",
+             "scene_duration_target_sec": 15},
+            {"beat_id": "b-breathe", "arc_phase": "breathe", "primary_emotion": "satisfaction",
+             "intensity": 4, "pacing_profile": "held_stillness",
+             "dominant_effect": "breathe", "secondary_effect": "none",
+             "transition_in": "dip-to-black", "layout_family": "quote-card",
+             "scene_duration_target_sec": 10},
+            {"beat_id": "b-cta", "arc_phase": "cta", "primary_emotion": "determination",
+             "intensity": 8, "pacing_profile": "conversational_flow",
+             "dominant_effect": "word-reveal", "secondary_effect": "none",
+             "transition_in": "cut", "layout_family": "title-card",
+             "scene_duration_target_sec": 12},
+        ],
+        "signature_beat_placement": {
+            "beat_id": "b-peak", "target_element": "the one number that lands",
+            "justification": "the peak is where the thesis lands hardest",
+        },
+    }
+    _write_json(pdir, "motion_mood_board.json", data)
+    return Artifact("motion_mood_board.json", "motion_mood_board", data,
+                    "motion architecture set; tempo conversational; 5 beats; "
+                    "signature #FFD000 placed")
+
+
 def produce_style(pdir: pathlib.Path, topic: str) -> Artifact:
     data = {
         "schema_version": CONTRACT_VERSION,

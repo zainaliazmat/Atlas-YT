@@ -194,6 +194,18 @@ def test_classify_shot():
     gen = engine.classify_shot(_shot("chart", "cases by county over time", "x"))
     assert gen.action == "generate" and gen.asset_type == "data-viz"
 
+    # a CONCEPTUAL diagram (no data cue) -> SOURCE a relevant image, NOT a blank
+    # placeholder. Mason can only generate data charts/brand chips, so a described
+    # illustration like "chat bubble with robot arms" must come from stock (issue #2).
+    concept = engine.classify_shot(_shot("diagram", "a chat bubble sprouting robotic arms", "x"))
+    assert concept.action == "source" and concept.asset_type == "image"
+    # a data-driven diagram still generates (real chart from the scene's numbers)
+    ddiag = engine.classify_shot(_shot("diagram", "failure rate over time, by year", "x"))
+    assert ddiag.action == "generate" and ddiag.asset_type == "data-viz"
+    # a chart kind is always a chart -> generate even without an explicit cue phrase
+    bare_chart = engine.classify_shot(_shot("chart", "model sizes compared", "x"))
+    assert bare_chart.action == "generate" and bare_chart.asset_type == "data-viz"
+
     # the map split: a NAMED period artifact -> SOURCE as image (the scavenger hunt)
     arch = engine.classify_shot(_shot("map", "1929 Rand McNally map of Chicago", "x"))
     assert arch.action == "source" and arch.asset_type == "image"
@@ -223,6 +235,55 @@ def test_brand_shot_emits_no_asset_row():
     ids = [a["asset_id"] for a in manifest["assets"]]
     assert "logos" not in ids          # brand shot skipped
     assert "plant" in ids              # ordinary shot still sourced
+
+
+# ======================================================================
+# 3b. Conceptual-diagram generation (D15 flag) — plan -> diagram row, with fallback
+# ======================================================================
+import json as _json  # noqa: E402
+
+_GOOD_PLAN = {"layout_hint": "left-to-right", "components": [
+    {"id": "a", "type": "speech-bubble", "label": "AI", "of": "brain", "to": ["b"]},
+    {"id": "b", "type": "glyph", "label": "Act", "of": "button"}]}
+
+
+def test_classify_diagram_gen_flag_routes_conceptual_to_generate_diagram():
+    shot = _shot("diagram", "a chat bubble sprouting robotic arms", "x")
+    assert engine.classify_shot(shot).action == "source"                  # default OFF
+    on = engine.classify_shot(shot, diagram_gen=True)
+    assert on.action == "generate-diagram" and on.asset_type == "diagram"
+    # a DATA diagram still generates a chart even with the flag on (not a concept diagram)
+    ddiag = engine.classify_shot(_shot("diagram", "failure rate by year", "x"), diagram_gen=True)
+    assert ddiag.action == "generate" and ddiag.asset_type == "data-viz"
+
+
+def test_source_assets_emits_a_diagram_row_with_a_cached_plan():
+    sb = {"scenes": [{"scene_no": 1, "shots": [
+        _shot("diagram", "an AI choosing an action", "agentflow")]}]}
+    client = FakeClient(by_source={})
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        m = engine.source_assets(sb, {}, client=client, pdir=d, diagram_gen=True,
+                                 chat_fn=lambda s, u: _json.dumps(_GOOD_PLAN))
+    row = next(a for a in m["assets"] if a["asset_id"] == "agentflow")
+    assert row["type"] == "diagram" and row["status"] == "cleared"
+    assert row["plan"]["components"][0]["type"] == "speech-bubble"
+    assert m["diagnostics"]["diagram"] == {"planned": 1, "failed": 0}
+
+
+def test_source_assets_diagram_planner_failure_falls_back_and_counts():
+    sb = {"scenes": [{"scene_no": 1, "shots": [
+        _shot("diagram", "an abstract idea", "concept")]}]}
+    # planner returns garbage -> ValueError -> fall through to the stock-image path;
+    # no stock available -> a flagged placeholder. Never crashes, never blank.
+    client = FakeClient(by_source={})
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        m = engine.source_assets(sb, {}, client=client, pdir=d, diagram_gen=True,
+                                 chat_fn=lambda s, u: "nope")
+    row = next(a for a in m["assets"] if a["asset_id"] == "concept")
+    assert row["type"] != "diagram"                  # fell back off the diagram path
+    assert m["diagnostics"]["diagram"]["failed"] == 1
 
 
 # ======================================================================

@@ -38,6 +38,10 @@ HERE = pathlib.Path(__file__).parent
 # make the structured script chatty. SKILL.md stays the engine method.
 SOUL = (HERE / "soul" / "SOUL.md").read_text()
 SKILL = (HERE / "SKILL.md").read_text()
+# STYLE is Marlow's VOICE — read ONLY for the Creative Roundtable's Craftsman (the
+# rewrite happens in Marlow's voice). The first-pass arc still uses SOUL only, so the
+# structured draft stays disciplined; STYLE never enters the draft prompt.
+STYLE = (HERE / "soul" / "STYLE.md").read_text()
 MEMORY = HERE / "memory.json"
 SCRIPTS_DIR = HERE / "scripts"
 
@@ -714,7 +718,154 @@ def _supporting_block(brief: dict) -> str:
     return "\n".join(out)
 
 
-def _build_prompt(brief: dict) -> str:
+def _treatment_block(treatment: dict | None) -> str:
+    """The director's creative treatment as a prompt section (empty when absent). Marlow
+    writes the SCRIPT to this rhythm/emphasis; it shapes HOW, never WHAT (the brief fences
+    the claims). Direction only — no vocabulary the scriptwriter can't act on."""
+    if not isinstance(treatment, dict) or not treatment:
+        return ""
+    lines = ["=== THE DIRECTOR'S CREATIVE TREATMENT (write the script to this direction) ==="]
+    if treatment.get("rhythm"):
+        lines.append(f"RHYTHM (pace the script to this arc): {treatment['rhythm']}")
+    if treatment.get("emphasis"):
+        lines.append(f"THE ONE IDEA TO LAND: {treatment['emphasis']}")
+    if treatment.get("visual_world"):
+        lines.append(f"TONE/WORLD: {treatment['visual_world']}")
+    beats = treatment.get("beats") or []
+    if beats:
+        lines.append("BEATS (let these shape the hook→scenes→CTA arc; do NOT invent facts "
+                     "for them — only order/frame what the brief supports):")
+        for b in beats[:12]:
+            ew = f" — land the word '{b.get('emphasis_word')}'" if b.get("emphasis_word") else ""
+            lines.append(f"  · {b.get('beat', '?')}: {b.get('concept', '')}{ew}")
+    if treatment.get("negative"):
+        lines.append("AVOID: " + "; ".join(treatment["negative"]))
+    return "\n".join(lines) + "\n\n"
+
+
+def _narrative_intent_block(intent: dict | None) -> str:
+    """The emotional score as a per-scene prompt section (empty when absent).
+
+    This is where the emotional objective that used to evaporate at the handoff becomes
+    a hard writing instruction: each scene names the felt emotion + intensity + pacing,
+    and the closing rules turn pacing/emotion into concrete word-choice + sentence-shape
+    constraints (punchy_staccato -> short sentences, max 12 words; awe -> open on a
+    written-in ellipsis of silence, then one weighty sentence). It shapes HOW the lines
+    land; it never relaxes the brief fence (assert nothing the research doesn't support).
+    """
+    if not isinstance(intent, dict) or not intent:
+        return ""
+    vl = intent.get("video_level") or {}
+    scenes = intent.get("per_scene_intent") or []
+    lines = ["=== THE EMOTIONAL SCORE (write narration that LANDS each emotion) ==="]
+    if vl.get("emotional_journey"):
+        lines.append(f"THE ARC THE VIEWER FEELS: {vl['emotional_journey']}")
+    if vl.get("tone_profile"):
+        lines.append(f"OVERALL TONE: {vl['tone_profile']}")
+    if scenes:
+        lines.append("PER-SCENE EMOTIONAL DIRECTION (write the scenes IN THIS ORDER; "
+                     "scene 1 is the hook, the last is the CTA):")
+        for sc in scenes[:40]:
+            n = (sc.get("scene_index", 0) or 0) + 1   # 0-based score -> 1-based scene_no
+            note = sc.get("delivery_note") or ""
+            note_str = f" Delivery instruction: {note}" if note else ""
+            lines.append(
+                f"  SCENE {n}: This scene is in the '{sc.get('arc_phase', 'build')}' phase. "
+                f"The viewer must feel: {sc.get('primary_emotion', '—')} at intensity "
+                f"{sc.get('intensity', 5)}/10. Pacing directive: "
+                f"{sc.get('pacing_directive', 'measured')}.{note_str}")
+    lines.append(
+        "WRITE NARRATION THAT LANDS THESE EMOTIONS. If the pacing is 'punchy_staccato', "
+        "your sentences must be short — max 12 words. If the pacing is 'breathless' or "
+        "'driving', keep momentum with short, propulsive clauses. If the emotion is 'awe', "
+        "open with a moment of silence written into the text as an ellipsis (…), then a "
+        "single, weighty sentence. If the emotion is 'contemplative' or the pacing is "
+        "'deliberate_pause', let a sentence breathe and slow the cadence. Match the WORD "
+        "CHOICE to the feeling — but never assert a fact the brief doesn't support.")
+    return "\n".join(lines) + "\n\n"
+
+
+# ----------------------------------------------------------------------
+# Motion-mood-board pacing governance (Task 4). The design-first artifact maps each
+# emotional beat to a pacing_profile; this turns that profile into CONCRETE writing
+# rules so the script's rhythm is governed by the visual architecture (a sibling of the
+# narrative_intent per-scene block — that one is per-SCENE emotion, this is per-BEAT
+# pacing/duration/layout from the mood board). Pure + testable.
+# ----------------------------------------------------------------------
+_PACING_RULES = {
+    "rapid_staccato": (
+        "- Keep sentences short — max 12 words. No dependent clauses. Periods, not commas.\n"
+        "- Every sentence advances the argument; the viewer should feel slightly out of breath.\n"
+        "- Rhythm: \"AI writes code. Forty-one percent. You didn't notice. That's the point.\""),
+    "steady_build": (
+        "- Sentences lengthen as the beat progresses; open short and arresting.\n"
+        "- Build to one complex sentence that lands the key insight; use em-dashes for momentum.\n"
+        "- The viewer should feel information accumulating toward a revelation."),
+    "slow_reveal": (
+        "- Begin with silence written in — an ellipsis (…) or a single word, then a pause.\n"
+        "- Each sentence is one step closer to the truth; use concrete, sensory language.\n"
+        "- End the beat ON the revelation, not after it. The viewer should lean in."),
+    "held_stillness": (
+        "- Maximum 8 words per sentence. One idea, one sentence — let it breathe.\n"
+        "- No statistics here; this is the human moment. Ask a question; don't answer it.\n"
+        "- Rhythm: \"The reviews stopped. Nobody noticed. What else are we missing?\""),
+    "conversational_flow": (
+        "- Natural speech rhythm; contractions welcome. One idea per sentence, room to breathe.\n"
+        "- Write for the ear, not the page — avoid a formal register.\n"
+        "- The viewer should feel they're being told a story over coffee."),
+}
+
+
+def get_pacing_rules(profile: str) -> str:
+    """Concrete, per-profile writing rules for a motion_mood_board pacing_profile.
+
+    Unknown/missing profiles fall back to 'conversational_flow' — the neutral default,
+    so a malformed beat never produces empty guidance (mirrors the fallback path)."""
+    return _PACING_RULES.get(profile, _PACING_RULES["conversational_flow"])
+
+
+def _motion_mood_board_block(board: dict | None) -> str:
+    """The motion mood board as a per-beat pacing prompt section (empty when absent).
+
+    This is the design-first inversion in Marlow's prompt: the visual architecture
+    GOVERNS the script's pacing. It surfaces the global tempo + motion philosophy, then
+    each beat's pacing_profile (expanded into get_pacing_rules), its felt emotion, its
+    duration target (Marlow fits the narration within it), and its layout/visual feeling
+    so the words are written to the frame they'll live in. Shapes HOW, never WHAT — the
+    brief stays the fence."""
+    if not isinstance(board, dict) or not board:
+        return ""
+    vl = board.get("video_level") or {}
+    beats = board.get("beat_map") or []
+    lines = ["=== THE MOTION MOOD BOARD (write the script TO this visual architecture) ==="]
+    if vl.get("global_tempo"):
+        lines.append(f"GLOBAL TEMPO (the whole video's rhythm): {vl['global_tempo']}")
+    if vl.get("dominant_motion_philosophy"):
+        lines.append(f"MOTION PHILOSOPHY: {vl['dominant_motion_philosophy']}")
+    if vl.get("global_texture") and vl["global_texture"] != "clean":
+        lines.append(f"GLOBAL TEXTURE: {vl['global_texture']}")
+    if beats:
+        lines.append("PER-BEAT PACING (write each beat's scenes to its profile, in order):")
+        for b in beats[:12]:
+            mood = f" Visual feeling: {b['visual_mood_ref']}." if b.get("visual_mood_ref") else ""
+            lines.append(
+                f"\nBEAT {b.get('beat_id', '?')} ({b.get('arc_phase', '?')}): "
+                f"emotion {b.get('primary_emotion', '—')} at "
+                f"{b.get('intensity', '?')}/10. Pacing profile: "
+                f"{b.get('pacing_profile', 'conversational_flow')}. Target duration: "
+                f"~{b.get('scene_duration_target_sec', '?')}s. Layout: "
+                f"{b.get('layout_family', '—')} — fit what you describe to it.{mood}\n"
+                f"WRITING RULES FOR THIS BEAT:\n"
+                f"{get_pacing_rules(b.get('pacing_profile'))}")
+    lines.append("\nFit each beat's narration within its target duration "
+                 "(≈2.5 words/sec). The mood board governs RHYTHM and SHAPE; it never "
+                 "relaxes the brief fence — assert nothing the research doesn't support.")
+    return "\n".join(lines) + "\n\n"
+
+
+def _build_prompt(brief: dict, treatment: dict | None = None,
+                  narrative_intent: dict | None = None,
+                  motion_mood_board: dict | None = None) -> str:
     angle = brief.get("angle") or ""
     audience = brief.get("target_audience") or "a curious general audience"
     overview = brief.get("overview") or ""
@@ -723,6 +874,9 @@ def _build_prompt(brief: dict) -> str:
     title_note = f"\nA working title to consider (improve it if you can): {title}" if title else ""
     return (
         f"=== METHOD ===\n{SKILL}\n\n"
+        f"{_treatment_block(treatment)}"
+        f"{_narrative_intent_block(narrative_intent)}"
+        f"{_motion_mood_board_block(motion_mood_board)}"
         f"=== THE RESEARCH BRIEF (your raw material AND your fence — assert nothing "
         f"it doesn't contain) ===\n"
         f"TOPIC: {brief.get('topic','')}\n"
@@ -913,18 +1067,143 @@ def assert_traceable(script: dict, brief: dict) -> None:
 # ----------------------------------------------------------------------
 # write_script — the pure seam the adapter uses (no file I/O, no schema envelope)
 # ----------------------------------------------------------------------
-def write_script(brief: dict, *, chat_fn=llm.chat) -> dict:
+# ----------------------------------------------------------------------
+# Creative Roundtable wiring — Marlow's internal Critic→Researcher→Craftsman review
+# (Task 5). The roundtable lives in roundtable.py; here we build its config from
+# Marlow's own persona files + chat seam, run it, and DEFEND traceability: an enhanced
+# script that no longer grounds every claim is rejected and the draft ships instead.
+# ----------------------------------------------------------------------
+def _roundtable_search():
+    """Marlow's Researcher web-search tool, or None when search is unavailable.
+
+    A self-contained DuckDuckGo (`ddgs`) seam wrapped defensively — a missing library
+    or a flaky/rate-limited source returns [] and never crashes a script run. Mirrors
+    the coaches' search.py contract: web_search(query, max_results=5) -> list[dict]."""
+    def web_search(query: str, max_results: int = 5) -> list:
+        try:
+            from ddgs import DDGS
+        except Exception:  # noqa: BLE001 — ddgs not installed -> Researcher uses knowledge
+            return []
+        try:
+            out = []
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=max_results):
+                    url = r.get("href") or r.get("url") or ""
+                    if url:
+                        out.append({"url": url, "title": (r.get("title") or "").strip(),
+                                    "snippet": (r.get("body") or "").strip(),
+                                    "source_type": "web"})
+            return out
+        except Exception:  # noqa: BLE001 — a search source must never fail a run
+            return []
+    return web_search
+
+
+def _import_roundtable():
+    """Import the sibling `roundtable` module by ABSOLUTE FILE PATH (not sys.path).
+
+    Why not a bare `import roundtable`: on the live pipeline this engine is loaded by
+    atlas's loader, which puts scriptwriter/ on sys.path only DURING module load and
+    restores it afterwards. This roundtable import is lazy (it runs at CALL time, when
+    write_script executes), by which point scriptwriter/ is gone from sys.path — so a
+    bare import raises ModuleNotFoundError and sinks the whole script stage. Loading by
+    file path is independent of sys.path, so it works identically on the live pipeline
+    and the unit-test path. Cached under a DIR-UNIQUE key so the future Iris/Cadence/
+    Mason copies of roundtable.py (per the replication blueprint) can never cross-wire
+    onto Marlow's module in sys.modules."""
+    import importlib.util
+    import os
+    import sys
+    sw_dir = os.path.dirname(os.path.abspath(__file__))
+    mod_key = "_roundtable_" + os.path.basename(sw_dir)
+    cached = sys.modules.get(mod_key)
+    if cached is not None:
+        return cached
+    path = os.path.join(sw_dir, "roundtable.py")
+    spec = importlib.util.spec_from_file_location(mod_key, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not locate roundtable.py in {sw_dir}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_key] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _run_roundtable(draft: dict, brief: dict, *, chat_fn,
+                    treatment: dict | None, narrative_intent: dict | None,
+                    motion_mood_board: dict | None,
+                    project_dir: pathlib.Path | None) -> dict:
+    """Run the Creative Roundtable over a traceable draft; return the enhanced script
+    iff it STILL grounds every claim, else the draft unchanged.
+
+    The roundtable itself never raises (it degrades to the draft on any sub-agent
+    failure). On top of that, we re-assert Marlow's hard traceability guarantee over the
+    Craftsman's output: a rewrite that introduces an unresolvable source_ref is rejected
+    here — Marlow never ships a claim he can't trace, roundtable or not."""
+    rt = _import_roundtable()
+
+    upstream_intent = {
+        "thematic_anchor": brief.get("thematic_anchor", {}),
+        "creative_treatment": treatment or {},
+        "narrative_intent": narrative_intent or {},
+        "motion_mood_board": motion_mood_board or {},
+    }
+    config = rt.RoundtableConfig(
+        specialist_name="Marlow", specialist_role="Scriptwriter",
+        skill_md=SKILL, style_md=STYLE, soul_md=SOUL,
+        llm_chat=chat_fn, search_tool=_roundtable_search(),
+    )
+    try:
+        enhanced, _log = rt.CreativeRoundtable(config).review_and_enhance(
+            draft, upstream_intent, project_dir=project_dir)
+    except Exception as exc:  # noqa: BLE001 — defense in depth; the review never sinks the job
+        print(f"  · (roundtable failed: {exc}; keeping the draft)")
+        return draft
+
+    if enhanced is draft or enhanced == draft:
+        return draft
+    # The Craftsman's rewrite must still pass Marlow's traceability guarantee.
+    try:
+        assert_traceable(enhanced, brief)
+    except AssertionError:
+        print("  · (roundtable rewrite broke claim traceability; keeping the draft)")
+        return draft
+    return enhanced
+
+
+def write_script(brief: dict, *, chat_fn=llm.chat, treatment: dict | None = None,
+                 narrative_intent: dict | None = None,
+                 motion_mood_board: dict | None = None,
+                 use_roundtable: bool = False,
+                 project_dir: pathlib.Path | None = None) -> dict:
     """Turn a research brief into a script dict (frozen shape, minus schema_version).
 
     Validates the brief, makes ONE arc call to the brain (with a single retry if the
     hook throat-clears), resolves every claim's support deterministically, and
     asserts traceability before returning. Atlas stamps schema_version + validates.
+
+    `treatment` (optional) is the director's creative_treatment — when present, Marlow
+    writes to its rhythm + per-beat emphasis. It shapes HOW the story is told; it never
+    relaxes the brief fence (assert nothing the research doesn't support).
+
+    `narrative_intent` (optional) is the emotional score — the per-scene emotion +
+    intensity + pacing directives that the creative_treatment's poetry was translated
+    into. When present, Marlow writes narration that LANDS each scene's emotion, with
+    sentence length + word choice constrained by the pacing directive. Like the
+    treatment it shapes HOW, never WHAT — the brief stays the fence.
+
+    `motion_mood_board` (optional) is the design-first visual architecture — the per-beat
+    pacing_profile / duration target / layout that the visual language imposes on the
+    script's rhythm (design-first: the motion governs the words). When present, each beat's
+    pacing_profile is expanded into concrete writing rules (get_pacing_rules) and Marlow
+    fits the narration to the beat's duration. Same contract as the others: shapes HOW,
+    never WHAT — the brief stays the fence. None -> standard pacing (backward-compatible).
     """
     ok, reason = validate_brief(brief)
     if not ok:
         raise ValueError(reason)
 
-    prompt = _build_prompt(brief)
+    prompt = _build_prompt(brief, treatment, narrative_intent, motion_mood_board)
     llm_out = _chat_json(SOUL, prompt, chat_fn=chat_fn)
     script = assemble_script(brief, llm_out)
 
@@ -943,6 +1222,16 @@ def write_script(brief: dict, *, chat_fn=llm.chat) -> dict:
             pass  # keep the first draft; a soft heuristic never fails the whole job
 
     assert_traceable(script, brief)
+
+    # The draft is grounded. If the Creative Roundtable is enabled, run Marlow's internal
+    # Critic→Researcher→Craftsman review and ship the enhanced script — but only if it
+    # still grounds every claim (else the draft ships). Opt-in: off by default keeps the
+    # pure seam fast + deterministic for tests; the pipeline turns it on.
+    if use_roundtable:
+        script = _run_roundtable(
+            script, brief, chat_fn=chat_fn, treatment=treatment,
+            narrative_intent=narrative_intent, motion_mood_board=motion_mood_board,
+            project_dir=project_dir)
     return script
 
 

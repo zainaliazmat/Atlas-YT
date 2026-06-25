@@ -254,6 +254,140 @@ def classify(topic: str, angle: str | None, sources: list[dict]):
 
 
 # ----------------------------------------------------------------------
+# The Thematic Anchor — from research to insight
+# ----------------------------------------------------------------------
+# Correct research produces correct videos, not compelling ones. A premium explainer
+# builds an argument around a single, surprising, counter-intuitive idea — a thesis,
+# not a list of facts. This step asks the brain to wear a Creative Director's hat and
+# mine the verified research for the ONE under-explored insight that can become the
+# gravitational center of the whole video. It is an INTERPRETATION of the verified
+# facts (no fabrication), and it is additive — it never replaces the research pack.
+# ----------------------------------------------------------------------
+_THEMATIC_ANCHOR_REQUIRED = ("thesis_statement", "supporting_pillar_1",
+                             "supporting_pillar_2", "counter_intuitive_angle",
+                             "emotional_payload")
+_ANCHOR_CONFIDENCE = ("high", "medium", "low")
+
+# {topic} is substituted at call time via str.replace (NOT str.format — the prompt is
+# full of literal JSON braces that would break .format).
+_THEMATIC_ANCHOR_SYSTEM = """\
+You are not a researcher. You are a Creative Director at a documentary studio.
+Your sole job is to find the ONE insight that will make someone who already
+knows this topic say "Huh. I never thought of it that way."
+
+You are given a research brief on: {topic}
+
+SCAN FOR THESE PATTERNS:
+
+1. THE SURPRISING CAUSAL LINK
+   Two things everyone knows about, but nobody connects. "A causes B" is boring.
+   "A secretly causes Z, and here's the hidden mechanism" is gold.
+   Example: Not "social media affects mental health." But "the infinite scroll
+   wasn't designed for engagement. It was designed to prevent you from having
+   the moment of stillness where you'd ask 'am I enjoying this?'"
+
+2. THE COUNTER-INTUITIVE STATISTIC
+   A number that, when properly framed, flips a common assumption.
+   Example: Not "AI writes 41% of new code." But "For every 100 lines of code
+   written today, 41 were authored by a machine. But here's what nobody asks:
+   who reviews machine-written code? The answer is: almost nobody. We've
+   automated creation without automating quality control. That's not progress.
+   That's a recall waiting to happen."
+
+3. THE HISTORICAL PARALLEL THAT RHYMES
+   A moment from history that feels eerily familiar and provides a framework
+   for understanding the present.
+   Example: Not "AI will change jobs." But "In 1850, 60% of Americans worked
+   on farms. By 1900, it was 30%. By 1950, 12%. Nobody starved. But nobody
+   talks about the 40-year depression in rural communities, the suicides,
+   the lost towns. We're about to do that again, but in 15 years instead of 50.
+   What happens when the speed of displacement outpaces the speed of human adaptation?"
+
+4. THE UNQUESTIONED ASSUMPTION
+   Something "everyone knows" that, on inspection, is either false or deeply
+   incomplete. The emperor's new clothes moment.
+   Example: Not "remote work is changing offices." But "For 70 years, we
+   designed cities around the assumption that humans must commute to a central
+   location to do knowledge work. That assumption is now false. But we're still
+   building cities as if it's true. We're pouring concrete for a 1950s world
+   that no longer exists."
+
+5. THE GIANT IN THE ROOM
+   A huge, obvious implication that the industry or media systematically
+   avoids discussing. The thing everyone is thinking but nobody is saying.
+   Example: Not "self-driving cars have safety challenges." But "A self-driving
+   car will, at some point, have to choose between hitting a child and killing
+   its passenger. Who writes that code? Who is legally responsible? We're
+   deploying technology that forces moral philosophy into source code, and
+   nobody is having that conversation in public."
+
+YOUR OUTPUT:
+Return a JSON object with exactly these fields:
+
+{
+  "thesis_statement": "The single, provocative sentence that the entire video exists to prove. It must be an argument, not an observation. It must have tension. It must make someone want to argue with you or agree passionately.",
+  "supporting_pillar_1": "The strongest piece of evidence from the research that supports this thesis. One specific fact, not a generalization.",
+  "supporting_pillar_2": "The second strongest piece of evidence. This should come from a different angle than pillar 1 — different data, different logic, different emotional register.",
+  "counter_intuitive_angle": "What makes this thesis surprising? Why wouldn't the average person already think this?",
+  "emotional_payload": "What should the viewer FEEL when this thesis lands? Be specific. Not 'informed.' Something like: 'the vertigo of realizing a core assumption is wrong' or 'the quiet dread of seeing a pattern you can't unsee.'"
+}
+
+RULES:
+- If the research doesn't contain enough to support a strong thesis, say so honestly rather than forcing a weak one
+- The thesis must be defensible by the facts in the research brief — no fabrication
+- Prefer a narrow, deep thesis over a broad, shallow one
+- The emotional payload is as important as the intellectual one
+- Output ONLY the raw JSON object — no greeting, no explanation, no markdown fences."""
+
+
+def find_thematic_anchor(topic: str, research_brief: dict, chat_fn: callable) -> dict:
+    """Discover the single most compelling, under-explored insight in the research
+    that can serve as the video's central thesis.
+
+    Returns a dict with thesis_statement + supporting pillars (the five required
+    fields, plus an optional normalized `confidence`). Raises ValueError when the
+    brain can't produce a usable, argument-shaped anchor — the caller decides whether
+    that downgrades the video to 'standard information mode' (it never crashes the run).
+
+    The anchor is an INTERPRETATION of the verified facts already in the brief; the
+    prompt fences the brain to those facts, so the thesis stays defensible.
+    """
+    user_message = json.dumps({
+        "topic": topic,
+        "verified_facts": research_brief.get("verified_facts", []),
+        "contested_or_uncertain": research_brief.get("contested_or_uncertain", []),
+        "key_statistics": research_brief.get("key_statistics", []),
+        "suggested_angles": research_brief.get("suggested_angles", []),
+    }, indent=2)
+
+    system_prompt = _THEMATIC_ANCHOR_SYSTEM.replace("{topic}", str(topic))
+    response = chat_fn(system=system_prompt, user=user_message)
+
+    try:
+        anchor = json.loads(_strip_json(response))
+    except Exception as exc:
+        raise ValueError(f"Thematic anchor was not valid JSON: {exc}")
+    if not isinstance(anchor, dict):
+        raise ValueError("Thematic anchor must be a JSON object.")
+
+    # Validate it has every required field (an argument needs all five legs).
+    for field in _THEMATIC_ANCHOR_REQUIRED:
+        if not str(anchor.get(field) or "").strip():
+            raise ValueError(f"Thematic anchor missing required field: {field}")
+
+    # Validate the thesis is actually an argument (carries enough to hold tension).
+    if len(str(anchor["thesis_statement"]).split()) < 8:
+        raise ValueError("Thesis statement too short to be meaningful")
+
+    # Keep only the contract fields; normalize an optional self-reported confidence.
+    out = {f: str(anchor[f]).strip() for f in _THEMATIC_ANCHOR_REQUIRED}
+    conf = str(anchor.get("confidence") or "").strip().lower()
+    if conf in _ANCHOR_CONFIDENCE:
+        out["confidence"] = conf
+    return out
+
+
+# ----------------------------------------------------------------------
 # Route the LLM's classified claims into the final pack buckets
 # ----------------------------------------------------------------------
 def route_claims(claims) -> dict[str, list]:
@@ -351,6 +485,16 @@ def render_markdown(pack: dict) -> str:
     L.append("## Overview")
     L.append(pack.get("overview") or "_(none)_")
 
+    anchor = pack.get("thematic_anchor")
+    if isinstance(anchor, dict) and anchor.get("thesis_statement"):
+        conf = anchor.get("confidence")
+        L.append("\n## 🎯 Thematic anchor (the thesis)")
+        L.append(f"**Thesis{f' [{conf}]' if conf else ''}:** {anchor['thesis_statement']}")
+        L.append(f"- *Pillar 1:* {anchor.get('supporting_pillar_1','')}")
+        L.append(f"- *Pillar 2:* {anchor.get('supporting_pillar_2','')}")
+        L.append(f"- *Why it's surprising:* {anchor.get('counter_intuitive_angle','')}")
+        L.append(f"- *Emotional payload:* {anchor.get('emotional_payload','')}")
+
     def section(title, items, fmt):
         L.append(f"\n## {title}")
         if not items:
@@ -442,6 +586,16 @@ def run(topic: str, angle: str | None = None, quiet: bool = False):
             pack["sources"] = _annotated_sources(sources)
         else:
             pack = assemble_pack(topic, angle, llm_pack, sources)
+            # From research to insight: mine the verified facts for the ONE provocative,
+            # under-explored thesis the whole video can orbit. Additive + best-effort —
+            # a failure leaves the pack a (correct) list of facts, never crashes the run.
+            if pack.get("verified_facts"):
+                try:
+                    pack["thematic_anchor"] = find_thematic_anchor(topic, pack, llm.chat)
+                    log(f"  · thematic anchor: {pack['thematic_anchor']['thesis_statement']}")
+                except Exception as exc:
+                    log(f"  · (no thematic anchor — {exc}); video will be standard "
+                        "information mode, not a thesis-driven argument")
 
     json_path, md_path = save_pack(pack, quiet=quiet)
 

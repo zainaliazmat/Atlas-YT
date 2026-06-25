@@ -76,3 +76,52 @@ def test_missing_binary_still_fails_closed(monkeypatch):
     assert hf_tools.run_lint(SCENE)["ok"] is False
     assert hf_tools.run_validate(SCENE)["ok"] is False
     assert hf_tools.run_inspect(SCENE)["ok"] is False
+
+
+# ----------------------------------------------------------------------
+# Transient-failure retry: under a saturated compose (many Chrome instances),
+# a validate/inspect Chrome can exit non-zero though the scene is fine
+# (parseable JSON, zero real findings). That transient must be retried, not
+# block the whole video — but a REAL defect (console error / inspect issue)
+# is deterministic and must NOT be retried.
+# ----------------------------------------------------------------------
+def _stateful_run(monkeypatch, plan):
+    """plan: {cmd: [result_dict_per_call, ...]} — pops the next canned result per call.
+    Records call counts on the returned dict under '_calls'."""
+    calls = {}
+
+    def fake(cmd, scene_dir, *extra, timeout):
+        calls[cmd] = calls.get(cmd, 0) + 1
+        seq = plan[cmd]
+        return seq[min(calls[cmd] - 1, len(seq) - 1)]
+    monkeypatch.setattr(hf_tools, "_run", fake)
+    monkeypatch.setattr(hf_tools, "GATE_RETRY_SLEEP", 0)
+    return calls
+
+
+def test_run_gate_retries_a_transient_chrome_crash(monkeypatch):
+    crash = {"ran": True, "returncode": 1, "json": {"contrastFailures": 0},
+             "stderr": "", "error": None}                       # non-zero, but scene clean
+    clean = {"ran": True, "returncode": 0, "json": {"contrastFailures": 0},
+             "stderr": "", "error": None}
+    ok_lint = {"ran": True, "returncode": 0, "json": {"errorCount": 0, "findings": []},
+               "stderr": "", "error": None}
+    ok_inspect = {"ran": True, "returncode": 0, "json": {"issues": []},
+                  "stderr": "", "error": None}
+    calls = _stateful_run(monkeypatch, {"lint": [ok_lint], "validate": [crash, clean],
+                                        "inspect": [ok_inspect]})
+    gate = hf_tools.run_gate(SCENE)
+    assert gate["validate"]["ok"] is True       # the retry recovered the transient crash
+    assert calls["validate"] == 2               # ran twice (1 crash + 1 retry)
+
+
+def test_run_gate_does_not_retry_a_real_failure(monkeypatch):
+    ok_lint = {"ran": True, "returncode": 0, "json": {"errorCount": 0, "findings": []},
+               "stderr": "", "error": None}
+    real_fail = {"ran": True, "returncode": 1,                  # genuine console error
+                 "json": {"errors": ["Uncaught TypeError"], "contrastFailures": 0},
+                 "stderr": "", "error": None}
+    calls = _stateful_run(monkeypatch, {"lint": [ok_lint], "validate": [real_fail]})
+    gate = hf_tools.run_gate(SCENE)
+    assert gate["validate"]["ok"] is False
+    assert calls["validate"] == 1               # deterministic defect → no wasted retries

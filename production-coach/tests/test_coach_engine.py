@@ -148,3 +148,41 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len([f for f in fns]) - failed} checks ok (excluding fixture tests)")
     sys.exit(1 if failed else 0)
+
+
+# ----------------------------------------------------------------------
+# Roundtable process data — folded into the prompt when supplied (additive)
+# ----------------------------------------------------------------------
+def test_roundtable_context_reaches_the_prompt():
+    seen = {}
+
+    def chat_fn(system, user):
+        seen["user"] = user
+        return "Lock the push-in peak to the emphasized syllable."
+
+    ctx = {
+        "roundtable_used": True, "specialist": "Mason", "process_health": "healthy",
+        "criticisms": [{"severity": "major", "principle": "Rule 1",
+                        "diagnosis": "easing contradicts the urgency beat"}],
+        "research_quality": {"total_findings": 1, "findings_with_sources": 0},
+        "craftsman_impact": {"scenes_modified": 0},
+    }
+    result = coach_engine.propose_addendum(
+        band_id="compose:motion_energy", direction="RAISE it", owner="Mason",
+        chat_fn=chat_fn, roundtable_context=ctx)
+    assert result["source"] == "llm"
+    assert "INTERNAL CREATIVE PROCESS DATA" in seen["user"]
+    assert "easing contradicts the urgency beat" in seen["user"]
+    assert "Mason" in seen["user"]
+
+
+def test_no_roundtable_context_leaves_prompt_clean():
+    seen = {}
+
+    def chat_fn(system, user):
+        seen["user"] = user
+        return "Add a single signature push-in."
+
+    coach_engine.propose_addendum(
+        band_id="compose:motion_energy", direction="RAISE it", chat_fn=chat_fn)
+    assert "INTERNAL CREATIVE PROCESS DATA" not in seen["user"]

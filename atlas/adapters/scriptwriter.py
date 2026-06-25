@@ -17,6 +17,7 @@ PERSONA `ask` is inherited from base.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 
 import chat_state
@@ -44,9 +45,41 @@ def run_write(pdir: pathlib.Path) -> dict:
     from contracts import CONTRACT_VERSION
     pdir = pathlib.Path(pdir)
     brief = chat_state.load_json(pdir / "research_brief.json", {})
-    script = _script_engine().write_script(brief)
+    # Atlas's fix re-run leaves a revision hint in project.json; fold it into the brief so
+    # Marlow re-grounds/drops the flagged claims instead of regenerating the same script.
+    revision = chat_state.load_json(pdir / "project.json", {}).get("revision") or {}
+    hint = revision.get("hint")
+    if hint:
+        brief = {**brief, "revision_hint": hint}
+    # The director's creative treatment (if the treatment stage ran) shapes the script's
+    # rhythm + emphasis; absent, Marlow writes exactly as before (backward-compatible).
+    treatment = chat_state.load_json(pdir / "creative_treatment.json", {}) or None
+    # The emotional score (if the narrative_intent stage ran) makes the per-scene emotion
+    # + pacing a hard writing instruction; absent, Marlow writes as before.
+    narrative_intent = chat_state.load_json(pdir / "narrative_intent.json", {}) or None
+    # The motion mood board (if the design-first stage ran) governs the per-beat pacing,
+    # duration target, and layout the script writes to; absent, Marlow writes as before.
+    motion_mood_board = chat_state.load_json(pdir / "motion_mood_board.json", {}) or None
+    # The Creative Roundtable (Marlow's internal Critic→Researcher→Craftsman review) runs
+    # on the LIVE path by default; `project_dir` lets the engine drop roundtable_log.json
+    # beside the script for the CEO + eval system. Kill switch: MARLOW_ROUNDTABLE=0.
+    use_roundtable = os.environ.get("MARLOW_ROUNDTABLE", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+    script = _script_engine().write_script(brief, treatment=treatment,
+                                           narrative_intent=narrative_intent,
+                                           motion_mood_board=motion_mood_board,
+                                           use_roundtable=use_roundtable,
+                                           project_dir=pdir)
     script = {"schema_version": CONTRACT_VERSION, **script}
     chat_state.atomic_write_json(pdir / "script.json", script)
+    # Pipeline awareness: surface that the script was roundtable-enhanced (the log is the
+    # CEO/eval record of what the Critic flagged and the Craftsman changed).
+    log = chat_state.load_json(pdir / "roundtable_log.json", {})
+    if log:
+        diff = log.get("diff_summary", {})
+        note = "no changes" if log.get("error") else \
+            f"{diff.get('scenes_modified', 0)} scene(s) rewritten"
+        print(f"  · Script enhanced by Marlow's Creative Roundtable — {note}.")
     return script
 
 

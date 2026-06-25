@@ -146,81 +146,89 @@ def test_redact_strips_secret_keys():
     assert out["nested"]["password"] == "***"
 
 
-# ---------------------------------------------------------------- gate approve
-class _DummyOrch:
-    """A no-op orchestrator so AtlasSession.start() never boots the heavy engine."""
-    adapters: dict = {}
+# ---------------------------------------------------------------- gate approve (T2)
+# The T2 approve now resumes through the belt dispatcher (spec §4): the deterministic
+# surface satisfies the gate, the resumed run shares the belt's station locks, and the
+# outcome is read back from DISK (the belt's source of truth). So we inject a fake
+# produce_fn (dispatcher-compatible signature) that walks the project to `done` on disk —
+# never a real engine/LLM. initiator="ceo" is recorded; no T2 write ever comes from chat.
+def _inject_fake_produce(client, on_call, tmp_path):
+    """Put a dispatcher-compatible fake on app.state.produce_fn BEFORE the belt builds, so
+    the T2 resume runs the fake (never the real spine). `on_call(slug, approve, root)` does
+    the disk transition + may record the call. Returns nothing — disk is the truth."""
+    client._app.state.produce_fn = on_call
 
 
-def _inject_fake_session(client, produce_fn, tmp_path):
-    """Pre-build a cheap AtlasSession with a tmp state_path + fake produce, and put it
-    on app.state.session so _get_session never lazy-builds the real (heavy) one and the
-    real chat_state.json is never touched."""
-    import session as session_mod
-    app = client._app
-    state_path = pathlib.Path(tmp_path) / "disposable_chat_state.json"
-    sess = session_mod.AtlasSession.start(
-        state_path=state_path,
-        build_orch=lambda progress: _DummyOrch(),
-        projects_dir=app.state.projects_dir,
-        produce_fn=produce_fn,
-    )
-    app.state.session = sess
-    return state_path
+def _finish_on_disk(root, slug, *, write_video=True):
+    """Flip a project's status to done on disk (what a resumed render does)."""
+    import chat_state
+    pp = pathlib.Path(root) / slug / "project.json"
+    proj = chat_state.load_json(pp, {})
+    proj["status"] = "done"
+    for st in (proj.get("stages", {}) or {}).values():
+        st["status"] = "done"
+    chat_state.atomic_write_json(pp, proj)
+    if write_video:
+        (pathlib.Path(root) / slug / "video.mp4").write_bytes(b"\x00")
 
 
 def test_approve_hard_block_409_routed_back(client, slugs, tmp_path):
-    # Even with a fake produce injected, a hard block must be refused BEFORE produce.
+    # Even with a fake produce injected, a hard block must be refused BEFORE any resume.
     calls = []
 
-    def fake_produce(slug=None, approve=None, progress=None):
-        calls.append((slug, approve))
-        return {"status": "done", "video": "video.mp4", "slug": slug}
+    def fake_produce(slug=None, approve=None, root=None, progress=None,
+                     station_locks=None, should_cancel=None):
+        calls.append((slug, list(approve or [])))
+        _finish_on_disk(root, slug)
+        return {"status": "done"}
 
-    state_path = _inject_fake_session(client, fake_produce, tmp_path)
+    _inject_fake_produce(client, fake_produce, tmp_path)
     r = client.post(f"/api/gate/{slugs['hard_block']}/approve",
                     json={"gate": "factcheck"})
     assert r.status_code == 409
     body = r.json()
     assert body["result"] == "routed_back"
     assert body["approvable"] is False
-    # produce must NOT have been called for a hard block
+    # the spine was NEVER resumed for a hard block — refused on the deterministic surface
     assert calls == []
-    # real chat_state.json untouched; our tmp state_path not written either (no distill)
-    assert not state_path.exists()
 
 
-def test_approve_clean_block_relays_fake_status(client, slugs, tmp_path):
+def test_approve_clean_block_relays_disk_status(client, slugs, tmp_path):
     calls = []
 
-    def fake_produce(slug=None, approve=None, progress=None):
+    def fake_produce(slug=None, approve=None, root=None, progress=None,
+                     station_locks=None, should_cancel=None):
         calls.append((slug, list(approve or [])))
-        if progress is not None:
-            progress.emit("rendering") if hasattr(progress, "emit") else None
-        return {"status": "done", "video": "video.mp4", "slug": slug}
+        if progress is not None and hasattr(progress, "emit"):
+            progress.emit("rendering")
+        _finish_on_disk(root, slug)
+        return {"status": "done"}
 
-    state_path = _inject_fake_session(client, fake_produce, tmp_path)
+    _inject_fake_produce(client, fake_produce, tmp_path)
     r = client.post(f"/api/gate/{slugs['blocked_clean']}/approve",
                     json={"gate": "factcheck"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["result"] == "approved"
     assert body["gate"] == "factcheck"
-    assert body["status"] == "done"          # relays the fake's status
+    assert body["status"] == "done"          # read back from disk after the resume
     assert body["video"] == "video.mp4"
-    # the fake WAS called exactly once with our gate
+    # the resumed run invoked the spine once with our gate (on a belt worker)
     assert calls == [(slugs["blocked_clean"], ["factcheck"])]
-    # no real chat_state.json write (distill never runs); tmp state_path absent
-    assert not state_path.exists()
+    # the §4 audit: the gate_approved event came from the CEO plane, never chat
+    disp = client._app.state.dispatcher
+    ga = [e for e in disp.events.since(0) if e["kind"] == "gate_approved"]
+    assert ga and ga[-1]["initiator"] == "ceo"
     # and the relayed payload carries no leaks
     _assert_clean(r.text, "approve response")
 
 
 def test_approve_not_at_gate_409(client, slugs, tmp_path):
-    def fake_produce(slug=None, approve=None, progress=None):
-        raise AssertionError("produce should not be called for a non-gated project")
+    def fake_produce(slug=None, approve=None, root=None, progress=None,
+                     station_locks=None, should_cancel=None):
+        raise AssertionError("the spine must not be resumed for a non-gated project")
 
-    _inject_fake_session(client, fake_produce, tmp_path)
+    _inject_fake_produce(client, fake_produce, tmp_path)
     r = client.post(f"/api/gate/{slugs['done']}/approve", json={"gate": "factcheck"})
     assert r.status_code == 409
     assert r.json().get("error") == "not at a gate"

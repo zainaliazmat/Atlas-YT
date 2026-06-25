@@ -219,15 +219,23 @@ DUCK_RATIO = 8          # hard duck — VO is authoritative
 DUCK_ATTACK_MS = 5
 DUCK_RELEASE_MS = 300
 TAIL_FADE_SEC = 0.75    # bed/master tail-fade so the mux ends clean
-LIMIT = 0.97            # final brickwall to avoid summed-clip
+LIMIT = 0.97            # peak brickwall (alimiter) to avoid summed-clip BEFORE loudnorm
+# Final loudness normalization — the peak limiter caps peaks but never RAISES quiet
+# content, so masters shipped ~-22 LUFS (≈8 too quiet; the eval calibration flagged this).
+# loudnorm brings the integrated loudness up to the YouTube target and re-limits true peak.
+TARGET_LUFS = -14.0     # YouTube integrated-loudness standard (LUFS)
+TARGET_TP = -1.0        # true-peak ceiling (dBTP)
+TARGET_LRA = 11.0       # loudness range (LU) — documentary VO+bed sits comfortably here
 
 
 def build_mix_recipe(vo_path: str | pathlib.Path, total_dur: float, *,
                      out_path: str | pathlib.Path,
                      bed: dict | None = None, sfx: dict | None = None,
-                     vo_gain_db: float = 0.0,
+                     vo_gain_db: float = 0.0, vo_filters: str = "",
                      duck=(DUCK_THRESHOLD, DUCK_RATIO, DUCK_ATTACK_MS, DUCK_RELEASE_MS),
-                     tail_fade: float = TAIL_FADE_SEC, limit: float = LIMIT) -> dict:
+                     tail_fade: float = TAIL_FADE_SEC, limit: float = LIMIT,
+                     target_lufs: float = TARGET_LUFS, target_tp: float = TARGET_TP,
+                     target_lra: float = TARGET_LRA) -> dict:
     """Build (but do NOT run) the FFmpeg command for the documentary master mix.
 
     PURE: returns {"args": [...], "filter_complex": str, "output": str, "inputs": [...]}
@@ -237,14 +245,23 @@ def build_mix_recipe(vo_path: str | pathlib.Path, total_dur: float, *,
       - a bed is hard-ducked UNDER the VO via sidechaincompress, then tail-faded;
       - one SFX accent is delayed to `at_sec` and sits a touch under the VO;
       - the master is trimmed to EXACTLY `total_dur` so it aligns to the concatenated
-        video, with a final limiter against summed clipping.
+        video, with a peak limiter against summed clipping THEN a final loudnorm that
+        raises the integrated loudness to the YouTube target (≈-14 LUFS) — without it
+        masters ship ~-22 LUFS, too quiet (the eval calibration finding).
     `bed`/`sfx` are {"path": str, "gain_db": float[, "at_sec": float]} or None — a
     flagged/uncleared track is simply not passed in, so it can never enter the mix.
+
+    `vo_filters` (optional) is an extra FFmpeg filter chain applied to the AUDIBLE VO only
+    (e.g. an emotion-driven EQ/reverb from the narrative-intent score, "equalizer=…,aecho=…").
+    It is appended AFTER the VO volume and is deliberately NOT applied to the [vokey] duck
+    key, so ducking still keys off the clean, un-effected VO. Default "" -> the filtergraph
+    is byte-identical to before (the emotional EQ is purely additive + opt-in).
     """
     ffmpeg = _ffmpeg() or "ffmpeg"
     dur = round(float(total_dur), 3)
     fade_st = max(0.0, round(dur - tail_fade, 3))
     thr, ratio, attack, release = duck
+    vof = f",{vo_filters.strip().strip(',')}" if (vo_filters or "").strip() else ""
 
     # Ordered inputs: VO is always input 0. Bed loops to cover the full duration.
     inputs: list[tuple[list[str], str]] = [([], str(vo_path))]
@@ -260,9 +277,9 @@ def build_mix_recipe(vo_path: str | pathlib.Path, total_dur: float, *,
     # needs the key — otherwise the [vokey] pad would dangle and FFmpeg would error.
     if bed_idx is not None:
         chains = [f"[0:a]asplit=2[vokey][vo0]",
-                  f"[vo0]volume={vo_gain_db}dB[voout]"]
+                  f"[vo0]volume={vo_gain_db}dB{vof}[voout]"]
     else:
-        chains = [f"[0:a]volume={vo_gain_db}dB[voout]"]
+        chains = [f"[0:a]volume={vo_gain_db}dB{vof}[voout]"]
     mix_labels = ["[voout]"]
 
     if bed_idx is not None:
@@ -283,15 +300,18 @@ def build_mix_recipe(vo_path: str | pathlib.Path, total_dur: float, *,
             f"[{sfx_idx}:a]adelay={at_ms}|{at_ms},volume={sfx_gain}dB[sfxout]")
         mix_labels.append("[sfxout]")
 
+    # Final stage: trim to length, peak-limit, then loudnorm to the integrated-loudness
+    # target. loudnorm is LAST so it sets the master's delivered loudness + true peak.
+    loudnorm = f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={target_lra}"
     # amix needs >= 2 inputs; with only the VO (no bed, no accent) skip it entirely —
     # an amix=inputs=1 is rejected by FFmpeg.
     if len(mix_labels) == 1:
-        chains.append(f"{mix_labels[0]}atrim=0:{dur},alimiter=limit={limit}[master]")
+        chains.append(f"{mix_labels[0]}atrim=0:{dur},alimiter=limit={limit},{loudnorm}[master]")
     else:
         chains.append(
             f"{''.join(mix_labels)}amix=inputs={len(mix_labels)}:normalize=0:"
             f"dropout_transition=0[mixed]")
-        chains.append(f"[mixed]atrim=0:{dur},alimiter=limit={limit}[master]")
+        chains.append(f"[mixed]atrim=0:{dur},alimiter=limit={limit},{loudnorm}[master]")
     filter_complex = ";".join(chains)
 
     args = [ffmpeg, "-y"]

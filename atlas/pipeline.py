@@ -22,9 +22,45 @@ former stub slot was filled). The only stub that survives is `research`, and onl
 an OPT-IN offline fallback behind the `ATLAS_RESEARCH_STUB` env flag (dev / no-network);
 by default `research` runs Sage's real engine like every other stage. Each stage is one
 producer, so swapping a specialist later = replacing ONE producer; nothing else changes.
+
+CREATIVE DATA FLOW (Tasks 1-5 integration — how the creative intent survives the
+handoffs). Each producer reads its upstream artifacts off disk through
+`chat_state.load_json(path, {}) or None`, so a MISSING upstream artifact leaves the
+downstream stage on its prior, backward-compatible behavior — every new creative stage
+is additive:
+
+  research_brief.json  (Sage; now carries thematic_anchor — the surprising thesis)
+      │
+      ├─→ treatment: Iris reads the brief + thematic_anchor
+      │     └─→ creative_treatment.json (the poetic vision, orbiting the thesis)
+      │           │
+      │           └─→ narrative_intent: Iris expands the treatment into an emotional SCORE
+      │                 └─→ narrative_intent.json (per-scene emotion/intensity/pacing/texture)
+      │                       │
+      │                       ├─→ motion_mood_board: Iris translates emotion → visual architecture
+      │                       │     └─→ motion_mood_board.json (beat_map: per-beat effect/
+      │                       │           transition/layout/duration, design-first)
+      │                       │           │
+      │                       │           ├─→ script: Marlow writes governed by BOTH
+      │                       │           │     narrative_intent (tone/pacing) AND
+      │                       │           │     motion_mood_board (duration targets); his
+      │                       │           │     internal Critic→Researcher→Craftsman
+      │                       │           │     roundtable runs here → roundtable_log.json
+      │                       │           │     (the eval system's window into the process)
+      │                       │           ├─→ storyboard: Iris assigns layouts/effects per scene
+      │                       │           └─→ compose: Mason renders the board as source of truth
+      │                       │
+      │                       └─→ narration: Cadence reads narrative_intent for TTS pacing/EQ/music
+      │
+      └─→ factcheck: Sage validates claims (unaffected by the creative layer)
+
+Stage order is FIXED in STAGES below; the creative-architecture stages (treatment →
+narrative_intent → motion_mood_board) are sequential because each builds on the last.
 """
 from __future__ import annotations
 
+import contextlib
+import logging
 import pathlib
 import time
 import uuid
@@ -37,6 +73,8 @@ import registry
 from adapters import (art_director, asset_sourcer, audio, composition_engineer, sage,
                       scriptwriter)
 from progress import Progress
+
+logger = logging.getLogger(__name__)
 
 HERE = pathlib.Path(__file__).parent
 PROJECTS_DIR = HERE / "projects"
@@ -63,8 +101,35 @@ STAGES: list[Stage] = [
     # via ATLAS_RESEARCH_STUB=1 — the real engine is the default. (The other stages stay
     # offline stubs until their specialist lands.)
     Stage("research", "sage", "researching", sage.produce_research, "research_brief"),
-    # REAL script stage: Marlow's engine drafts script.json from the brief. (The
-    # other stages stay offline stubs until their specialist lands.)
+    # REAL creative-treatment stage: Iris's engine expands the brief into a grounded
+    # creative direction (rhythm, visual world, per-beat concept/mood/emphasis), distilled
+    # from the HyperFrames craft library, on the strong creative model. Marlow (script) and
+    # Iris's later style/storyboard stages both consume it — so the closed vocabularies get
+    # used intentionally. Advisory + optional: a missing treatment leaves every downstream
+    # stage on its prior behavior (backward-compatible).
+    Stage("treatment", "art_director", "writing the creative treatment",
+          art_director.produce_treatment, "creative_treatment"),
+    # REAL narrative-intent stage: Iris's engine translates the poetic creative_treatment
+    # into a parameterized emotional SCORE (video thesis/journey/tone, a 5-phase emotional
+    # arc, and per-scene emotion+intensity+pacing+texture+delivery directives) in closed
+    # vocabularies. Marlow (word choice / sentence length) and Cadence (TTS pacing, voice
+    # EQ/reverb, music genre, SFX) both consume it — so the emotional intent SURVIVES the
+    # handoffs instead of evaporating. Advisory + optional: a missing intent leaves every
+    # downstream stage on its prior behavior (backward-compatible). Runs after treatment,
+    # before script.
+    Stage("narrative_intent", "art_director", "scoring the narrative intent",
+          art_director.produce_narrative_intent, "narrative_intent"),
+    # REAL motion-mood-board stage: Iris the Cinematographer translates the emotional
+    # blueprint (narrative_intent) into a concrete VISUAL ARCHITECTURE — a beat_map of
+    # HyperFrames directives (tempo/texture, per-beat pacing/effect/transition/layout/
+    # duration) in the same closed vocabularies Mason renders. This inverts the creative
+    # logic (design-first): the artifact GOVERNS both Marlow's pacing AND Mason's motion.
+    # Runs after narrative_intent, before script. Advisory + optional: a missing board
+    # leaves every downstream stage on its prior behavior (backward-compatible).
+    Stage("motion_mood_board", "art_director", "designing the motion mood board",
+          art_director.produce_motion_mood_board, "motion_mood_board"),
+    # REAL script stage: Marlow's engine drafts script.json from the brief (+ treatment if
+    # present). (The other stages stay offline stubs until their specialist lands.)
     Stage("script", "scriptwriter", "drafting the script", scriptwriter.produce_script,
           "script"),
     # REAL pass-2 (build step #2): Sage's engine fact-checks the on-disk script vs
@@ -185,11 +250,112 @@ def _resolve_blocked_slug(root: pathlib.Path, approve: set) -> tuple:
 # ----------------------------------------------------------------------
 # The runner
 # ----------------------------------------------------------------------
+@contextlib.contextmanager
+def _station(station_locks: dict | None, key: str):
+    """Hold a stage's single-occupancy 'station' lock while its producer runs.
+
+    `station_locks` maps stage.key -> a lock (e.g. threading.Semaphore(1)); the assembly-
+    line dispatcher passes it so only ONE video occupies a stage at a time (station=stage,
+    spec §6.1/6.3). When None (CLI / tests / the orchestrator) this is a no-op and the
+    spine behaves EXACTLY as before — the hook is opt-in."""
+    lock = station_locks.get(key) if station_locks else None
+    if lock is not None:
+        lock.acquire()
+    try:
+        yield
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+def _run_stage(stage: "Stage", st: dict, project: dict, pdir: pathlib.Path, topic: str,
+               progress: Progress, who: str, emoji: str) -> dict | None:
+    """Run one stage's producer + contract validation + auto-gate, mutating `project` in
+    place. Returns a failed result dict to short-circuit produce(), or None on success.
+
+    The failed dict carries `failure_kind`: 'transient' (a producer raised — often a
+    network/runtime hiccup, so the dispatcher MAY retry) vs 'deterministic' (a contract or
+    auto-gate failure — re-running yields the same result, so the dispatcher must NOT
+    retry; spec §6.4). The caller holds the station lock around this call."""
+    st["status"] = "running"
+    _save(project, pdir)
+    progress.emit(f"{emoji} {who} is {stage.label}…")
+    try:
+        art = stage.producer(pdir, topic)
+    except Exception as exc:  # noqa: BLE001 — a stage failure halts cleanly
+        st["status"] = "failed"
+        st["note"] = str(exc)
+        project["status"] = "failed"
+        _save(project, pdir)
+        progress.fail(who, str(exc))
+        return _result(project, pdir, status="failed", stage=stage.key,
+                       errors=[str(exc)], failure_kind="transient")
+
+    # validate against the frozen contract
+    if stage.contract is not None:
+        ok, errors = contracts.validate(stage.contract, art.data)
+        if not ok:
+            st["status"] = "failed"
+            st["validated"] = False
+            st["note"] = "; ".join(errors)
+            project["status"] = "failed"
+            _save(project, pdir)
+            progress.fail(who, f"{stage.contract} failed validation")
+            return _result(project, pdir, status="failed", stage=stage.key,
+                           errors=errors, failure_kind="deterministic")
+        st["validated"] = True
+
+    # composition auto-gate (lint + validate + inspect per scene)
+    if stage.autogate and "auto-gate PASS" not in art.summary:
+        st["status"] = "blocked"
+        st["note"] = art.summary
+        project["status"] = "failed"
+        _save(project, pdir)
+        progress.fail(who, "composition auto-gate failed")
+        return _result(project, pdir, status="failed", stage=stage.key,
+                       errors=[art.summary], failure_kind="deterministic")
+
+    st["status"] = "done"
+    st["artifact"] = art.rel_path
+    st["updated"] = time.time()
+    project["artifacts"][stage.key] = art.rel_path
+    progress.done(who, art.summary)
+    _save(project, pdir)
+    return None
+
+
+def create_project(brief: str | None = None, *, topic: str | None = None,
+                   gates: dict | None = None, unattended: bool = False,
+                   root: pathlib.Path | None = None) -> dict:
+    """Mint a new project on disk in the 'queued' state and return its summary
+    {slug, project_dir}. The assembly-line dispatcher calls this to get a slug + a belt
+    card IMMEDIATELY, then runs the project with produce(slug=...). Splitting create from
+    run is what lets the UI show the queued card before any stage runs. (produce(brief=)
+    still creates-and-runs in one call for the CLI/orchestrator — unchanged.)"""
+    root = pathlib.Path(root) if root else PROJECTS_DIR
+    b = (brief or topic or "").strip()
+    the_topic = (topic or b).strip()
+    cfg_gates = dict(DEFAULT_GATES)
+    if gates:
+        cfg_gates.update(gates)
+    if unattended:
+        cfg_gates = {k: False for k in cfg_gates}
+    slug = f"{_slug(the_topic)}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
+    pdir = root / slug
+    pdir.mkdir(parents=True, exist_ok=True)
+    project = _new_project(b, the_topic, slug, cfg_gates)
+    project["status"] = "queued"  # explicit belt state: minted, not yet on a station
+    _save(project, pdir)
+    return {"slug": slug, "project_dir": str(pdir)}
+
+
 def produce(brief: str | None = None, *, slug: str | None = None,
             approve: list[str] | None = None, gates: dict | None = None,
             unattended: bool = False, topic: str | None = None,
             root: pathlib.Path | None = None,
-            progress: Progress | None = None) -> dict:
+            progress: Progress | None = None,
+            station_locks: dict | None = None,
+            should_cancel: Callable[[], bool] | None = None) -> dict:
     """Run (or resume) the production pipeline for one video.
 
     NEW run: pass `brief`. RESUME: pass `slug` (and `approve=[gate]` to clear a gate).
@@ -265,7 +431,20 @@ def produce(brief: str | None = None, *, slug: str | None = None,
     # Gates are checked as CHECKPOINTS that read project.json / artifacts on disk, so
     # they fire correctly on a resume too (a stage already 'done' still hits its gate).
     for stage in STAGES:
-        st = project["stages"][stage.key]
+        # cooperative cancel: checked between stations so a cancelled video stops cleanly
+        # (it holds no lock here) and is removable from the belt (spec §6.5 / E6). No-op
+        # when should_cancel is None (CLI / orchestrator / tests).
+        if should_cancel is not None and should_cancel():
+            project["status"] = "cancelled"
+            _log(project, stage.key, "cancelled by operator")
+            _save(project, pdir)
+            progress.emit("✖ Cancelled by operator.")
+            return _result(project, pdir, status="cancelled", stage=stage.key)
+
+        # A project minted before a new stage was added won't carry its key — default it
+        # to pending so a resume picks the new stage up cleanly instead of KeyError-ing.
+        st = project["stages"].setdefault(
+            stage.key, {"status": "pending", "artifact": None, "validated": False})
 
         # --- human gate BEFORE the final render (checkpoint) ----------------
         if stage.key == "render":
@@ -279,50 +458,21 @@ def produce(brief: str | None = None, *, slug: str | None = None,
         who = entry.display if entry else stage.role
 
         if st.get("status") != "done":
-            st["status"] = "running"
-            _save(project, pdir)
-            progress.emit(f"{emoji} {who} is {stage.label}…")
-            try:
-                art = stage.producer(pdir, topic)
-            except Exception as exc:  # noqa: BLE001 — a stage failure halts cleanly
-                st["status"] = "failed"
-                st["note"] = str(exc)
-                project["status"] = "failed"
-                _save(project, pdir)
-                progress.fail(who, str(exc))
-                return _result(project, pdir, status="failed", stage=stage.key,
-                               errors=[str(exc)])
-
-            # validate against the frozen contract
-            if stage.contract is not None:
-                ok, errors = contracts.validate(stage.contract, art.data)
-                if not ok:
-                    st["status"] = "failed"
-                    st["validated"] = False
-                    st["note"] = "; ".join(errors)
-                    project["status"] = "failed"
-                    _save(project, pdir)
-                    progress.fail(who, f"{stage.contract} failed validation")
-                    return _result(project, pdir, status="failed", stage=stage.key,
-                                   errors=errors)
-                st["validated"] = True
-
-            # composition auto-gate (lint + validate + inspect per scene)
-            if stage.autogate and "auto-gate PASS" not in art.summary:
-                st["status"] = "blocked"
-                st["note"] = art.summary
-                project["status"] = "failed"
-                _save(project, pdir)
-                progress.fail(who, "composition auto-gate failed")
-                return _result(project, pdir, status="failed", stage=stage.key,
-                               errors=[art.summary])
-
-            st["status"] = "done"
-            st["artifact"] = art.rel_path
-            st["updated"] = time.time()
-            project["artifacts"][stage.key] = art.rel_path
-            progress.done(who, art.summary)
-            _save(project, pdir)
+            # Single-occupancy station lock held ONLY while the stage runs; a video that
+            # parks at a gate / fails / is cancelled releases it on return → frees the
+            # station for the next video (spec §6.1/6.3). No-op when station_locks is None.
+            with _station(station_locks, stage.key):
+                failed = _run_stage(stage, st, project, pdir, topic, progress, who, emoji)
+            if failed is not None:
+                return failed
+            # Quality-tier awareness (NOT a gate): once the brief is on disk + validated,
+            # note whether it carries a thematic anchor. Informs; never blocks.
+            if stage.key == "research":
+                if _check_thematic_anchor(pdir):
+                    progress.emit("🎯 Thematic anchor set — the video has a thesis to orbit.")
+                else:
+                    progress.emit("ℹ️  No thematic anchor — standard information mode "
+                                  "(comprehensive, but without a central thesis).")
 
         # --- human gate AFTER fact-check (checkpoint) -----------------------
         if stage.key == "factcheck":
@@ -337,6 +487,33 @@ def produce(brief: str | None = None, *, slug: str | None = None,
     _save(project, pdir)
     progress.emit(f"🎬 Done — {pdir / video}")
     return _result(project, pdir, status="done", video=str(pdir / video))
+
+
+# ----------------------------------------------------------------------
+# Quality-tier awareness — NOT a gate. After research validates, note whether the
+# brief carries a thematic anchor (a thesis the whole video can orbit) or not. This
+# never blocks the line; it makes the system honest about the tier it's operating at:
+# a thesis-driven argument vs. comprehensive-but-flat "standard information mode".
+# ----------------------------------------------------------------------
+def _check_thematic_anchor(project_dir: pathlib.Path) -> bool:
+    brief_path = pathlib.Path(project_dir) / "research_brief.json"
+    brief = chat_state.load_json(brief_path, {})
+
+    anchor = brief.get("thematic_anchor")
+    if not anchor:
+        logger.warning(
+            "No thematic anchor found in research brief. "
+            "Video will be produced in 'standard information mode' — "
+            "comprehensive but without a central thesis. "
+            "Consider re-running with a more focused topic angle.")
+        return False
+
+    thesis = str(anchor.get("thesis_statement", ""))
+    if anchor.get("confidence") == "low":
+        logger.warning("Thematic anchor present but low confidence: %s...", thesis[:100])
+
+    logger.info("Thematic anchor set: %s...", thesis[:100])
+    return True
 
 
 # ----------------------------------------------------------------------

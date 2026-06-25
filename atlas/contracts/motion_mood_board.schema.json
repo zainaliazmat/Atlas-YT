@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "atlas/contracts/motion_mood_board.schema.json",
+  "title": "motion_mood_board.json — the design-first visual architecture (the motion score)",
+  "description": "v1.0. The pre-script visual architecture that inverts the pipeline's creative logic: it is produced AFTER narrative_intent (the emotional blueprint) and BEFORE the script, and it governs BOTH Marlow's pacing AND Mason's motion design. Where narrative_intent says WHAT the viewer should feel, this says HOW the frame moves to make them feel it — translating the emotional arc into concrete HyperFrames directives Mason executes without interpretation. The closed vocabularies (effects, layouts, transitions, textures, emotions) MIRROR the engine's real HyperFrames vocabularies exactly (a cross-engine parity test guards lock-step) so every value maps to something Mason can render. Every field beyond schema_version is OPTIONAL and additionalProperties:true throughout, so the pipeline stays backward-compatible when the stage is absent and nothing breaks if a producer adds a field.",
+  "type": "object",
+  "required": ["schema_version"],
+  "additionalProperties": true,
+  "$defs": {
+    "arc_phase": {
+      "type": "string",
+      "description": "which of the five emotional-arc phases this beat belongs to (shared with narrative_intent)",
+      "enum": ["hook", "build", "peak", "breathe", "cta"]
+    },
+    "primary_emotion": {
+      "type": "string",
+      "description": "the closed emotion vocabulary the whole pipeline shares (mirrors narrative_intent)",
+      "enum": [
+        "curiosity", "surprise", "awe", "satisfaction", "determination",
+        "tension", "dread", "hope", "nostalgia", "clarity",
+        "urgency", "wonder", "unease", "triumph", "melancholy", "empathy"
+      ]
+    },
+    "intensity": {
+      "type": "integer",
+      "description": "felt emotional intensity, 1 (barely there) to 10 (overwhelming)",
+      "minimum": 1,
+      "maximum": 10
+    },
+    "pacing_profile": {
+      "type": "string",
+      "description": "how this beat moves through time — maps to Marlow's sentence structure AND Mason's animation timing",
+      "enum": [
+        "rapid_staccato", "steady_build", "slow_reveal",
+        "held_stillness", "conversational_flow"
+      ]
+    },
+    "effect": {
+      "type": "string",
+      "description": "a HyperFrames per-scene effect token (the engine's real EFFECTS vocabulary, plus 'none')",
+      "enum": [
+        "stutter-12fps", "stepped-ease", "highlighter-FFD000", "map-draw",
+        "chromatic-aberration", "push-in", "parallax", "count-up",
+        "breathe", "bars-grow", "drift", "word-reveal",
+        "pop-in", "underline-grow", "none"
+      ]
+    },
+    "transition": {
+      "type": "string",
+      "description": "a HyperFrames assembly-seam transition token (the engine's real TRANSITIONS vocabulary)",
+      "enum": ["cut", "dip-to-black", "push", "wipe", "match-cut"]
+    },
+    "layout_family": {
+      "type": "string",
+      "description": "a HyperFrames layout token (the engine's real LAYOUTS vocabulary)",
+      "enum": [
+        "centered-statement", "split-screen", "full-bleed-image", "lower-third",
+        "data-chart", "quote-card", "map-focus", "list-stack", "comparison-2up",
+        "title-card", "big-number", "timeline", "diagram"
+      ]
+    },
+    "global_texture": {
+      "type": "string",
+      "description": "the single global texture (the engine's real TEXTURES vocabulary, plus 'clean' for none)",
+      "enum": ["clean", "paper", "grain", "halftone", "vignette", "scanlines"]
+    },
+    "global_tempo": {
+      "type": "string",
+      "description": "the dominant rhythm of the whole video — affects default transition speed + scene duration",
+      "enum": ["methodical", "conversational", "brisk_and_urgent", "slow_and_cinematic"]
+    }
+  },
+  "properties": {
+    "schema_version": {"type": "string"},
+    "video_level": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "the whole-video visual contract",
+      "properties": {
+        "global_tempo": {"$ref": "#/$defs/global_tempo"},
+        "global_texture": {"$ref": "#/$defs/global_texture"},
+        "global_texture_justification": {
+          "type": "string",
+          "description": "why this texture — must connect to the thematic anchor or emotional payload"
+        },
+        "dominant_motion_philosophy": {
+          "type": "string",
+          "description": "one sentence that guides every motion decision (e.g. 'motion is punctuation, not decoration')"
+        }
+      }
+    },
+    "beat_map": {
+      "type": "array",
+      "description": "one entry per beat in the emotional arc — the governing document for both Marlow and Mason",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "beat_id", "arc_phase", "primary_emotion", "pacing_profile",
+          "dominant_effect", "transition_in", "layout_family",
+          "scene_duration_target_sec"
+        ],
+        "properties": {
+          "beat_id": {"type": "string",
+                      "description": "unique identifier for this beat — links scenes to beats"},
+          "arc_phase": {"$ref": "#/$defs/arc_phase"},
+          "primary_emotion": {"$ref": "#/$defs/primary_emotion"},
+          "intensity": {"$ref": "#/$defs/intensity"},
+          "pacing_profile": {"$ref": "#/$defs/pacing_profile"},
+          "dominant_effect": {"$ref": "#/$defs/effect"},
+          "secondary_effect": {"$ref": "#/$defs/effect"},
+          "transition_in": {"$ref": "#/$defs/transition"},
+          "layout_family": {"$ref": "#/$defs/layout_family"},
+          "scene_duration_target_sec": {
+            "type": "number",
+            "minimum": 0,
+            "description": "target total duration for all scenes in this beat — Marlow fits narration within it; Mason uses it for pacing"
+          },
+          "motion_parameter_overrides": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "concrete animation parameters that deviate from defaults, keyed by effect name (e.g. {'push-in': {'duration_sec': 1.8, 'easing': 'exponential-out'}})"
+          },
+          "visual_mood_ref": {
+            "type": "string",
+            "description": "a single film scene / painting / photographic style that captures this beat's visual feeling (not a palette)"
+          }
+        }
+      }
+    },
+    "palette_emotional_overrides": {
+      "type": "array",
+      "description": "optional per-beat color shifts from the global palette — used sparingly",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "beat_id": {"type": "string"},
+          "accent_override": {
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "a single accent color overriding the global palette for this beat only"
+          },
+          "override_justification": {
+            "type": "string",
+            "description": "why this color, for this beat, at this moment"
+          }
+        }
+      }
+    },
+    "signature_beat_placement": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "where the single #FFD000 highlighter moment lands",
+      "properties": {
+        "beat_id": {"type": "string"},
+        "target_element": {
+          "type": "string",
+          "description": "the exact word, number, or visual element the highlighter touches"
+        },
+        "justification": {
+          "type": "string",
+          "description": "why this element, at this moment, deserves the signature"
+        }
+      }
+    }
+  }
+}

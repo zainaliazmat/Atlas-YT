@@ -37,12 +37,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import pathlib
 import re
 import time
 from dataclasses import dataclass, field
 
 import chat_state  # atomic_write_json / load_json — corruption-safe file helpers
+import diagram_engine  # conceptual-diagram planner (kind:diagram shot -> DiagramPlan)
 import sources
 from sources import ALLOWLIST_NAMES, SOURCE_BY_NAME, SOURCE_ORDER, SOURCES, Candidate
 
@@ -52,10 +54,16 @@ SKILL = (HERE / "SKILL.md").read_text()
 MEMORY = HERE / "memory.json"
 MANIFESTS_DIR = HERE / "manifests"
 
-# asset_manifest is NOT one of the additively-extended contracts, so it stays on the
-# base CONTRACT_VERSION. Atlas is the authority (stamps via contracts.version_for at the
-# boundary); this local copy keeps a standalone `run.py` save independently contract-shaped.
-SCHEMA_VERSION = "1.0"
+# asset_manifest was additively extended to "1.1" (the "diagram" asset type + optional
+# `plan` object). Atlas is the authority (stamps via contracts.version_for at the boundary);
+# this local copy keeps a standalone `run.py` save independently contract-shaped. Old 1.0
+# manifests still validate (the new fields are optional; validate loads the latest schema).
+SCHEMA_VERSION = "1.1"   # 1.1 adds the "diagram" asset type + optional `plan` object
+
+# D15 — conceptual-diagram generation is behind a feature flag; OFF (default) keeps today's
+# stock-image fallback for kind:diagram shots, so the rollout is clean + reversible.
+def _diagram_gen_enabled() -> bool:
+    return os.environ.get("MAGPIE_DIAGRAM_GEN", "").strip().lower() in ("1", "yes", "true")
 
 # Where downloads land inside the per-project dir; the manifest `uri` is relative to it.
 ASSETS_SUBDIR = "assets"
@@ -226,8 +234,13 @@ _TYPOGRAPHY_KINDS = {"title", "text", "quote", "headline", "caption", "label",
 _RENDER_KINDS = {"brand", "chip"}
 _VIDEO_KINDS = {"footage", "video", "clip", "broll-video", "motion", "b-roll-video"}
 _ICON_KINDS = {"icon", "logo", "symbol", "glyph", "pictogram", "mark"}
-_DATAVIZ_KINDS = {"chart", "graph", "plot", "data", "dataviz", "data-viz", "diagram",
-                  "figure", "infographic"}
+# Chart kinds ALWAYS generate (Mason draws them from the scene's numbers). Diagram kinds
+# only generate when the content actually carries data — a CONCEPTUAL diagram (e.g. "chat
+# bubble with robot arms") has no generator, so it sources a relevant stock image instead
+# of shipping a blank placeholder (issue #2).
+_CHART_KINDS = {"chart", "graph", "plot", "data", "dataviz", "data-viz"}
+_DIAGRAM_KINDS = {"diagram", "figure", "infographic"}
+_DATAVIZ_KINDS = _CHART_KINDS | _DIAGRAM_KINDS
 _IMAGE_KINDS = {"image", "photo", "still", "b-roll", "broll", "portrait", "photograph",
                 "picture", "archival", "illustration", "painting", "engraving"}
 # Kinds whose disposition depends on the CONTENT (named-archival -> image; data -> viz).
@@ -255,12 +268,15 @@ class ShotPlan:
     reason: str = ""
 
 
-def classify_shot(shot: dict) -> ShotPlan:
+def classify_shot(shot: dict, *, diagram_gen: bool = False) -> ShotPlan:
     """Decide the manifest `type` and whether Magpie sources, generates, or skips.
 
     - typography kinds (title/quote/text) -> SKIP (the Composition Engineer sets type).
     - charts/data-viz, and data-driven maps/diagrams -> GENERATE (placeholder + flag).
     - a NAMED period/archival map or diagram -> SOURCE as an image (the scavenger hunt).
+    - a CONCEPTUAL diagram (no data/archival cue) -> GENERATE-DIAGRAM when `diagram_gen`
+      is on (Mason composes a DiagramPlan to flat SVG); OFF (default, D15) -> today's
+      stock-image fallback. Clean, reversible rollout.
     - image/video/icon kinds -> SOURCE.
     """
     kind = str(shot.get("kind", "")).strip().lower()
@@ -276,11 +292,16 @@ def classify_shot(shot: dict) -> ShotPlan:
         # The map/diagram split routes on CONTENT, scavenger bias wins ties.
         if _ARCHIVAL_CUE.search(content):
             return ShotPlan("image", "source", "named period/archival artifact")
-        if _DATA_CUE.search(content) or kind in _DATAVIZ_KINDS:
+        if _DATA_CUE.search(content) or kind in _CHART_KINDS:
             return ShotPlan("data-viz", "generate", "composition-generated (data-viz)")
-        # A bare "map" with no cue either way: source as an image (period imagery is
-        # Magpie's lane; a truly data-driven map names its data).
-        return ShotPlan("image", "source", "map with no data cue — source as image")
+        # A CONCEPTUAL diagram (no data cue): generate a DiagramPlan for Mason to compose,
+        # when the feature flag is on; else SOURCE a relevant image (the prior behavior).
+        if diagram_gen and kind in _DIAGRAM_KINDS:
+            return ShotPlan("diagram", "generate-diagram", "conceptual diagram — planned for Mason")
+        # A conceptual diagram or a bare "map" with no data cue: SOURCE a relevant image
+        # rather than ship a blank placeholder (Mason has no generator for it). Period
+        # imagery and concept stock are Magpie's lane; a truly data-driven viz names its data.
+        return ShotPlan("image", "source", "no data cue — source a relevant image")
 
     if kind in _VIDEO_KINDS:
         return ShotPlan("video", "source")
@@ -597,8 +618,25 @@ def _placeholder_asset(asset_id: str, scene_no, asset_type: str, *, source: str,
     return asset
 
 
+def _diagram_asset(asset_id: str, scene_no, plan: dict) -> dict:
+    """A contract-shaped diagram row: a cached DiagramPlan (no file) Mason composes to flat
+    SVG at render time. Cleared by construction — it's generated in-house, no licensing."""
+    return {
+        "asset_id": asset_id,
+        "scene_no": int(scene_no) if isinstance(scene_no, int) else (scene_no or 0),
+        "type": "diagram",
+        "source": "diagram-planner",
+        "uri": "",
+        "license": "n/a (generated)",
+        "attribution": "",
+        "status": "cleared",
+        "plan": plan,
+    }
+
+
 def source_assets(storyboard: dict, style_guide: dict | None = None, *,
-                  client, pdir: str | pathlib.Path, dedupe: bool = True) -> dict:
+                  client, pdir: str | pathlib.Path, dedupe: bool = True,
+                  chat_fn=None, diagram_gen: bool | None = None) -> dict:
     """Source every storyboard shot -> a contract-shaped asset_manifest dict (env-free).
 
     Pure decision logic over an INJECTED `client` (the only network seam). For each
@@ -622,10 +660,14 @@ def source_assets(storyboard: dict, style_guide: dict | None = None, *,
     available = [s for s in SOURCES if _safe_available(client, s)]
     hash_to_uri: dict[str, str] = {}        # within-run content-hash dedupe
     assets: list[dict] = []
+    # D15 feature flag (explicit param wins over the env default); D12 counters so a silent
+    # degradation (planner failing -> falling back to stock) is visible, not invisible.
+    diagram_on = _diagram_gen_enabled() if diagram_gen is None else bool(diagram_gen)
+    diag_stats = {"planned": 0, "failed": 0}
 
     for scene_no, shot in _iter_shots(storyboard):
         asset_id = _asset_id_for(shot, scene_no, len(assets))
-        plan = classify_shot(shot)
+        plan = classify_shot(shot, diagram_gen=diagram_on)
 
         if plan.action == "skip":
             continue
@@ -634,6 +676,20 @@ def source_assets(storyboard: dict, style_guide: dict | None = None, *,
                 asset_id, scene_no, plan.asset_type, source="composition-engineer",
                 license_label="n/a (generated)", flag=plan.reason))
             continue
+        if plan.action == "generate-diagram":
+            # PLAN the conceptual diagram (off the render path); on any failure walk the
+            # fallback chain (stock image -> placeholder) — never block, never ship blank.
+            try:
+                dplan = diagram_engine.plan_diagram(shot, **({"chat_fn": chat_fn} if chat_fn else {}))
+                assets.append(_diagram_asset(asset_id, scene_no, dplan))
+                diag_stats["planned"] += 1
+                continue
+            except Exception as exc:  # noqa: BLE001 — planner failure must degrade, not crash
+                diag_stats["failed"] += 1
+                # fall back to the stock-image path: reclassify as an image source so the
+                # row below is a real image/placeholder, not a diagram row with no plan.
+                plan = ShotPlan("image", "source",
+                                f"diagram planner failed ({str(exc)[:80]}) — sourcing an image")
 
         # --- action == "source" -------------------------------------------------
         query = derive_query(shot.get("content", ""), style_guide)
@@ -661,7 +717,12 @@ def source_assets(storyboard: dict, style_guide: dict | None = None, *,
             recorded["relevance"] = round(best, 3)
         assets.append(recorded)
 
-    return {"assets": assets}
+    out = {"assets": assets}
+    if diagram_on:
+        # D12 observability: surface the diagram planner's hit/fallback split so a silent
+        # degradation (every diagram quietly falling back to stock) is visible at the gate.
+        out["diagnostics"] = {"diagram": diag_stats}
+    return out
 
 
 def _safe_available(client, source) -> bool:

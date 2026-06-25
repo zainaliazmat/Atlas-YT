@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import tempfile
 import time
 from typing import Any
 
@@ -30,11 +31,24 @@ def new_state() -> dict[str, Any]:
 
 
 def atomic_write_json(path: str | pathlib.Path, obj: Any) -> None:
-    """Write JSON to `path` atomically: dump to a temp file, then os.replace."""
+    """Write JSON to `path` atomically: dump to a UNIQUE temp file, then os.replace.
+
+    The temp file is minted with `tempfile.mkstemp` (unique per call, even across threads of
+    the same process) so two threads writing the SAME target — e.g. the supervisor logging a
+    decision from the worker thread while an operator action rewrites the same project.json —
+    cannot collide on the temp path. `os.replace` is atomic, so the only observable effect of
+    a concurrent write is last-writer-wins on the target (never a crash or a corrupt file)."""
     path = pathlib.Path(path)
-    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
-    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False))
-    os.replace(tmp, path)  # atomic on POSIX/Windows for same-dir paths
+    data = json.dumps(obj, indent=2, ensure_ascii=False)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".tmp.")
+    tmp = pathlib.Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(data)
+        os.replace(tmp, path)  # atomic on POSIX/Windows for same-dir paths
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def load_json(path: str | pathlib.Path, default: Any) -> Any:

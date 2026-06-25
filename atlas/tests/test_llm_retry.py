@@ -19,7 +19,7 @@ def _install(monkeypatch, behaviors):
             return b
         return ok()
 
-    monkeypatch.setattr(llm, "_claude_chat_async", lambda s, u: fake_async(s, u))
+    monkeypatch.setattr(llm, "_claude_chat_async", lambda s, u, model=None: fake_async(s, u))
     monkeypatch.setattr(llm.time, "sleep", lambda s: None)
     return calls
 

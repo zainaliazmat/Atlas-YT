@@ -1,0 +1,257 @@
+# Atlas as autonomous supervisor — design
+
+**Date:** 2026-06-24
+**Status:** approved design, ready for slice-by-slice implementation
+**Branch:** `control-room`
+
+## Vision
+
+Make **Atlas the single brain** for all production work. No process is triggered
+directly anymore: every action — from the dashboard *or* from chat — becomes a **request
+to Atlas**, and Atlas decides what to do, delegates each task to the right specialist,
+handles failures itself, and **only interrupts the CEO on genuinely critical decisions**.
+The dashboard and chat become two views of **one Atlas engine over shared state**.
+
+This does NOT discard the reliability the belt already has. The deterministic dispatcher
+and spine remain the **reliable hands** (station single-occupancy, the in-flight
+concurrency cap, on-disk persistence, crash-recovery, contract validation, and the
+never-ship-unverified guarantee). Atlas is layered on top as the **decision-maker** at the
+points that need judgment.
+
+Chosen architecture: **Approach 1 — Atlas as supervisor over the reliable belt.**
+(Rejected: per-video agent loops that re-implement scheduling — too much rework/risk; one
+global planner — a bottleneck that hurts multi-video throughput.)
+
+## Agreed policy decisions
+
+1. **Render gate → autonomous under a budget rule (option B).** Atlas self-approves the
+   final render when the render plan is under the CEO's threshold (e.g. est. cost < $X /
+   runtime < N min / short-form format); above it, Atlas escalates with a **HyperFrames
+   draft-preview card** so the CEO decides render-or-kill.
+2. **Fact-check / quality block → bounded auto-fix (option A), default 2 attempts.** Atlas
+   delegates a fix (Marlow revises the flagged claims) and re-runs the check up to 2×;
+   the 3rd block escalates. It **never ships** a video that fails the fact-check.
+3. **Unified path → same engine, two views (option A).** Dashboard buttons and chat both
+   drive one Atlas engine over the same on-disk state + event ring. Not a single literal
+   transcript; the dashboard stays a fast cockpit whose buttons are requests to Atlas.
+
+## CEO / Eng / Design review resolutions (2026-06-24)
+
+Stress-tested with the plan-review lenses before any build. Resolved:
+- **D1 — Exceptions-only invocation.** The LLM is consulted only at failures / blocks /
+  gates / budget decisions, never on a clean stage finish (cost + latency + responsiveness).
+- **D2 — Slices reordered to live pain.** Fact-check auto-fix lands right after the seam;
+  the invasive request-path unify goes last.
+- **D3 — Eng/Design hardening folded in:** decisions run outside the station lock; `context`
+  and the safe-default mapping are specified; counters persist before acting; the two Atlas
+  call-shapes are named; observability metrics added; escalation cards show attempt history;
+  a live "what Atlas is doing" feed and an escalation digest are in scope.
+
+## Multi-video concurrency
+
+Preserved exactly as today: the dispatcher's global `max_in_flight` cap runs several
+videos down the belt at once; per-station single-occupancy keeps one video per station.
+Atlas decisions are **per-video, at that video's decision points** — independent bounded
+calls, not one serialized brain — so the design scales to many concurrent videos
+(the reason Approach 1 beats a global planner here).
+
+## Architecture
+
+### 1. The supervisor seam
+
+Today `Dispatcher._on_result(slug, result)` encodes a fixed failure policy
+(transient→retry, deterministic→park, blocked→wait). Replace it with a call to Atlas:
+
+```
+atlas_decide(slug, result, context) -> Decision
+```
+
+**Exceptions-only invocation (CEO review D1).** The LLM is NOT consulted on a clean stage
+finish — a contract-valid stage just advances deterministically (the spine already does
+this). `atlas_decide` is called only at the points that need judgment: a stage **failed**,
+a fact-check **blocked**, a **gate** is pending (fact-check or render), or a **budget**
+decision is due. This keeps cost/latency bounded (no ~10 LLM calls per video just to hear
+"PROCEED") and keeps the dashboard responsive. `PROCEED` still exists as a legal decision
+for the exception cases where Atlas judges "this is fine, continue."
+
+**Runs outside the station lock; release the in-flight slot before an LLM decision
+(autoplan review).** `atlas_decide` can take seconds (an LLM call), so it must not hold any
+lock that blocks other videos. The station semaphores are already released by the time
+`produce()` returns, so the decision never blocks a *station*. BUT — correcting an earlier
+claim — today `_on_result` runs INSIDE `_run`'s `try` block, i.e. while the worker still
+holds the global **in-flight slot** (`_inflight.release()` is in the `finally`, after).
+That is harmless for the Slice-1 safe-default decider (instant), but the Slice-2 LLM
+decider MUST release the in-flight slot before deciding, or a slow decision burns an
+in-flight slot and throttles `max_in_flight`. A concurrency test asserts a slow decider
+does not stall other videos' stations.
+
+**The `context` passed to Atlas** (Eng review — underspecified input is where an LLM
+hallucinates) is the full decision state: the project.json, the failing stage's artifact +
+its contract errors (or the factcheck report for a block, or the render plan for a render
+gate), the prior **decision/attempt counters**, and the **attempt history**. That persisted
+history in `project.json` is the **single source of truth** for "what has Atlas already
+decided about this video" — BOTH call-shapes (chat orchestrator and `atlas_decide`) read
+and append to it, so they cannot drift into contradictory decisions (autoplan review).
+
+Atlas returns **one Decision from a bounded, validated set** — the LLM proposes, but may
+only pick a legal move:
+
+| Decision | Meaning |
+|---|---|
+| `PROCEED` | the exception is benign; continue down the belt |
+| `RETRY_STAGE(stage)` | re-run a failed station (e.g. transient hiccup) |
+| `FIX_AND_RERUN(stage, instructions)` | delegate a fix to the responsible specialist/coach, then re-run from that station |
+| `RERUN_FROM(stage)` | send the video back to an earlier station (e.g. back to research) |
+| `APPROVE_GATE(gate)` | self-approve a gate, **within policy only** |
+| `ESCALATE(reason, payload)` | call the CEO |
+| `KILL(reason)` | abandon the video (e.g. genuinely unverifiable topic) |
+
+The **dispatcher executes** the Decision with its existing reliable mechanics: the same
+reset-and-re-run path as the Re-run button (`rerun`/`_reset_failed_stage`), `resume()` for
+a gate approval, park-and-emit for an escalate. Atlas decides; the dispatcher executes.
+
+**Two Atlas call-shapes (Eng review).** The conversational orchestrator
+(`orchestrator.py`) is a multi-turn agent loop; `atlas_decide` is a single-shot,
+schema-constrained call. They **share the same persona + specialist registry** but are
+deliberately different shapes — the spec treats them as one Atlas with two call modes, and
+they must not drift into two inconsistent brains. The decision call is also where the
+**safe-default decider** substitutes on LLM error (see Error handling).
+
+### 2. Bounded autonomy (enforced in the executor, not trusted to the LLM)
+
+Defense-in-depth — the policy is structural, so even a hallucinating Atlas can only ever
+escalate, never ship junk / overspend / loop:
+
+- **A fact-check block can never be approved away.** `APPROVE_GATE(factcheck)` is not a
+  legal decision; the only moves on a block are `FIX_AND_RERUN` / `ESCALATE` / `KILL`.
+  IMPORTANT (autoplan review): this guard is **executor logic**, NOT the vocabulary — the
+  `DECISION_KINDS` set still contains a generic `APPROVE_GATE`. The Slice-2 executor MUST
+  gate-scope it (reject `APPROVE_GATE` when `gate == factcheck`); the bounded vocabulary
+  alone does not enforce the never-ship-unverified guarantee.
+- **Gate-detection must be robust (autoplan review).** When executing an `ESCALATE`/gate
+  decision, the executor must not emit a `blocked` event with `gate=None` for a malformed
+  LLM decision (e.g. `payload.blocked=True` but no `gate`). Validate the gate is a real
+  gate key before emitting.
+- **Auto-fix is counted.** A per-video counter caps fact-check `FIX_AND_RERUN` at 2
+  (configurable); the 3rd block forces `ESCALATE` regardless of the LLM's choice.
+- **Render budget is enforced in code.** `APPROVE_GATE(render)` is honored only if the
+  render plan is under the CEO's budget rule; over budget → the executor converts it to
+  `ESCALATE`.
+- **Per-video decision budget.** A cap on total Atlas actions per video; on reaching it,
+  Atlas escalates rather than spinning.
+- **Counters persist before acting (Eng review).** The decision count + per-gate
+  attempt count live in `project.json` and are incremented + written *before* the chosen
+  action runs, so a crash mid-decision cannot reset the budget and loop. `reconcile_interrupted`
+  then parks a mid-decision video honestly on restart.
+- **Auto-fix convergence depends on Marlow (CEO review).** The fact-check `FIX_AND_RERUN`
+  delegates to Marlow, whose current weakness is attaching mismatched `source_ref`s to
+  specific statistics (see the two videos blocked at fact-check on 2026-06-24). The 2-try
+  cap bounds the wasted effort; durable convergence wants a parallel hardening of Marlow's
+  grounding (out of scope here, noted as a dependency).
+
+### 3. The unified request path
+
+- New internal entry point `atlas.handle_request(intent, ...)` for typed intents:
+  `make_video`, `rerun`, `cancel`, `answer_escalation`, `ask`.
+- New endpoint `POST /api/atlas/request`. Dashboard buttons (Generate, Re-run, gate
+  replies) post here instead of calling `/api/trigger | /api/retry | /api/rerun`
+  directly. Atlas decides, then drives the dispatcher. The old endpoints become
+  **internal** (only Atlas calls them).
+- Chat already routes to Atlas. Chat + dashboard converge on **one Atlas engine** over the
+  same on-disk state and the same event ring (audit feed).
+- Atlas's per-video decisions run in the dispatcher's background worker context (preserves
+  multi-video concurrency); the chat path is the same Atlas for direct conversation. Both
+  share the specialist registry.
+
+### 4. The escalation surface
+
+When Atlas `ESCALATE`s, the video parks and the CEO is pulled in via:
+
+- **Needs-You tray** (already on the dashboard) — the escalation with Atlas's reason and a
+  one-click path to the decision view.
+- **Render decision = the HyperFrames card** — for an over-budget render, the card shows
+  the per-scene HyperFrames draft frames (already produced at compose, served by
+  `/api/media/{slug}/draft/{rel}`) + the render plan (scenes, runtime, est. cost). Actions:
+  **Approve render** / **Kill**.
+- **Fact-check escalation shows the attempt history (Design review).** Not just "I
+  couldn't fix it" — the card shows the flagged/unverifiable claims and the **before/after
+  of each of the 2 fix attempts**, so the CEO decides Kill vs Guide in seconds. **Guide** is
+  free-text fed to the next fix attempt.
+- **A live "what Atlas is doing" feed (Design review).** Autonomy without visibility reads
+  as the system going dark. Each video surfaces a running line — e.g. *"Atlas: re-running
+  script (fix 1/2)"* — driven by the `initiator="atlas"` events, so the CEO trusts it
+  instead of re-checking manually.
+- **Escalation digest (Design review).** When several videos escalate at once, batch them
+  in the Needs-You tray rather than firing N separate alarms.
+- **Audit plane** — every Atlas decision logged to `project.json` history + the event ring
+  with `initiator="atlas"` (distinct from `ceo`/`chat`/`dispatcher`). Optional push
+  notification for escalations.
+- The CEO's reply (dashboard *or* chat) returns to Atlas as `answer_escalation`; Atlas
+  resumes deciding.
+
+## Error handling & safety
+
+- Hard guarantees stay structural (Section 2).
+- **Atlas-decision failure** (LLM error/timeout) falls back to a **safe default decider** =
+  today's deterministic policy (transient→retry once, else park+escalate). An LLM outage
+  degrades to *current behavior*, never to unsafe behavior.
+- The Decision is **schema-validated**; a malformed/illegal decision is coerced to
+  `ESCALATE`.
+- **Crash-recovery** unchanged: `reconcile_interrupted` still parks zombies on restart;
+  an interrupted Atlas decision re-derives from disk.
+
+## Observability (Eng review — scope, not afterthought)
+
+Per decision, log: the inputs (slug, trigger, stage), the chosen Decision, the model's
+one-line rationale, latency, and token cost — to the event ring (`initiator="atlas"`) and
+project history. Track metrics so the policy can be tuned: decisions/video, auto-fix
+success rate (clean fact-check after a `FIX_AND_RERUN`), escalation rate, and average
+decision cost/latency. The escalation rate is the early-warning signal that autonomy is
+mis-calibrated (too many escalations = babysitting returns; near-zero = guarantees may be
+silently eroding).
+
+## Testing
+
+- `atlas_decide` is **injectable like `produce_fn`** today → dispatcher tests use a fake
+  decider, fully deterministic, no LLM. Cover: each Decision → correct dispatcher action;
+  budget enforcement (3rd fact-check block escalates regardless of decider);
+  render-over-budget converts approve→escalate; illegal decision → escalate; safe-default
+  fallback on decider error.
+- **Concurrency test** — a slow (sleeping) decider for video A does not stall video B's
+  stations (proves the decision runs outside the station lock).
+- API tests: a Generate/Re-run button → Atlas request → video on the belt.
+- One e2e: Generate → escalation card → approve → render.
+
+## Build slices (each independently shippable, TDD)
+
+Reordered to live pain first (CEO review D2): the fact-check auto-fix is what's blocking
+real videos today, so it lands right after the plumbing; the invasive request-path unify
+(lowest *new* capability, since the buttons already work) goes last.
+
+1. **Supervisor seam** — `atlas_decide` + executor replacing `_on_result`, invoked
+   **exceptions-only** and **outside the station lock**, with the **safe-default decider**
+   (behaviour-identical to today: transient→retry once, deterministic→escalate,
+   blocked→escalate). De-risks the plumbing with **zero behavior change**. The decider is
+   injectable so the dispatcher stays testable. Persist decision/attempt counters.
+2. **Real Atlas decisions + fact-check auto-fix** (the current pain) — wire the LLM decider
+   for failures and the bounded `FIX_AND_RERUN` (delegating to Marlow/coaches, counted to
+   2, never ships a block). Schema-validate decisions; coerce illegal → escalate. Add the
+   observability metrics.
+3. **Render budget policy + HyperFrames escalation card** — budget rule in settings;
+   `APPROVE_GATE(render)` honored under budget, else the draft-preview card.
+4. **Escalation surface + live feed** — Needs-You tray entries with attempt history, the
+   live "what Atlas is doing" feed, escalation digest, `initiator="atlas"` audit plane,
+   optional push.
+5. **Unify the dashboard request path** through Atlas (most invasive, least new capability)
+   — `POST /api/atlas/request`; old trigger/retry/rerun become internal; shared
+   engine/state; buttons show immediate "Atlas is deciding…" feedback.
+
+Spec covers the full design; implementation proceeds **one slice at a time**, each as its
+own plan, starting with Slice 1.
+
+## Out of scope (for now)
+
+- A single literal shared chat transcript across dashboard + chat (we chose shared
+  engine/state, not one transcript).
+- Atlas planning across the whole queue (global planner) — rejected for throughput.
+- Changing the specialist engines themselves beyond what a `FIX_AND_RERUN` already calls.

@@ -232,11 +232,28 @@ def _scene_no(scene: dict, idx: int):
 # ======================================================================
 # 3. record_narration — per-scene tts -> concat -> narration.wav + transcript
 # ======================================================================
+def _call_tts(tts_fn, text: str, out: str, speed: float):
+    """Call an (injected or default) tts seam, passing `speed` when it accepts one.
+
+    The default engine seam varies speed per scene (the narrative-intent pacing); older
+    fakes/seams with a plain (text, out) signature still work — we retry without speed on
+    a TypeError so no caller is forced to grow the kwarg."""
+    try:
+        return tts_fn(text, out, speed=speed)
+    except TypeError:
+        return tts_fn(text, out)
+
+
 def record_narration(script: dict, *, pdir: str | pathlib.Path,
-                     voice: str = VOICE_DEFAULT, tts_fn=None, transcribe_fn=None,
-                     concat_fn=None) -> dict:
+                     voice: str = VOICE_DEFAULT, narrative_intent: dict | None = None,
+                     tts_fn=None, transcribe_fn=None, concat_fn=None) -> dict:
     """Synthesize the narration and build the transcript. The seams (tts/concat/
     transcribe) are injected so the unit suite runs with fakes, no toolchain.
+
+    `narrative_intent` (optional) is the emotional score — its per-scene pacing_directive
+    sets each scene's TTS speed (punchy/driving -> faster, contemplative -> slower), so the
+    voice DELIVERY lands the scene's intended energy. Absent, every scene is voiced at 1.0
+    exactly as before (backward-compatible).
 
     Returns {"narration_wav": rel, "transcript": {...}, "total_duration_sec": float}.
     Raises ValueError on a bad script; RuntimeError if tts/concat fails (no partial
@@ -246,8 +263,10 @@ def record_narration(script: dict, *, pdir: str | pathlib.Path,
     if not ok:
         raise ValueError(reason)
 
-    tts_fn = tts_fn or (lambda text, out: hf_audio.tts(text, out, voice=voice))
+    tts_fn = tts_fn or (lambda text, out, speed=1.0:
+                        hf_audio.tts(text, out, voice=voice, speed=speed))
     concat_fn = concat_fn or hf_audio.concat_wavs
+    speeds = scene_speeds(script, narrative_intent)  # scene_no -> speed (1.0 when unscored)
 
     pdir = pathlib.Path(pdir)
     adir = pdir / AUDIO_SUBDIR
@@ -278,7 +297,8 @@ def record_narration(script: dict, *, pdir: str | pathlib.Path,
     # artifact). The first failure (in original order) wins, matching the sequential raise.
     results: list[dict] = [None] * len(speakable)  # type: ignore[list-item]
     with _futures.ThreadPoolExecutor(max_workers=_tts_workers(len(speakable))) as pool:
-        fut_to_pos = {pool.submit(tts_fn, text, str(wav)): pos
+        fut_to_pos = {pool.submit(_call_tts, tts_fn, text, str(wav),
+                                  speeds.get(n, 1.0)): pos
                       for pos, (n, text, wav) in enumerate(speakable)}
         for fut in _futures.as_completed(fut_to_pos):
             results[fut_to_pos[fut]] = fut.result()  # propagates any tts_fn exception
@@ -413,6 +433,152 @@ def mood_query(style_guide: dict | None, script: dict | None = None,
 
 
 # ======================================================================
+# 4b. Narrative intent -> audio params (the emotional score, made audible)
+# ----------------------------------------------------------------------
+# The narrative_intent artifact (Iris's emotional score) carries closed-vocabulary
+# directives. Here they become concrete, DETERMINISTIC mix decisions:
+#   pacing_directive  -> TTS speed (per scene; Kokoro's -s)        [voice DELIVERY]
+#   primary_emotion   -> a VO EQ/reverb filter chain (master)      [voice TONE]
+#   texture_directive -> the music-bed search query + the SFX pick [the BED + the ACCENT]
+# Everything degrades cleanly: a missing/partial intent leaves each value at its prior
+# default, so the engine still runs exactly as before when no score is present.
+# ======================================================================
+# pacing_directive -> a TTS speed multiplier (clamped to a safe, still-natural band).
+_PACING_SPEED = {
+    "punchy_staccato": 1.12,
+    "driving": 1.08,
+    "breathless": 1.15,
+    "building": 1.05,
+    "measured": 1.0,
+    "flowing": 0.98,
+    "contemplative": 0.92,
+    "deliberate_pause": 0.90,
+}
+_SPEED_MIN, _SPEED_MAX = 0.80, 1.30
+
+# primary_emotion -> a VO EQ/reverb chain on the AUDIBLE voice (valid FFmpeg af syntax).
+# Grouped by felt family: awe/wonder get air + a hint of room; resolve/urgency get
+# presence; dread/tension/melancholy get weight + a darker top; warmth for the gentle
+# emotions; bright intimacy for the curious ones. "" = neutral (no coloring).
+_EMOTION_VO_FX = {
+    "awe": "equalizer=f=180:t=q:w=1:g=2,aecho=0.8:0.7:45:0.18",
+    "wonder": "equalizer=f=200:t=q:w=1:g=2,aecho=0.8:0.7:45:0.16",
+    "triumph": "equalizer=f=3000:t=q:w=2:g=3,highpass=f=90",
+    "determination": "equalizer=f=2800:t=q:w=2:g=3,highpass=f=95",
+    "urgency": "equalizer=f=3200:t=q:w=2:g=3,highpass=f=100",
+    "dread": "equalizer=f=300:t=q:w=1:g=2,lowpass=f=6500",
+    "unease": "equalizer=f=320:t=q:w=1:g=2,lowpass=f=7000",
+    "tension": "equalizer=f=350:t=q:w=1:g=2,lowpass=f=7500",
+    "melancholy": "equalizer=f=260:t=q:w=1:g=2,lowpass=f=7000",
+    "curiosity": "equalizer=f=2500:t=q:w=2:g=2",
+    "surprise": "equalizer=f=2700:t=q:w=2:g=2",
+    "clarity": "equalizer=f=2400:t=q:w=2:g=2",
+    "satisfaction": "equalizer=f=220:t=q:w=1:g=2,equalizer=f=5000:t=q:w=2:g=1",
+    "hope": "equalizer=f=240:t=q:w=1:g=2,equalizer=f=5200:t=q:w=2:g=1",
+    "nostalgia": "equalizer=f=230:t=q:w=1:g=2,lowpass=f=8000",
+    "empathy": "equalizer=f=240:t=q:w=1:g=2,equalizer=f=4800:t=q:w=2:g=1",
+}
+
+# texture_directive -> the music-bed mood phrase (a `derive_mood_query`-style base).
+_TEXTURE_MUSIC = {
+    "clean_high_contrast": "minimal modern documentary underscore",
+    "warm_grain": "warm analog nostalgic underscore",
+    "dark_moody": "dark brooding cinematic underscore",
+    "bright_airy": "bright uplifting light underscore",
+    "gritty_raw": "gritty tense industrial underscore",
+    "cinematic_widescreen": "epic cinematic orchestral underscore",
+    "soft_focus": "soft ambient dreamy underscore",
+    "stark_minimal": "sparse minimal piano underscore",
+}
+# texture_directive -> a signature-SFX kit name (kept to the synthesized kit's vocabulary).
+_TEXTURE_SFX = {
+    "clean_high_contrast": "stamp",
+    "stark_minimal": "stamp",
+    "bright_airy": "stamp",
+    "warm_grain": "page-turn",
+    "soft_focus": "page-turn",
+    "cinematic_widescreen": "whoosh",
+    "gritty_raw": "whoosh",
+    "dark_moody": "whoosh",
+}
+
+
+def _intent_scenes(narrative_intent: dict | None) -> list[dict]:
+    """The per_scene_intent list (defensive: always a list of dicts)."""
+    scenes = (narrative_intent or {}).get("per_scene_intent")
+    return [s for s in scenes if isinstance(s, dict)] if isinstance(scenes, list) else []
+
+
+def scene_speeds(script: dict, narrative_intent: dict | None) -> dict[int, float]:
+    """Map each scene_no -> a TTS speed from its pacing_directive (1.0 when unscored).
+
+    per_scene_intent is 0-based and contiguous (scene_index 0 == scene_no 1), so we align
+    by position. An out-of-vocabulary directive or a missing entry -> 1.0 (unchanged)."""
+    out: dict[int, float] = {}
+    intents = _intent_scenes(narrative_intent)
+    by_index = {int(s.get("scene_index", i)): s for i, s in enumerate(intents)}
+    for i, scene in enumerate(script.get("scenes", []) if isinstance(script, dict) else []):
+        if not isinstance(scene, dict):
+            continue
+        n = _scene_no(scene, i)
+        sc = by_index.get(i) or by_index.get(n - 1)
+        speed = _PACING_SPEED.get(str((sc or {}).get("pacing_directive", "")).strip(), 1.0)
+        out[n] = max(_SPEED_MIN, min(_SPEED_MAX, speed))
+    return out
+
+
+def dominant_emotion(narrative_intent: dict | None) -> str | None:
+    """The video's emotional color for the master VO: the modal per-scene primary_emotion,
+    tie-broken by the peak phase's dominant_emotion. None when there's no score."""
+    intents = _intent_scenes(narrative_intent)
+    counts: dict[str, int] = {}
+    for s in intents:
+        e = str(s.get("primary_emotion", "")).strip()
+        if e:
+            counts[e] = counts.get(e, 0) + 1
+    peak = str(((narrative_intent or {}).get("emotional_arc", {})
+                .get("peak", {}) or {}).get("dominant_emotion", "")).strip()
+    if not counts:
+        return peak or None
+    top = max(counts.values())
+    tied = [e for e, c in counts.items() if c == top]
+    if peak in tied:
+        return peak
+    return sorted(tied)[0]
+
+
+def dominant_texture(narrative_intent: dict | None) -> str | None:
+    """The video's surface texture for the bed + accent: the modal per-scene
+    texture_directive (deterministic tie-break). None when there's no score."""
+    intents = _intent_scenes(narrative_intent)
+    counts: dict[str, int] = {}
+    for s in intents:
+        t = str(s.get("texture_directive", "")).strip()
+        if t:
+            counts[t] = counts.get(t, 0) + 1
+    if not counts:
+        return None
+    top = max(counts.values())
+    return sorted(e for e, c in counts.items() if c == top)[0]
+
+
+def voice_fx_for(emotion: str | None) -> str:
+    """The VO EQ/reverb FFmpeg chain for an emotion ("" when neutral/unknown)."""
+    return _EMOTION_VO_FX.get(str(emotion or "").strip(), "")
+
+
+def texture_music_query(texture: str | None) -> str | None:
+    """The instrumental music-bed search query for a texture (None when unknown)."""
+    base = _TEXTURE_MUSIC.get(str(texture or "").strip())
+    return f"{base} instrumental no vocals" if base else None
+
+
+def texture_sfx_name(texture: str | None) -> str | None:
+    """The signature-SFX kit name for a texture (None -> fall back to style-based pick)."""
+    return _TEXTURE_SFX.get(str(texture or "").strip())
+
+
+# ======================================================================
 # 5. Bed sourcing — search allowlist -> rank (license-first) -> clear + download-local
 # ======================================================================
 _LICENSE_RANK = {"cc0": 0, "pdm": 0, "pd": 1, "by": 2, "by-sa": 3}
@@ -543,16 +709,20 @@ def signature_at_sec(transcript: dict, scene_no: int) -> float | None:
 
 
 def place_signature_sfx(storyboard: dict | None, transcript: dict, style_guide: dict | None,
-                        *, pdir: pathlib.Path) -> dict | None:
+                        *, pdir: pathlib.Path, sfx_name: str | None = None) -> dict | None:
     """Synthesize + anchor the ONE accent. None when there's no signature beat to hit
-    (silence beats a mis-placed hit). Returns an sfx track dict (cleared CC0)."""
+    (silence beats a mis-placed hit). Returns an sfx track dict (cleared CC0).
+
+    `sfx_name` (optional) overrides the kit pick — the narrative-intent texture chooses
+    the accent (e.g. cinematic -> whoosh) when present; an unknown/absent name falls back
+    to the style-cue default, so behavior is unchanged when no score drives it."""
     scene_no = signature_scene(storyboard)
     if scene_no is None:
         return None
     at = signature_at_sec(transcript, scene_no)
     if at is None:
         return None
-    name = sfx_kit.default_sfx_for(style_guide)
+    name = sfx_name if sfx_name in sfx_kit.KIT_NAMES else sfx_kit.default_sfx_for(style_guide)
     rel = f"{AUDIO_SUBDIR}/sfx/{name}.wav"
     res = sfx_kit.ensure_sfx(name, pathlib.Path(pdir) / rel)
     if not res.get("ok"):
@@ -571,6 +741,7 @@ def place_signature_sfx(storyboard: dict | None, transcript: dict, style_guide: 
 # ======================================================================
 def mix_audio(script: dict, style_guide: dict | None, storyboard: dict | None,
               transcript: dict, *, pdir: str | pathlib.Path, client=None,
+              narrative_intent: dict | None = None,
               mood_query_fn=None, mix_fn=None) -> dict:
     """Source the bed, place the accent, pre-mix master.wav, emit the audio_manifest.
 
@@ -578,6 +749,11 @@ def mix_audio(script: dict, style_guide: dict | None, storyboard: dict | None,
     {"manifest": {...}, "master_wav": rel|None}. Guarantees: every music/sfx track
     carries license+attribution; nothing uncleared is baked into the master; the three
     total_duration_sec values agree.
+
+    `narrative_intent` (optional) is the emotional score. When present it drives three mix
+    decisions: the video's dominant texture_directive picks the music-bed query + the
+    signature SFX, and the dominant primary_emotion colors the master VO with an EQ/reverb
+    profile. Absent, the bed/accent/voice are chosen exactly as before (backward-compatible).
     """
     pdir = pathlib.Path(pdir)
     (pdir / AUDIO_SUBDIR).mkdir(parents=True, exist_ok=True)
@@ -587,11 +763,23 @@ def mix_audio(script: dict, style_guide: dict | None, storyboard: dict | None,
 
     if client is None:
         client = audio_sources.SourceClient()
-    q = (mood_query_fn or mood_query)(style_guide, script) if mood_query_fn \
-        else mood_query(style_guide, script)
+
+    # The emotional score's surface texture + color (None when there's no intent).
+    texture = dominant_texture(narrative_intent)
+    emotion = dominant_emotion(narrative_intent)
+    # Bed query: the texture's mood phrase takes precedence over the style-cue mood when a
+    # score is present; otherwise the existing mood_query path is untouched.
+    q = texture_music_query(texture)
+    if q is None:
+        q = (mood_query_fn or mood_query)(style_guide, script) if mood_query_fn \
+            else mood_query(style_guide, script)
+    # The texture also picks the signature accent; emotion colors the master VO.
+    sfx_pick = texture_sfx_name(texture)
+    vo_filters = voice_fx_for(emotion)
 
     bed = source_bed(style_guide, client=client, pdir=pdir, query=q)
-    sfx = place_signature_sfx(storyboard, transcript, style_guide, pdir=pdir)
+    sfx = place_signature_sfx(storyboard, transcript, style_guide, pdir=pdir,
+                              sfx_name=sfx_pick)
 
     # Build the master: VO is always in; only a CLEARED bed / the CC0 accent are baked.
     bed_in = ({"path": str(pdir / bed["path"]), "gain_db": BED_GAIN_DB}
@@ -600,7 +788,7 @@ def mix_audio(script: dict, style_guide: dict | None, storyboard: dict | None,
                "at_sec": sfx["at_sec"]} if sfx else None)
     recipe = hf_audio.build_mix_recipe(
         str(pdir / narration_rel), total, out_path=str(pdir / master_rel),
-        bed=bed_in, sfx=sfx_in, vo_gain_db=VO_GAIN_DB)
+        bed=bed_in, sfx=sfx_in, vo_gain_db=VO_GAIN_DB, vo_filters=vo_filters)
     run = (mix_fn or hf_audio.run_mix)(recipe)
     master_ok = bool(run.get("ok"))
 
@@ -630,6 +818,13 @@ def mix_audio(script: dict, style_guide: dict | None, storyboard: dict | None,
             "vo_gain_db": VO_GAIN_DB, "bed_gain_db": BED_GAIN_DB, "sfx_gain_db": SFX_GAIN_DB,
             "bed": bed["status"], "sfx": (sfx["name"] if sfx else None),
             "master_rendered": master_ok,
+            # The emotional-score decisions made audible (None when no intent drove them).
+            "emotional_score": {
+                "dominant_texture": texture,
+                "dominant_emotion": emotion,
+                "vo_filters": vo_filters or None,
+                "music_query": q,
+            },
         },
     }
     _enforce_clearance(manifest)
@@ -734,9 +929,10 @@ def run_narrate(path: str | pathlib.Path, *, voice: str = VOICE_DEFAULT,
     if not ok:
         raise ValueError(reason)
     pdir = _resolve_pdir(path)
+    intent = _load_beside(pdir, "narrative_intent.json") or None
     if not quiet:
         print(f"\n🎙️  Recording narration for {len(script.get('scenes', []))} scenes…")
-    out = record_narration(script, pdir=pdir, voice=voice)
+    out = record_narration(script, pdir=pdir, voice=voice, narrative_intent=intent)
     chat_state.atomic_write_json(
         pdir / AUDIO_SUBDIR / "narration.transcript.json", out["transcript"])
     if not quiet:
@@ -757,6 +953,7 @@ def run_mix(path: str | pathlib.Path, *, quiet: bool = False
         raise ValueError(reason)
     style = _load_beside(pdir, "style_guide.json") or None
     storyboard = _load_beside(pdir, "storyboard.json") or None
+    intent = _load_beside(pdir, "narrative_intent.json") or None
     transcript = chat_state.load_json(
         pdir / AUDIO_SUBDIR / "narration.transcript.json", {})
     if not transcript.get("segments"):
@@ -764,7 +961,8 @@ def run_mix(path: str | pathlib.Path, *, quiet: bool = False
         transcript = out["transcript"]
     if not quiet:
         print("\n🎚️  Mixing the audio (sourcing bed, placing the accent)…")
-    res = mix_audio(script, style, storyboard, transcript, pdir=pdir)
+    res = mix_audio(script, style, storyboard, transcript, pdir=pdir,
+                    narrative_intent=intent)
     json_path = pdir / AUDIO_SUBDIR / "audio_manifest.json"
     chat_state.atomic_write_json(json_path, res["manifest"])
     st = manifest_stats(res["manifest"])

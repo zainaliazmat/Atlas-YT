@@ -20,7 +20,10 @@ from dashboard.tests.e2e.conftest import assert_no_console_errors
 
 
 def _open(page, base_url):
-    page.goto(base_url + "/", wait_until="networkidle")
+    # NOTE: not "networkidle" — the live SSE (/api/events) holds a connection open, so the
+    # page never goes network-idle. Wait for `load` + the overview's first rendered data.
+    page.goto(base_url + "/", wait_until="domcontentloaded")
+    page.wait_for_selector("#ov-kpis .kpi")
 
 
 def _active_view_id(page) -> str:
@@ -119,6 +122,28 @@ def test_projects_screen_real_data(page, base_url, guard_console, e2e_slugs):
     assert_no_console_errors(guard_console)
 
 
+def test_projects_tab_badges_match_filtered_rows(page, base_url, guard_console, e2e_slugs):
+    """Every filter tab's badge must equal the number of rows it actually shows — a
+    badge that lies about its own filter erodes trust. Regression for the
+    Needs-you/Blocked badge≠rows bug."""
+    import re
+    _open(page, base_url)
+    _go_rail(page, "projects")
+    page.wait_for_selector("#pr-tabs .tab")
+    tabs = page.locator("#pr-tabs .tab")
+    for i in range(tabs.count()):
+        t = tabs.nth(i)
+        label = t.inner_text().strip()
+        m = re.search(r"(\d+)\s*$", label)
+        assert m, f"tab has no badge count: {label!r}"
+        badge = int(m.group(1))
+        t.click()
+        page.wait_for_timeout(150)
+        rows = page.locator("#pr-list .row").count()
+        assert rows == badge, f"tab {label!r}: badge={badge} but {rows} rows shown"
+    assert_no_console_errors(guard_console)
+
+
 # ================================================================ 2c. Pipeline (done)
 def test_pipeline_detail_done_has_video(page, base_url, guard_console, e2e_slugs):
     _open(page, base_url)
@@ -138,6 +163,24 @@ def test_pipeline_detail_done_has_video(page, base_url, guard_console, e2e_slugs
     assert page.locator("#pl-body video").count() == 1
     src = page.locator("#pl-body video").first.get_attribute("src")
     assert "/api/media/done/video" in src
+    assert_no_console_errors(guard_console)
+
+
+def test_stage_inspector_closes_on_navigation(page, base_url, guard_console, e2e_slugs):
+    """The stage-inspector drawer must not linger over the next screen when the CEO
+    navigates away — opening it then switching rails closes it."""
+    _open(page, base_url)
+    _go_rail(page, "projects")
+    page.wait_for_selector('#pr-list .row[data-slug="done"]')
+    page.locator('#pr-list .row[data-slug="done"]').first.click()
+    page.wait_for_selector("#pl-body .ladder .stage")
+    page.locator("#pl-body .ladder .stage").first.click()
+    page.wait_for_selector(".dw-panel")                 # drawer opened
+    # navigate (the drawer scrim blocks a rail mouse-click, so any keyboard/programmatic
+    # nav is the path that could leave it lingering — go() must close it)
+    page.evaluate("window.go('v-fleet','fleet')")
+    assert page.locator(".dw-panel").count() == 0       # and is gone after nav
+    assert _active_view_id(page) == "v-fleet"
     assert_no_console_errors(guard_console)
 
 
@@ -259,6 +302,29 @@ def test_responsive_mobile(page, base_url, guard_console):
     page.wait_for_selector("#ov-kpis .kpi")
     assert page.locator("#ov-kpis .kpi").count() >= 1
     assert page.locator("#ov-bottom .frow").count() >= 1
+    assert_no_console_errors(guard_console)
+
+
+# ============================================================ 6. Wide / 4k — no dead right-side gap
+def test_wide_viewport_no_dead_right_gap(page, base_url, guard_console):
+    """The retired mock capped content at 1320px and left-aligned it, dumping all empty
+    space on the right of a wide screen (the CEO's original complaint). The fluid shell
+    centers content within its column, so left/right gutters are balanced (no lopsided
+    right-side gap) and the cap is larger than the old 1320px."""
+    _open(page, base_url)
+    page.wait_for_selector("#ov-kpis .kpi")
+    for vw, vh in ((2560, 1440), (3840, 2160)):
+        page.set_viewport_size({"width": vw, "height": vh})
+        box = page.eval_on_selector(
+            ".view.active .main",
+            "el => { const m = el.getBoundingClientRect();"
+            " const c = el.closest('.content').getBoundingClientRect();"
+            " return {gapL: m.left - c.left, gapR: c.right - m.right, w: m.width}; }")
+        # centered within the content column → no lopsided dead right-side space
+        assert abs(box["gapL"] - box["gapR"]) <= 4, (
+            f"@{vw}px not centered: gapL={box['gapL']} gapR={box['gapR']}")
+        # uses meaningfully more width than the retired 1320px cap
+        assert box["w"] > 1320, f"@{vw}px content too narrow: {box['w']}"
     assert_no_console_errors(guard_console)
 
 

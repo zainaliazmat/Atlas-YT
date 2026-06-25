@@ -54,7 +54,10 @@ def run_record_narration(pdir: pathlib.Path) -> dict:
     pdir = pathlib.Path(pdir)
     eng = _engine()
     script = chat_state.load_json(pdir / "script.json", {})
-    out = eng.record_narration(script, pdir=pdir)
+    # The emotional score (if the narrative_intent stage ran) sets each scene's TTS pacing;
+    # absent, every scene is voiced at 1.0 exactly as before (backward-compatible).
+    narrative_intent = chat_state.load_json(pdir / "narrative_intent.json", {}) or None
+    out = eng.record_narration(script, pdir=pdir, narrative_intent=narrative_intent)
     transcript = {"schema_version": version_for("narration_transcript"), **out["transcript"]}
     chat_state.atomic_write_json(
         pdir / "audio" / "narration.transcript.json", transcript)
@@ -75,7 +78,10 @@ def run_mix_audio(pdir: pathlib.Path) -> dict:
     if not transcript.get("segments"):
         # Defensive: if the narration stage hasn't run (conversational path), do it now.
         transcript = run_record_narration(pdir)
-    res = eng.mix_audio(script, style, storyboard, transcript, pdir=pdir)
+    # The emotional score drives the bed query, the signature SFX, and the master VO EQ.
+    narrative_intent = chat_state.load_json(pdir / "narrative_intent.json", {}) or None
+    res = eng.mix_audio(script, style, storyboard, transcript, pdir=pdir,
+                        narrative_intent=narrative_intent)
     manifest = {"schema_version": version_for("audio_manifest"), **res["manifest"]}
     chat_state.atomic_write_json(pdir / "audio" / "audio_manifest.json", manifest)
     return manifest

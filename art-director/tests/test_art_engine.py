@@ -320,6 +320,30 @@ def test_highlighter_effect_is_on_exactly_the_signature_beat():
         assert has_hl == (s["scene_no"] == sig_no), (s["scene_no"], has_hl)
 
 
+def test_signature_transition_is_attached_on_the_beat_only():
+    # scene 2 is the first flagged beat -> it carries the shader; scene 1's stray token is dropped
+    raw = _board_out()
+    raw["scenes"][0]["signature_transition"] = "glitch"      # non-beat -> ignored
+    raw["scenes"][1]["signature_transition"] = "sdf-iris"    # the beat -> kept
+    board = engine.build_storyboard(SCRIPT, None, chat_fn=_chat_returning(raw))
+    sig = next(s for s in board["scenes"] if s["signature_beat"])
+    assert sig["signature_transition"] == "sdf-iris"
+    assert all("signature_transition" not in s
+               for s in board["scenes"] if not s["signature_beat"])
+
+
+def test_invalid_signature_transition_is_dropped_for_masons_default():
+    raw = _board_out()
+    raw["scenes"][1]["signature_transition"] = "wormhole"    # not in SHADER_TRANSITIONS
+    board = engine.build_storyboard(SCRIPT, None, chat_fn=_chat_returning(raw))
+    sig = next(s for s in board["scenes"] if s["signature_beat"])
+    assert "signature_transition" not in sig                 # left off -> Mason picks default
+
+
+def test_shader_transitions_vocab_is_closed():
+    assert engine.SHADER_TRANSITIONS == ("whip-pan", "sdf-iris", "glitch", "domain-warp")
+
+
 def test_build_storyboard_respects_the_budget_and_vocab():
     style = {"motion": {"max_per_scene": 2}}
     board = engine.build_storyboard(SCRIPT, style, chat_fn=_chat_returning(_board_out()))
@@ -448,6 +472,319 @@ def test_explicit_command_path_does_not_gate(monkeypatch):
         out = chat.run_style_job(d, gate=False)
         assert out is not None
         assert (pathlib.Path(d) / "style_guide.json").exists()
+
+
+# ----------------------------------------------------------------------
+# Creative treatment (prompt-expansion) — the director's direction layer
+# ----------------------------------------------------------------------
+_BRIEF = {
+    "topic": "How AI agents actually work",
+    "overview": "Agents loop: a goal, an LLM that reasons, tools it calls, an action.",
+    "verified_facts": [{"claim": "An agent picks a tool, calls it, reads the result, repeats."},
+                       {"claim": "The loop ends when the goal is met."}],
+    "target_audience": "curious general audience",
+}
+
+
+def _treatment_out(**ov):
+    base = {"rhythm": "hook-BUILD-PEAK-breathe-CTA",
+            "visual_world": "clean editorial explainer, calm and confident",
+            "mood_refs": ["editorial calm", "documentary clarity"],
+            "emphasis": "an agent is just a loop with tools",
+            "motifs": ["a recurring arrow of flow"],
+            "negative": ["jargon", "uniform pacing"],
+            "beats": [{"beat": "hook", "concept": "open on the mystery", "mood": "alert",
+                       "emphasis_word": "loop", "intent": "snap in"},
+                      {"beat": "cta", "concept": "close clean", "mood": "resolved",
+                       "emphasis_word": "now", "intent": "settle"}]}
+    base.update(ov)
+    return base
+
+
+def test_design_treatment_returns_a_valid_treatment():
+    t = engine.design_treatment(_BRIEF, chat_fn=_chat_returning(_treatment_out()))
+    assert t["rhythm"] == "hook-BUILD-PEAK-breathe-CTA"
+    assert len(t["beats"]) == 2 and t["beats"][0]["emphasis_word"] == "loop"
+    assert t["emphasis"] and isinstance(t["mood_refs"], list)
+
+
+def test_design_treatment_normalizes_and_caps():
+    fat = _treatment_out(beats=[{"beat": f"b{i}", "concept": "x"} for i in range(20)],
+                         mood_refs=["a"] * 20, rhythm="x" * 500)
+    t = engine.design_treatment(_BRIEF, chat_fn=_chat_returning(fat))
+    assert len(t["beats"]) <= 12 and len(t["mood_refs"]) <= 8
+    assert len(t["rhythm"]) <= 120
+
+
+def test_design_treatment_rejects_an_empty_brief():
+    import pytest
+    with pytest.raises(ValueError):
+        engine.design_treatment({}, chat_fn=_chat_returning(_treatment_out()))
+
+
+# ----------------------------------------------------------------------
+# Thematic anchor — when the brief carries a thesis, the treatment orbits it
+# ----------------------------------------------------------------------
+_ANCHOR = {
+    "thesis_statement": "We are about to mine the deep ocean before we have even seen it.",
+    "supporting_pillar_1": "Under 0.001% of the deep seafloor has been directly observed.",
+    "supporting_pillar_2": "31 ISA exploration licenses already cover the deep sea.",
+    "counter_intuitive_angle": "We assume mapping precedes extraction; here it's reversed.",
+    "emotional_payload": "the quiet dread of a frontier sold off before it's been looked at",
+}
+
+
+def test_treatment_prompt_has_no_anchor_block_when_absent():
+    # Backward-compatible: a brief without an anchor produces no anchor section.
+    prompt = engine._build_treatment_prompt(_BRIEF)
+    assert "THEMATIC ANCHOR" not in prompt
+
+
+def test_treatment_prompt_orbits_the_anchor_when_present():
+    brief = dict(_BRIEF, thematic_anchor=_ANCHOR)
+    prompt = engine._build_treatment_prompt(brief)
+    assert "THEMATIC ANCHOR (this is the SUN" in prompt
+    assert _ANCHOR["thesis_statement"] in prompt        # the thesis is handed to Iris
+    assert _ANCHOR["emotional_payload"] in prompt        # so is the emotional payload
+    assert "everything orbits it" in prompt.lower()
+
+
+def test_anchor_block_empty_for_malformed_anchor():
+    # A present-but-empty/thesis-less anchor is treated as absent (no half-block).
+    assert engine._thematic_anchor_block({"thematic_anchor": {}}) == ""
+    assert engine._thematic_anchor_block({"thematic_anchor": "nope"}) == ""
+
+
+def test_design_treatment_still_runs_with_an_anchor():
+    brief = dict(_BRIEF, thematic_anchor=_ANCHOR)
+    t = engine.design_treatment(brief, chat_fn=_chat_returning(_treatment_out()))
+    assert t["rhythm"] and t["emphasis"]   # the pipeline shape is unchanged
+
+
+def test_treatment_block_is_injected_into_style_and_storyboard_prompts():
+    t = _treatment_out()
+    sp = engine._build_style_prompt(SCRIPT, t)
+    bp = engine._build_storyboard_prompt(SCRIPT, None, t)
+    for prompt in (sp, bp):
+        assert "DIRECTOR'S CREATIVE TREATMENT" in prompt
+        assert "hook-BUILD-PEAK-breathe-CTA" in prompt
+    # absent treatment -> no treatment section (backward-compatible)
+    assert "DIRECTOR'S CREATIVE TREATMENT" not in engine._build_style_prompt(SCRIPT, None)
+
+
+def test_design_style_consumes_the_treatment():
+    captured = {}
+
+    def chat_fn(system, user):
+        captured["user"] = user
+        return json.dumps(_style_out())
+
+    engine.design_style(SCRIPT, chat_fn=chat_fn, treatment=_treatment_out())
+    assert "an agent is just a loop with tools" in captured["user"]
+
+
+# ----------------------------------------------------------------------
+# narrative intent (the emotional score)
+# ----------------------------------------------------------------------
+def _intent_out(**ov):
+    base = {
+        "video_level": {"core_thesis": "an agent is a loop with tools",
+                        "emotional_journey": "from confusion to confident clarity",
+                        "tone_profile": "curious_exploration"},
+        "emotional_arc": {
+            "hook": {"dominant_emotion": "curiosity", "intensity": 9, "duration_goal_sec": 8},
+            "build": {"dominant_emotion": "surprise", "intensity": 7, "duration_goal_sec": 25},
+            "peak": {"dominant_emotion": "awe", "intensity": 10, "duration_goal_sec": 15},
+            "breathe": {"dominant_emotion": "satisfaction", "intensity": 4, "duration_goal_sec": 10},
+            "cta": {"dominant_emotion": "determination", "intensity": 8, "duration_goal_sec": 12}},
+        "per_scene_intent": [
+            {"scene_index": 0, "arc_phase": "hook", "primary_emotion": "curiosity",
+             "intensity": 9, "pacing_directive": "punchy_staccato",
+             "texture_directive": "clean_high_contrast", "delivery_note": "tell a secret"},
+            {"scene_index": 1, "arc_phase": "peak", "primary_emotion": "awe",
+             "intensity": 10, "pacing_directive": "contemplative",
+             "texture_directive": "cinematic_widescreen", "delivery_note": "let it land"}],
+    }
+    base.update(ov)
+    return base
+
+
+def test_design_narrative_intent_returns_valid_and_contract_clean():
+    intent = engine.design_narrative_intent(_treatment_out(), _BRIEF,
+                                             chat_fn=_chat_returning(_intent_out()))
+    stamped = {"schema_version": "1.0", **intent}
+    ok, errors = contracts.validate("narrative_intent", stamped)
+    assert ok, errors
+    assert intent["video_level"]["tone_profile"] == "curious_exploration"
+    assert set(intent["emotional_arc"]) == {"hook", "build", "peak", "breathe", "cta"}
+    assert intent["per_scene_intent"][1]["primary_emotion"] == "awe"
+
+
+def test_narrative_intent_snaps_off_vocabulary_and_clamps():
+    bad = _intent_out(
+        video_level={"core_thesis": "t", "emotional_journey": "j", "tone_profile": "WILD"},
+        per_scene_intent=[{"scene_index": 9, "arc_phase": "nope",
+                           "primary_emotion": "rage", "intensity": 99,
+                           "pacing_directive": "yelling", "texture_directive": "neon",
+                           "delivery_note": "x"}])
+    intent = engine.design_narrative_intent(_treatment_out(), _BRIEF,
+                                            chat_fn=_chat_returning(bad))
+    sc = intent["per_scene_intent"][0]
+    assert intent["video_level"]["tone_profile"] in engine.TONE_PROFILES
+    assert sc["scene_index"] == 0                       # re-indexed contiguous 0-based
+    assert sc["arc_phase"] in engine.ARC_PHASES
+    assert sc["primary_emotion"] in engine.EMOTIONS
+    assert sc["pacing_directive"] in engine.PACING_DIRECTIVES
+    assert sc["texture_directive"] in engine.TEXTURE_DIRECTIVES
+    assert 1 <= sc["intensity"] <= 10
+    # contract-valid even from a fully off-vocabulary brain reply
+    ok, errors = contracts.validate("narrative_intent", {"schema_version": "1.0", **intent})
+    assert ok, errors
+
+
+def test_narrative_intent_fills_missing_arc_phases_with_defaults():
+    intent = engine.design_narrative_intent(_treatment_out(), _BRIEF,
+                                             chat_fn=_chat_returning({"per_scene_intent": []}))
+    assert intent["emotional_arc"]["peak"]["dominant_emotion"] == "awe"
+    assert intent["emotional_arc"]["hook"]["intensity"] == 9
+
+
+def test_design_narrative_intent_rejects_an_empty_treatment():
+    import pytest
+    with pytest.raises(ValueError):
+        engine.design_narrative_intent({}, _BRIEF, chat_fn=_chat_returning(_intent_out()))
+
+
+# ----------------------------------------------------------------------
+# motion mood board (the design-first visual architecture / motion score)
+# ----------------------------------------------------------------------
+def _mood_board_out(**ov):
+    base = {
+        "video_level": {
+            "global_tempo": "brisk_and_urgent", "global_texture": "grain",
+            "global_texture_justification": "grain evokes archival memory",
+            "dominant_motion_philosophy": "motion is punctuation, not decoration"},
+        "beat_map": [
+            {"beat_id": "b-hook", "arc_phase": "hook", "primary_emotion": "curiosity",
+             "intensity": 9, "pacing_profile": "rapid_staccato",
+             "dominant_effect": "stutter-12fps", "secondary_effect": "none",
+             "transition_in": "cut", "layout_family": "centered-statement",
+             "scene_duration_target_sec": 8,
+             "motion_parameter_overrides": {"stutter-12fps": {"apply_to": "entire_beat"}},
+             "visual_mood_ref": "the 2001 corridor — clean, inhuman, quietly terrifying"},
+            {"beat_id": "b-peak", "arc_phase": "peak", "primary_emotion": "awe",
+             "intensity": 10, "pacing_profile": "slow_reveal",
+             "dominant_effect": "highlighter-FFD000", "secondary_effect": "none",
+             "transition_in": "dip-to-black", "layout_family": "big-number",
+             "scene_duration_target_sec": 15}],
+        "signature_beat_placement": {"beat_id": "b-peak", "target_element": "41%",
+                                     "justification": "the thesis lands hardest here"},
+    }
+    base.update(ov)
+    return base
+
+
+def _count_highlighter(board):
+    n = 0
+    for b in board.get("beat_map", []):
+        if b.get("dominant_effect") == engine.SIGNATURE_EFFECT:
+            n += 1
+        if b.get("secondary_effect") == engine.SIGNATURE_EFFECT:
+            n += 1
+    return n
+
+
+def test_design_motion_mood_board_returns_valid_and_contract_clean():
+    board = engine.design_motion_mood_board(
+        _intent_out(), {}, {}, chat_fn=_chat_returning(_mood_board_out()))
+    stamped = {"schema_version": "1.0", **board}
+    ok, errors = contracts.validate("motion_mood_board", stamped)
+    assert ok, errors
+    assert board["video_level"]["global_tempo"] == "brisk_and_urgent"
+    assert _count_highlighter(board) == 1
+
+
+def test_motion_mood_board_enforces_exactly_one_highlighter_when_brain_gives_two():
+    two = _mood_board_out()
+    two["beat_map"][0]["dominant_effect"] = engine.SIGNATURE_EFFECT   # a second one
+    board = engine.design_motion_mood_board(
+        _intent_out(), {}, {}, chat_fn=_chat_returning(two))
+    assert _count_highlighter(board) == 1
+    ok, errors = contracts.validate("motion_mood_board", {"schema_version": "1.0", **board})
+    assert ok, errors
+
+
+def test_motion_mood_board_adds_the_highlighter_when_brain_gives_none():
+    none = _mood_board_out()
+    none["beat_map"][1]["dominant_effect"] = "push-in"   # no highlighter anywhere now
+    board = engine.design_motion_mood_board(
+        _intent_out(), {}, {}, chat_fn=_chat_returning(none))
+    assert _count_highlighter(board) == 1
+
+
+def test_motion_mood_board_snaps_off_vocabulary_and_clamps():
+    bad = _mood_board_out(
+        video_level={"global_tempo": "WARP", "global_texture": "neon"},
+        beat_map=[{"beat_id": "x", "arc_phase": "nope", "primary_emotion": "rage",
+                   "intensity": 99, "pacing_profile": "yelling",
+                   "dominant_effect": "explode", "secondary_effect": "kaboom",
+                   "transition_in": "teleport", "layout_family": "carousel",
+                   "scene_duration_target_sec": -5}])
+    board = engine.design_motion_mood_board(
+        _intent_out(), {}, {}, chat_fn=_chat_returning(bad))
+    vl = board["video_level"]
+    assert vl["global_tempo"] in engine.TEMPOS
+    assert vl["global_texture"] in engine.TEXTURES or vl["global_texture"] == "clean"
+    b = board["beat_map"][0]
+    assert b["arc_phase"] in engine.ARC_PHASES
+    assert b["primary_emotion"] in engine.EMOTIONS
+    assert b["pacing_profile"] in engine.PACING_PROFILES
+    assert b["dominant_effect"] in engine.EFFECTS or b["dominant_effect"] == "none"
+    assert b["secondary_effect"] in engine.EFFECTS or b["secondary_effect"] == "none"
+    assert b["transition_in"] in engine.TRANSITIONS
+    assert b["layout_family"] in engine.LAYOUTS
+    assert 1 <= b["intensity"] <= 10
+    assert b["scene_duration_target_sec"] >= 0
+    ok, errors = contracts.validate("motion_mood_board", {"schema_version": "1.0", **board})
+    assert ok, errors
+
+
+def test_motion_mood_board_secondary_never_duplicates_dominant():
+    dup = _mood_board_out()
+    dup["beat_map"][0]["dominant_effect"] = "push-in"
+    dup["beat_map"][0]["secondary_effect"] = "push-in"   # competes/duplicates
+    board = engine.design_motion_mood_board(
+        _intent_out(), {}, {}, chat_fn=_chat_returning(dup))
+    b = board["beat_map"][0]
+    assert not (b["dominant_effect"] == b["secondary_effect"] != "none")
+
+
+def test_motion_mood_board_builds_default_beats_from_arc_when_brain_empty():
+    board = engine.design_motion_mood_board(
+        _intent_out(), {}, {}, chat_fn=_chat_returning({"beat_map": []}))
+    phases = {b["arc_phase"] for b in board["beat_map"]}
+    assert {"hook", "build", "peak", "breathe", "cta"} <= phases
+    # emotion + intensity are pulled from the narrative_intent arc (not duplicated/invented)
+    peak = next(b for b in board["beat_map"] if b["arc_phase"] == "peak")
+    assert peak["primary_emotion"] == "awe"           # from _intent_out arc
+    assert _count_highlighter(board) == 1
+    ok, errors = contracts.validate("motion_mood_board", {"schema_version": "1.0", **board})
+    assert ok, errors
+
+
+def test_design_motion_mood_board_rejects_an_empty_intent():
+    import pytest
+    with pytest.raises(ValueError):
+        engine.design_motion_mood_board({}, {}, {},
+                                        chat_fn=_chat_returning(_mood_board_out()))
+
+
+def test_motion_mood_board_vocabularies_mirror_the_engine_axes():
+    # The closed vocabularies the mood board snaps to ARE the engine's real HyperFrames
+    # axes (so Mason executes without interpretation) — not a private subset.
+    assert set(engine.EFFECTS) == set(engine.MOOD_BOARD_EFFECTS) - {"none"}
+    assert set(engine.LAYOUTS) == set(engine.MOOD_BOARD_LAYOUTS)
+    assert set(engine.TRANSITIONS) == set(engine.MOOD_BOARD_TRANSITIONS)
 
 
 # ----------------------------------------------------------------------

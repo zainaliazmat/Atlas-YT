@@ -33,6 +33,16 @@ def _truthy(value: str) -> bool:
     return (value or "").strip().lower() in ("1", "yes", "true", "on")
 
 
+class ThinResearchError(Exception):
+    """A research run came back with NO verified facts — an unusable brief.
+
+    Raised by the research producer so the spine attributes the failure to the
+    `research` stage and classifies it TRANSIENT (a plain Exception → re-runnable; see
+    pipeline._run_stage). This is the genuinely-failed case (search unreachable /
+    rate-limited), distinct from a weak-but-usable brief which still flows on (flagged).
+    """
+
+
 # ----------------------------------------------------------------------
 # The shared fact-check engine seam (one place; tests monkeypatch this)
 # ----------------------------------------------------------------------
@@ -182,9 +192,21 @@ def produce_research(pdir: pathlib.Path, topic: str):
         joined = "; ".join(thin)
         log.warning("Research brief for %r looks thin: %s", topic, joined)
         # Persist a flag on the artifact (additive; the contract allows it) so the
-        # thin run is inspectable downstream, and surface it in the narrated summary.
+        # thin run is inspectable downstream, even if we fail the stage below.
         brief["research_quality"] = {"thin": True, "reasons": thin}
         chat_state.atomic_write_json(pathlib.Path(pdir) / "research_brief.json", brief)
+        # A brief with ZERO verified facts is not weak research — it's a FAILED run
+        # (search unreachable / rate-limited): Marlow can't assert anything from it, so
+        # letting it flow on only moves the failure downstream to `script` and mis-
+        # attributes the blame. Fail HERE so the spine marks `research` failed
+        # (transient → the belt auto-retries and the operator's RETRY re-runs research).
+        if n_facts == 0:
+            raise ThinResearchError(
+                f"Research produced no verified facts ({joined}). Search sources may be "
+                f"unreachable or rate-limited — this is a re-runnable research failure; "
+                f"retry the research stage (and check network / SAGE_SEARCH).")
+        # A weak-but-usable brief (has facts, but e.g. example.org sources) still flows
+        # on, flagged loudly in the narrated summary.
         summary = f"⚠️ thin research ({joined}) — {summary}"
 
     return Artifact("research_brief.json", "research_brief", brief, summary)

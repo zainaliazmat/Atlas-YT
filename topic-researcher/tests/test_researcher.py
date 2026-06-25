@@ -207,6 +207,134 @@ def test_run_no_sources_yields_honest_empty_pack(monkeypatch):
 
 
 # ----------------------------------------------------------------------
+# find_thematic_anchor — the thesis-finding step (brain mocked)
+# ----------------------------------------------------------------------
+_GOOD_ANCHOR = {
+    "thesis_statement": "We are about to mine the deep ocean before we have even seen it.",
+    "supporting_pillar_1": "Under 0.001% of the deep seafloor has been directly observed.",
+    "supporting_pillar_2": "31 ISA exploration licenses already cover the deep sea.",
+    "counter_intuitive_angle": "Everyone assumes we map before we extract; here it's reversed.",
+    "emotional_payload": "the quiet dread of a frontier sold off before it's been looked at",
+}
+
+
+def _anchor_chat(obj):
+    """A chat_fn(system=..., user=...) that returns the given object as JSON."""
+    def chat_fn(system=None, user=None):
+        return json.dumps(obj)
+    return chat_fn
+
+
+def test_find_thematic_anchor_returns_validated_fields():
+    anchor = researcher.find_thematic_anchor("deep ocean", {"verified_facts": [{"claim": "x"}]},
+                                             _anchor_chat(_GOOD_ANCHOR))
+    for field in researcher._THEMATIC_ANCHOR_REQUIRED:
+        assert anchor.get(field), field
+    assert anchor["thesis_statement"].startswith("We are about to mine")
+
+
+def test_find_thematic_anchor_passes_topic_into_the_system_prompt():
+    seen = {}
+    def chat_fn(system=None, user=None):
+        seen["system"], seen["user"] = system, user
+        return json.dumps(_GOOD_ANCHOR)
+    researcher.find_thematic_anchor("the deep ocean", {"key_statistics": [{"stat": "s"}]}, chat_fn)
+    assert "the deep ocean" in seen["system"]          # topic substituted into the prompt
+    assert "key_statistics" in seen["user"]            # the research is handed to the brain
+    assert "Creative Director" in seen["system"]       # the persona-flip is in force
+
+
+def test_find_thematic_anchor_raises_on_missing_field():
+    bad = dict(_GOOD_ANCHOR)
+    del bad["supporting_pillar_2"]
+    try:
+        researcher.find_thematic_anchor("t", {}, _anchor_chat(bad))
+    except ValueError as e:
+        assert "supporting_pillar_2" in str(e)
+    else:
+        raise AssertionError("expected ValueError on a missing required field")
+
+
+def test_find_thematic_anchor_raises_on_short_thesis():
+    bad = dict(_GOOD_ANCHOR, thesis_statement="Too short.")
+    try:
+        researcher.find_thematic_anchor("t", {}, _anchor_chat(bad))
+    except ValueError as e:
+        assert "short" in str(e).lower()
+    else:
+        raise AssertionError("expected ValueError on a too-short thesis")
+
+
+def test_find_thematic_anchor_raises_on_non_json():
+    try:
+        researcher.find_thematic_anchor("t", {}, lambda system=None, user=None: "not json at all")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on non-JSON brain output")
+
+
+def test_find_thematic_anchor_normalizes_confidence():
+    anchor = researcher.find_thematic_anchor(
+        "t", {}, _anchor_chat(dict(_GOOD_ANCHOR, confidence="LOW")))
+    assert anchor["confidence"] == "low"
+    # an off-vocab confidence is dropped (never invents a tier)
+    anchor2 = researcher.find_thematic_anchor(
+        "t", {}, _anchor_chat(dict(_GOOD_ANCHOR, confidence="pretty sure")))
+    assert "confidence" not in anchor2
+
+
+def test_run_embeds_thematic_anchor(monkeypatch):
+    monkeypatch.setattr(researcher.search, "web_search",
+                        lambda *a, **k: [{"url": "https://nasa.gov/x", "title": "NASA",
+                                          "snippet": "telescope", "source_type": "web"}])
+    monkeypatch.setattr(researcher.search, "wiki_search", lambda *a, **k: [])
+    monkeypatch.setattr(researcher.search, "news_search", lambda *a, **k: [])
+    monkeypatch.setattr(researcher.search, "fetch_text", lambda *a, **k: "full page text")
+    monkeypatch.setattr(researcher, "decompose", lambda t, a: ["q1"])
+    monkeypatch.setattr(researcher, "classify", lambda *a, **k: {
+        "overview": "ov", "claims": [{"claim": "in orbit", "classification": "VERIFIED",
+                                       "sources": ["https://nasa.gov/x"], "confidence": "high"}],
+        "key_statistics": [], "timeline": [], "notable_quotes": [],
+        "open_questions": [], "suggested_angles": []})
+    # the anchor seam: llm.chat is what find_thematic_anchor calls
+    monkeypatch.setattr(researcher.llm, "chat", _anchor_chat(_GOOD_ANCHOR))
+
+    with tempfile.TemporaryDirectory() as d:
+        monkeypatch.setattr(researcher, "PACKS_DIR", pathlib.Path(d))
+        monkeypatch.setattr(researcher, "MEMORY", pathlib.Path(d) / "memory.json")
+        pack, json_path, _ = researcher.run("James Webb", quiet=True)
+        assert pack["thematic_anchor"]["thesis_statement"].startswith("We are about to mine")
+        saved = json.loads(json_path.read_text())
+        assert "thematic_anchor" in saved
+
+
+def test_run_survives_anchor_failure(monkeypatch):
+    # A broken anchor brain must NOT crash the run — the pack just lacks the field.
+    monkeypatch.setattr(researcher.search, "web_search",
+                        lambda *a, **k: [{"url": "https://nasa.gov/x", "title": "NASA",
+                                          "snippet": "t", "source_type": "web"}])
+    monkeypatch.setattr(researcher.search, "wiki_search", lambda *a, **k: [])
+    monkeypatch.setattr(researcher.search, "news_search", lambda *a, **k: [])
+    monkeypatch.setattr(researcher.search, "fetch_text", lambda *a, **k: "body")
+    monkeypatch.setattr(researcher, "decompose", lambda t, a: ["q"])
+    monkeypatch.setattr(researcher, "classify", lambda *a, **k: {
+        "overview": "ov", "claims": [{"claim": "c", "classification": "VERIFIED",
+                                       "sources": ["https://nasa.gov/x"]}],
+        "key_statistics": [], "timeline": [], "notable_quotes": [],
+        "open_questions": [], "suggested_angles": []})
+    def boom(system=None, user=None):
+        raise RuntimeError("anchor brain down")
+    monkeypatch.setattr(researcher.llm, "chat", boom)
+    with tempfile.TemporaryDirectory() as d:
+        monkeypatch.setattr(researcher, "PACKS_DIR", pathlib.Path(d))
+        monkeypatch.setattr(researcher, "MEMORY", pathlib.Path(d) / "memory.json")
+        pack, _, _ = researcher.run("James Webb", quiet=True)
+    assert pack["verified_facts"], "the research pack must still be produced"
+    assert "thematic_anchor" not in pack, "a failed anchor is omitted, not faked"
+
+
+# ----------------------------------------------------------------------
 # _strip_json robustness
 # ----------------------------------------------------------------------
 def test_strip_json_unwraps_prose_and_fences():

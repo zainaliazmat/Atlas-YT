@@ -64,6 +64,106 @@ def test_vocabulary_matches_the_art_director_exactly():
     assert set(vocab["TEXTURES"]) == set(engine.TEXTURES)
 
 
+def test_new_motion_effects_are_seek_deterministic():
+    # The motion tokens mined from the local hyperframes catalogue (breathe, bars-grow,
+    # drift, and the latest pop-in / underline-grow) must be build-time GSAP on the paused
+    # timeline only — no render-time clock, randomness, infinite repeats, or SMIL — so each
+    # seeked frame is reproducible.
+    ctx = {"duration": 6.0, "highlight": "#FFD000"}
+    banned = ("Math.random", "Date.now", "performance.now", "repeat:-1", "repeat: -1",
+              "<animate", "setTimeout", "setInterval", "requestAnimationFrame", "fetch(")
+    for name in ("breathe", "bars-grow", "drift", "pop-in", "underline-grow"):
+        frag = engine.EFFECT_BUILDERS[name](ctx)
+        assert frag["tl"], f"{name} produced no timeline motion"
+        blob = " ".join(frag["tl"]) + frag.get("css", "") + frag.get("html", "")
+        for tok in banned:
+            assert tok not in blob, f"{name} uses banned non-deterministic token {tok!r}"
+    # each technique's signature is present
+    assert "sine.inOut" in engine.EFFECT_BUILDERS["breathe"](ctx)["tl"][0]
+    assert "yoyo:true" in engine.EFFECT_BUILDERS["breathe"](ctx)["tl"][0]
+    assert "stagger" in engine.EFFECT_BUILDERS["bars-grow"](ctx)["tl"][0]
+    assert "xPercent" in engine.EFFECT_BUILDERS["drift"](ctx)["tl"][0]
+    # pop-in is a back.out scale entrance (distinct from the opacity/y default entrance)
+    pop = engine.EFFECT_BUILDERS["pop-in"](ctx)["tl"][0]
+    assert "back.out" in pop and "scale:0.84" in pop and "opacity" not in pop
+    # underline-grow draws an accent keyline (its own selector + scaleX, no overwrite)
+    keyline = engine.EFFECT_BUILDERS["underline-grow"](ctx)
+    assert "scaleX:0" in keyline["tl"][0] and ".fx-keyline" in keyline["css"]
+    assert "#FFD000" in keyline["css"]                  # tinted to the signature highlight
+
+
+def test_word_reveal_is_per_word_and_seek_deterministic():
+    # Kinetic typography: the title reveals one WORD at a time on the paused timeline.
+    # Must be build-time GSAP only — no render-time clock/randomness/infinite repeat/SMIL.
+    frag = engine.EFFECT_BUILDERS["word-reveal"]({"duration": 6.0})
+    blob = " ".join(frag["tl"]) + frag.get("css", "") + frag.get("html", "")
+    banned = ("Math.random", "Date.now", "performance.now", "repeat:-1", "repeat: -1",
+              "<animate", "setTimeout", "setInterval", "requestAnimationFrame", "fetch(")
+    for tok in banned:
+        assert tok not in blob, f"word-reveal uses banned non-deterministic token {tok!r}"
+    assert ".scene-title .word" in blob          # animates per-word, not the whole title
+    assert "stagger" in blob                      # staggered reveal
+    # inline-block so the per-word y-transform actually moves
+    assert "display:inline-block" in frag["css"]
+
+
+def test_word_reveal_only_wraps_text_nodes_so_it_preserves_hl_sweep():
+    # The split walks child TEXT nodes only (nodeType===3); the injected .hl-sweep span is
+    # an ELEMENT child and must survive untouched when both effects land on one scene.
+    frag = engine.EFFECT_BUILDERS["word-reveal"]({"duration": 6.0})
+    blob = " ".join(frag["tl"])
+    assert "nodeType" in blob and "3" in blob     # guards on text nodes
+    assert "replaceChild" in blob                 # in-place, leaves siblings (hl-sweep) alone
+
+
+def test_word_reveal_suppresses_the_default_whole_title_entrance():
+    html = engine.compose_scene_html(_ctx(
+        effects=[{"name": "word-reveal", "params": {}}], signature=False))
+    # the per-word reveal is present...
+    assert 'tl.from(".scene-title .word"' in html
+    # ...and the default whole-title fade is NOT (word-reveal owns the entrance)
+    assert 'tl.from(".scene-title",{opacity:0,y:24' not in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_word_reveal_with_signature_keeps_the_highlighter_sweep():
+    html = engine.compose_scene_html(_ctx(
+        effects=[{"name": engine.SIGNATURE_EFFECT, "params": {}},
+                 {"name": "word-reveal", "params": {}}], signature=True))
+    assert 'class="hl-sweep"' in html             # signature span survives alongside word-reveal
+    assert 'tl.from(".scene-title .word"' in html
+    # word-reveal suppresses the title entrance whose transform incidentally gave .scene-title
+    # the stacking context the z-index:-1 sweep needs — so word-reveal must supply it itself,
+    # else the sweep falls behind the scene background and vanishes (caught on a real render).
+    assert ".scene-title{isolation:isolate;}" in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_default_title_entrance_intact_without_word_reveal():
+    # Regression guard: scenes WITHOUT word-reveal still get the whole-title entrance.
+    html = engine.compose_scene_html(_ctx(effects=[], signature=False))
+    assert 'tl.from(".scene-title",{opacity:0,y:24' in html
+
+
+def test_pop_in_composes_with_the_default_entrance():
+    # pop-in adds an overshoot SCALE on top of the default opacity/y fade — both run (it
+    # does NOT own/suppress the entrance the way word-reveal does), and the scene stays
+    # determinism-clean.
+    html = engine.compose_scene_html(_ctx(
+        effects=[{"name": "pop-in", "params": {}}], signature=False))
+    assert 'ease:"back.out(1.8)"' in html
+    assert 'tl.from(".scene-title",{opacity:0,y:24' in html      # default entrance kept
+    assert engine.scan_determinism(html) == []
+
+
+def test_underline_grow_injects_a_keyline_child_into_the_title():
+    html = engine.compose_scene_html(_ctx(
+        effects=[{"name": "underline-grow", "params": {}}], signature=False))
+    assert 'class="fx-keyline"' in html                          # injected as a title child
+    assert 'tl.fromTo(".fx-keyline"' in html
+    assert engine.scan_determinism(html) == []
+
+
 # ----------------------------------------------------------------------
 # Input validation: unknown tokens REJECTED (never silently dropped); remote URIs blocked
 # ----------------------------------------------------------------------
@@ -253,9 +353,14 @@ def test_signature_scene_has_the_highlighter_sweep():
 
 
 def test_every_layout_renders_clean_and_self_scans_clean():
+    # Give every layout a present photo so the photo-hero layouts render their real form
+    # (a photo-slot layout with no usable photo intentionally downgrades to a text card —
+    # exercised separately in the text-forward tests).
+    present_photo = [{"type": "image", "label": "a1", "src_rel": "assets/p.jpg",
+                      "placeholder": False, "integrity_flag": None}]
     for layout in engine.LAYOUTS:
         html = engine.compose_scene_html(_ctx(layout=layout, signature=False,
-                                              effects=[]))
+                                              effects=[], assets=present_photo))
         assert layout in html
         assert engine.scan_determinism(html) == [], f"{layout} tripped the self-scan"
 
@@ -281,13 +386,54 @@ def test_stutter_effect_uses_the_computed_step_count():
     assert "steps(36)" in html      # round(12 * 3.0)
 
 
-def test_missing_local_asset_becomes_a_placeholder_panel():
+# ----------------------------------------------------------------------
+# Text-forward for no-relevant-photo scenes (CEO decision 2026-06-24): a photo-slot
+# layout whose only asset is a sourcer-declared placeholder (no relevant photo cleared
+# the relevance floor) renders a CLEAN TEXT CARD, not a striped placeholder-panel. A
+# sourced-but-MISSING file (integrity failure) still shows the panel so the pipeline bug
+# stays visible; brand scenes keep their slot (chips fill it).
+# ----------------------------------------------------------------------
+def test_photo_slot_with_declared_placeholder_downgrades_to_text_forward():
     ctx = _ctx(layout="full-bleed-image", signature=False, effects=[],
                assets=[{"type": "image", "label": "a1", "src_rel": None,
-                        "placeholder": True}])
+                        "placeholder": True, "integrity_flag": None}])
     html = engine.compose_scene_html(ctx)
-    assert "placeholder-panel" in html
+    body = html.split("<body>", 1)[1]
+    assert "centered-statement" in body          # downgraded to a text card
+    assert "full-bleed-image" not in body        # the layout element is gone (CSS aside)
+    assert "placeholder-panel" not in body       # no striped box element
     assert "<img" not in html
+
+
+def test_photo_slot_keeps_panel_on_integrity_failure():
+    # A SOURCED file that's missing is a pipeline bug — keep the visible panel (surfaced),
+    # don't silently hide it behind a clean text card.
+    ctx = _ctx(layout="full-bleed-image", signature=False, effects=[],
+               assets=[{"type": "image", "label": "a1", "src_rel": None,
+                        "placeholder": True,
+                        "integrity_flag": "cleared asset 'a1' has no local file"}])
+    html = engine.compose_scene_html(ctx)
+    assert "full-bleed-image" in html
+    assert "placeholder-panel" in html.split("<body>", 1)[1]
+
+
+def test_photo_slot_keeps_a_present_photo():
+    ctx = _ctx(layout="full-bleed-image", signature=False, effects=[],
+               assets=[{"type": "image", "label": "a1", "src_rel": "assets/p.jpg",
+                        "placeholder": False, "integrity_flag": None}])
+    html = engine.compose_scene_html(ctx)
+    assert "full-bleed-image" in html
+    assert "<img" in html
+
+
+def test_brand_scene_keeps_its_photo_slot_layout():
+    # Brand chips fill the media slot, so a brand scene must NOT downgrade even with no photo.
+    ctx = _ctx(layout="split-screen", signature=False, effects=[], brand_keys=["openai"],
+               assets=[{"type": "image", "label": "a1", "src_rel": None,
+                        "placeholder": True, "integrity_flag": None}])
+    html = engine.compose_scene_html(ctx)
+    assert "split-screen" in html
+    assert "brand-media" in html
 
 
 # ----------------------------------------------------------------------
@@ -327,6 +473,17 @@ def test_render_brand_chips_renders_logo_and_label():
     assert one.count('class="brand-chip"') == 1
     assert "<svg" in one                     # the real logo mark
     assert "Claude" in one and "#D97757" in one   # name label + brand color
+
+
+def test_render_brand_chips_strips_svg_title_to_avoid_occlusion_flag():
+    # The inline logo SVGs carry a decorative <title> (e.g. "OpenAI"). HyperFrames'
+    # inspect gate reads that as text occluded beneath the logo's own paths and errors
+    # (text_occluded), blocking the render. The chip already shows a visible name label,
+    # so the <title> is redundant — it must not reach the rendered HTML.
+    html = engine.render_brand_chips(["openai", "anthropic", "google", "deepseek"])
+    assert "<title>" not in html
+    # the visible names are still present (label, not the stripped title)
+    assert "GPT-4o" in html and "Claude" in html
 
 
 def test_render_brand_chips_falls_back_to_text_when_logo_empty(monkeypatch):
@@ -391,6 +548,42 @@ def test_no_brand_keys_leaves_layouts_unchanged():
     assert "layout has-brand" not in html        # layout container class untouched
 
 
+# ----------------------------------------------------------------------
+# Render last-mile (occlusion): the two scene structures the inspect gate
+# rejected with 'text_occluded'. These encode the structural invariants that
+# keep text out from under opaque media; the geometric truth is verified by
+# `npx hyperframes inspect` on the composed scenes.
+# ----------------------------------------------------------------------
+def test_data_chart_title_sits_above_the_chart_clear_of_caption_band():
+    # data-chart rendered its <h2 title> AFTER the chart-frame, so the centered
+    # column dropped the title into the bottom caption band where the burned-in
+    # caption-scrim painted over it (inspect 'text_occluded'). The title must own
+    # the TOP zone, above the chart, leaving the bottom band to the (text-free) media.
+    html = engine.compose_scene_html(_ctx(layout="data-chart", signature=False,
+                                          effects=[], assets=[]))
+    assert '<h2 class="scene-title">' in html
+    assert html.index('class="scene-title"') < html.index('class="chart-frame"'), \
+        "data-chart title must render ABOVE the chart-frame"
+
+
+def test_comparison_with_brands_keeps_chips_out_from_under_opaque_panel():
+    # comparison-2up's .cmp panels are position:absolute and .cmp.myth is an opaque
+    # dark plate. When brand chips were injected (has-brand), the grid laid out only
+    # the in-flow chips row; the absolute opaque myth panel then painted OVER the
+    # left-hand chips (inspect 'text_occluded' on 'GPT-4o'/'Claude'). Under has-brand
+    # the cmp panels must flow as grid rows so every block keeps its own row.
+    ctx = _ctx(layout="comparison-2up", signature=False, effects=[], assets=[],
+               brand_keys=["openai", "anthropic", "google", "deepseek"])
+    html = engine.compose_scene_html(ctx)
+    assert "layout has-brand comparison-2up" in html
+    for name in ("GPT-4o", "Claude", "Gemini", "DeepSeek"):
+        assert name in html
+    # the fix: CSS reflows the absolute opaque cmp panels into the has-brand grid
+    assert ".layout.has-brand .cmp{" in engine._BASE_CSS
+    assert ".layout.has-brand .cmp.myth{display:none" in engine._BASE_CSS
+    assert engine.scan_determinism(html) == []
+
+
 def test_scene_ctx_wires_brand_keys_from_storyboard_shots(tmp_path):
     board = {"scene_no": 1, "layout": "title-card", "transition": "cut", "effects": [],
              "signature_beat": False,
@@ -453,6 +646,180 @@ def test_build_assembly_plan_flags_unknown_transition_and_missing_renders():
     plan = engine.build_assembly_plan(manifest, storyboard, {})
     assert 1 in plan["missing_renders"]
     assert any("unknown transition" in f for f in plan["flags"])
+
+
+# ----------------------------------------------------------------------
+# Motion mood board — beat governance (Task 4). The design-first artifact governs
+# Mason's per-scene MOTION (effect/transition/texture) and EXPRESSIVE layout, while
+# content-driven layouts (data-chart/big-number/timeline/diagram) and the signature
+# highlighter stay the storyboard's authority. Fully fallback-safe (no board -> no change).
+# ----------------------------------------------------------------------
+_GOV_BEAT = {
+    "beat_id": "b-build", "arc_phase": "build", "dominant_effect": "push-in",
+    "secondary_effect": "parallax", "transition_in": "dip-to-black",
+    "layout_family": "split-screen",
+    "motion_parameter_overrides": {"push-in": {"duration_sec": 1.8}},
+}
+_INTENT = {"per_scene_intent": [
+    {"scene_index": 0, "arc_phase": "hook"},
+    {"scene_index": 1, "arc_phase": "build"},
+    {"scene_index": 2, "arc_phase": "peak"}]}
+_BOARD = {"beat_map": [
+    {"beat_id": "b-hook", "arc_phase": "hook"},
+    {"beat_id": "b-build", "arc_phase": "build"},
+    {"beat_id": "b-peak", "arc_phase": "peak"}]}
+
+
+def test_build_scene_beat_map_links_scenes_to_beats_by_arc_phase():
+    m = engine.build_scene_beat_map(_INTENT, _BOARD)
+    assert m[1]["beat_id"] == "b-hook"      # scene_index 0 -> scene_no 1 -> hook
+    assert m[2]["beat_id"] == "b-build"
+    assert m[3]["beat_id"] == "b-peak"
+
+
+def test_build_scene_beat_map_empty_without_inputs():
+    assert engine.build_scene_beat_map({}, {}) == {}
+    assert engine.build_scene_beat_map(_INTENT, {}) == {}
+
+
+def test_scene_ctx_beat_governs_transition_and_effects(tmp_path):
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [{"name": "drift"}], "signature_beat": False, "shots": []}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, {"palette": {}},
+                            board, [], [], tmp_path, tmp_path, beat=_GOV_BEAT)
+    names = [e["name"] for e in ctx["effects"]]
+    assert ctx["transition"] == "dip-to-black"          # beat transition overrides 'cut'
+    assert "push-in" in names                            # beat dominant replaces the storyboard's
+    assert "drift" not in names                          # storyboard effect gone
+    assert ctx["layout"] == "split-screen"              # beat layout governs a generic layout
+    assert ctx["governed_by_beat"] == "b-build"
+    pe = next(e for e in ctx["effects"] if e["name"] == "push-in")
+    assert pe["params"].get("duration_sec") == 1.8      # motion_parameter_overrides merged
+
+
+def test_scene_ctx_content_layout_wins_over_beat(tmp_path):
+    board = {"scene_no": 1, "layout": "data-chart", "chart_kind": "bar", "transition": "cut",
+             "effects": [], "signature_beat": False, "shots": []}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "A 10 B 20"},
+                            {"palette": {}}, board, [], [], tmp_path, tmp_path, beat=_GOV_BEAT)
+    assert ctx["layout"] == "data-chart"                # content layout is sacrosanct
+
+
+def test_scene_ctx_beat_cannot_force_a_data_layout(tmp_path):
+    data_beat = {**_GOV_BEAT, "layout_family": "big-number"}
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": False, "shots": []}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, {"palette": {}},
+                            board, [], [], tmp_path, tmp_path, beat=data_beat)
+    assert ctx["layout"] == "centered-statement"        # a data layout is never forced on
+
+
+def test_scene_ctx_without_beat_is_unchanged(tmp_path):
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [{"name": "drift"}], "signature_beat": False, "shots": []}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, {"palette": {}},
+                            board, [], [], tmp_path, tmp_path)
+    assert ctx["transition"] == "cut"
+    assert [e["name"] for e in ctx["effects"]] == ["drift"]
+    assert ctx.get("governed_by_beat") is None
+
+
+def test_scene_ctx_global_texture_overrides_style_textures(tmp_path):
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": False, "shots": []}
+    style = {"palette": {}, "textures": ["paper", "grain"]}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "Hi"}, style, board,
+                            [], [], tmp_path, tmp_path, global_texture="scanlines")
+    assert [t["name"] for t in ctx["textures"]] == ["scanlines"]
+
+
+def test_scene_ctx_beat_never_creates_a_second_highlighter(tmp_path):
+    # Even on the signature scene, a beat (whose dominant could be the highlighter) never
+    # produces a duplicate — the storyboard's signature_beat stays the sole authority.
+    peak_beat = {"beat_id": "b-peak", "arc_phase": "peak",
+                 "dominant_effect": "highlighter-FFD000", "secondary_effect": "push-in",
+                 "transition_in": "cut", "layout_family": "big-number"}
+    board = {"scene_no": 1, "layout": "centered-statement", "transition": "cut",
+             "effects": [], "signature_beat": True, "shots": []}
+    ctx = engine._scene_ctx(1, {"scene_no": 1, "on_screen_text": "41%"}, {"palette": {}},
+                            board, [], [], tmp_path, tmp_path, beat=peak_beat)
+    names = [e["name"] for e in ctx["effects"]]
+    assert names.count(engine.SIGNATURE_EFFECT) == 1
+    assert ctx["signature"] is True
+
+
+def test_assembly_plan_honors_a_governed_manifest_transition():
+    # The governed transition lives on the manifest scene; the seam must honor it over
+    # the storyboard's (which the mood board overrode), falling back when absent.
+    manifest = {"scenes": [
+        {"scene_no": 1, "render_path": "a.mp4", "transition": "dip-to-black"},
+        {"scene_no": 2, "render_path": "b.mp4"}]}
+    storyboard = {"scenes": [{"scene_no": 1, "transition": "cut"},
+                             {"scene_no": 2, "transition": "cut"}]}
+    plan = engine.build_assembly_plan(manifest, storyboard, {})
+    boundary = next(s for s in plan["steps"] if s.get("boundary_after") == 1)
+    assert boundary["mode"] == "xfade" and boundary["xfade"] == "fadeblack"
+
+
+# ----------------------------------------------------------------------
+# Signature WebGL shader transitions at the assembly seam (≤budget, into sig beats)
+# ----------------------------------------------------------------------
+import shader_transition  # noqa: E402
+
+
+def _sig_manifest(n_sig_at):
+    scenes = [{"scene_no": i, "render_path": f"scenes/scene-{i:02d}/renders/draft.mp4",
+               "fps": 30, "signature_beat": (i in n_sig_at)} for i in range(1, 6)]
+    return {"scenes": scenes}
+
+
+def test_signature_beat_earns_a_shader_transition_into_it(monkeypatch):
+    monkeypatch.delenv("MASON_SHADER_TRANSITIONS", raising=False)
+    manifest = _sig_manifest({3})                      # scene 3 is the signature beat
+    storyboard = {"scenes": [{"scene_no": i, "transition": "cut"} for i in range(1, 6)]}
+    plan = engine.build_assembly_plan(manifest, storyboard, {})
+    sh = [s for s in plan["steps"] if s.get("mode") == "shader"]
+    assert len(sh) == 1 and plan["shader_count"] == 1
+    step = sh[0]
+    assert step["boundary_after"] == 2 and step["into_scene"] == 3   # boundary INTO sig
+    assert step["shader"] == "sdf-iris"                # premium default first
+    assert step["from_render"].endswith("scene-02/renders/draft.mp4")
+    assert step["to_render"].endswith("scene-03/renders/draft.mp4")
+    assert step["frames"] == shader_transition.DEFAULT_FRAMES and step["fps"] == 30
+
+
+def test_shader_budget_is_capped(monkeypatch):
+    monkeypatch.delenv("MASON_SHADER_TRANSITIONS", raising=False)
+    manifest = _sig_manifest({2, 3, 4})               # three signature beats
+    storyboard = {"scenes": [{"scene_no": i, "transition": "cut"} for i in range(1, 6)]}
+    plan = engine.build_assembly_plan(manifest, storyboard, {})
+    assert plan["shader_count"] == shader_transition.SHADER_BUDGET   # capped at 2
+    assert [s["shader"] for s in plan["steps"] if s.get("mode") == "shader"] \
+        == ["sdf-iris", "glitch"]                      # taste order
+
+
+def test_storyboard_can_override_signature_shader(monkeypatch):
+    monkeypatch.delenv("MASON_SHADER_TRANSITIONS", raising=False)
+    manifest = _sig_manifest({3})
+    storyboard = {"scenes": [
+        {"scene_no": i, "transition": "cut",
+         **({"signature_transition": "glitch"} if i == 3 else {})} for i in range(1, 6)]}
+    plan = engine.build_assembly_plan(manifest, storyboard, {})
+    step = next(s for s in plan["steps"] if s.get("mode") == "shader")
+    assert step["shader"] == "glitch"                  # honored the per-beat override
+    # an invalid override silently falls back to the default
+    storyboard["scenes"][2]["signature_transition"] = "wormhole"
+    plan2 = engine.build_assembly_plan(manifest, storyboard, {})
+    assert next(s for s in plan2["steps"] if s.get("mode") == "shader")["shader"] == "sdf-iris"
+
+
+def test_shader_transitions_kill_switch(monkeypatch):
+    monkeypatch.setenv("MASON_SHADER_TRANSITIONS", "0")
+    manifest = _sig_manifest({3})
+    storyboard = {"scenes": [{"scene_no": i, "transition": "cut"} for i in range(1, 6)]}
+    plan = engine.build_assembly_plan(manifest, storyboard, {})
+    assert plan["shader_count"] == 0
+    assert not any(s.get("mode") == "shader" for s in plan["steps"])
 
 
 # ----------------------------------------------------------------------
@@ -620,6 +987,135 @@ def test_data_chart_scene_with_data_is_not_bare_text():
 
 
 # ----------------------------------------------------------------------
+# data-chart kinds: line + pie (ported from the HF data-chart registry block).
+# Mason stays the deterministic emitter — pure build-time SVG geometry, draw-on
+# reveal on the paused timeline. Iris (the art director) picks the chart_kind.
+# ----------------------------------------------------------------------
+_CHART_DATA = [{"label": "Coffee", "value": 95}, {"label": "Black tea", "value": 48},
+               {"label": "Green tea", "value": 29}]
+
+
+def test_chart_kinds_vocab_matches_the_art_director():
+    assert set(engine.CHART_KINDS) == {"bar", "line", "pie"}
+    vocab = _extract_art_director_vocab()
+    if vocab is not None and "CHART_KINDS" in vocab:
+        assert set(vocab["CHART_KINDS"]) == set(engine.CHART_KINDS)
+
+
+def test_shader_vocab_matches_the_art_director():
+    # Iris's signature_transition menu must equal the shaders Mason can actually render.
+    vocab = _extract_art_director_vocab()
+    if vocab is not None and "SHADER_TRANSITIONS" in vocab:
+        assert set(vocab["SHADER_TRANSITIONS"]) == set(shader_transition.SHADER_TRANSITIONS)
+
+
+def test_render_line_chart_is_a_drawon_ready_polyline():
+    svg = engine.render_line_chart(_CHART_DATA)
+    assert "line-chart" in svg and "line-path" in svg
+    assert 'pathLength="1"' in svg                    # normalized for stroke-dashoffset draw-on
+    assert svg.count("line-dot") == 3                 # one marker per point
+    assert "Coffee" in svg and "95" in svg
+    assert engine.render_line_chart([]) == ""         # nothing chartable
+    assert engine.render_line_chart([{"label": "x", "value": 1}]) == ""   # a line needs >=2 pts
+
+
+def test_render_pie_chart_slices_cover_the_whole_circle():
+    svg = engine.render_pie_chart(_CHART_DATA)
+    assert "pie-chart" in svg
+    assert svg.count("pie-slice") == 3                # one arc per datum
+    assert engine.render_pie_chart([]) == ""
+    # percentages shown and the largest datum carries the signature tint
+    assert "%" in svg
+    assert engine.SIGNATURE_HIGHLIGHT in svg
+
+
+def test_data_chart_line_kind_renders_line_and_draws_on():
+    ctx = _ctx(layout="data-chart", signature=False, effects=[], assets=[],
+               chart_kind="line", chart_data=_CHART_DATA)
+    html = engine.compose_scene_html(ctx)
+    assert 'class="media line-chart"' in html and '<rect class="bar"' not in html
+    assert 'strokeDashoffset' in html                 # baked draw-on reveal in the timeline
+    assert engine.scan_determinism(html) == []
+
+
+def test_data_chart_pie_kind_renders_pie_and_reveals():
+    ctx = _ctx(layout="data-chart", signature=False, effects=[], assets=[],
+               chart_kind="pie", chart_data=_CHART_DATA)
+    html = engine.compose_scene_html(ctx)
+    assert 'class="media pie-chart"' in html and '<rect class="bar"' not in html
+    assert "pie-slice" in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_data_chart_defaults_to_bar_when_kind_absent():
+    ctx = _ctx(layout="data-chart", signature=False, effects=[], assets=[],
+               chart_data=_CHART_DATA)                # no chart_kind
+    html = engine.compose_scene_html(ctx)
+    assert "bar-chart" in html
+
+
+def test_chart_kinds_are_byte_deterministic():
+    for kind in ("line", "pie"):
+        ctx = dict(layout="data-chart", chart_kind=kind, chart_data=_CHART_DATA)
+        a = engine.compose_scene_html(_ctx(**ctx))
+        b = engine.compose_scene_html(_ctx(**ctx))
+        assert a == b, f"{kind} chart is not byte-stable"
+
+
+def test_unknown_chart_kind_is_rejected():
+    script, style, board, assets = _good_inputs()
+    board["scenes"][0]["layout"] = "data-chart"
+    board["scenes"][0]["chart_kind"] = "radar"
+    ok, errors = engine.validate_inputs(script, style, board, assets)
+    assert not ok and any("chart_kind" in e for e in errors)
+
+
+# ----------------------------------------------------------------------
+# Conceptual diagrams: the `diagram` layout composes a cached DiagramPlan as animated
+# flat SVG (Magpie plans off the render path; Mason renders deterministically).
+# ----------------------------------------------------------------------
+_DIAGRAM_PLAN = {"layout_hint": "left-to-right", "components": [
+    {"id": "g", "type": "labeled-box", "label": "Goal", "of": "document"},
+    {"id": "b", "type": "speech-bubble", "label": "LLM", "of": "brain", "to": ["t"]},
+    {"id": "t", "type": "glyph", "label": "Tools", "of": "gear"}]}
+
+
+def test_diagram_layout_composes_the_plan_and_self_scans_clean():
+    ctx = _ctx(layout="diagram", signature=False, effects=[], assets=[],
+               diagram_plan=_DIAGRAM_PLAN, diagram_seed=777)
+    html = engine.compose_scene_html(ctx)
+    assert "diagram-svg" in html and "dg-node" in html
+    assert 'class="layout diagram"' in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_diagram_scene_is_byte_deterministic():
+    ctx = dict(layout="diagram", diagram_plan=_DIAGRAM_PLAN, diagram_seed=777)
+    assert engine.compose_scene_html(_ctx(**ctx)) == engine.compose_scene_html(_ctx(**ctx))
+
+
+def test_diagram_plan_wins_over_brand_chip_fallback():
+    # regression: a diagram shot's prose can trip the generic-roster brand heuristic; on a
+    # `diagram` layout the plan is authoritative and must render, not the brand chips.
+    ctx = _ctx(layout="diagram", signature=False, effects=[], assets=[],
+               diagram_plan=_DIAGRAM_PLAN, diagram_seed=1,
+               brand_keys=["openai", "anthropic"], brand_specs=[])
+    html = engine.compose_scene_html(ctx)
+    assert "diagram-svg" in html and 'class="media brand-media"' not in html  # no chip wrapper
+
+
+def test_diagram_layout_falls_back_when_plan_is_invalid_or_absent():
+    # invalid plan -> graceful fallback (placeholder/media), never a crash or bare title
+    bad = _ctx(layout="diagram", signature=False, effects=[], assets=[],
+               diagram_plan={"components": [{"id": "x", "type": "nope"}]}, diagram_seed=1)
+    html = engine.compose_scene_html(bad)
+    assert "dg-node" not in html and engine.scan_determinism(html) == []
+    # no plan at all -> also fine
+    none = _ctx(layout="diagram", signature=False, effects=[], assets=[])
+    assert engine.scan_determinism(engine.compose_scene_html(none)) == []
+
+
+# ----------------------------------------------------------------------
 # C4 — caption legibility: a scrim/background panel behind the caption text
 # ----------------------------------------------------------------------
 def test_captions_have_a_legibility_scrim():
@@ -744,6 +1240,24 @@ def test_contrast_failures_are_recorded_and_surfaced_not_silently_swallowed(tmp_
                for s in manifest["scenes"]) or manifest["summary"]["contrast_failures"] >= 5
 
 
+def test_contrast_failures_alone_do_not_block_the_auto_gate(tmp_path, monkeypatch):
+    """Contrast is an aesthetic/legibility signal for the human render gate to judge —
+    it is SURFACED, not a deterministic hard-block. A scene whose only issue is contrast
+    (structure clean) must NOT fail the auto-gate, or no LLM-palette video could ever
+    render. The human final-render gate still sees the surfaced count + draft."""
+    _write_fixture_project(tmp_path)
+    monkeypatch.setenv("MASON_SKIP_RENDER", "1")
+    import hf_tools
+    monkeypatch.setattr(hf_tools, "run_gate", lambda d, motion_strict=False: {
+        "lint": {"ok": True, "errors": 0},
+        "validate": {"ok": True, "console_errors": 0, "contrast_failures": 7},
+        "inspect": {"ok": True, "issues": 0}})
+    manifest = engine.compose(tmp_path)
+    assert manifest["summary"]["contrast_failures"] >= 7      # still surfaced
+    assert manifest["summary"]["auto_gate"] == "PASS"          # but NOT blocked
+    assert manifest["verdict"] == "pass"
+
+
 def test_structural_gate_failures_still_block_the_auto_gate(tmp_path, monkeypatch):
     """The deterministic guarantee is intact: a console error (structural) blocks."""
     _write_fixture_project(tmp_path)
@@ -797,6 +1311,28 @@ def test_big_number_carries_signature_tint_on_the_beat():
     assert "big-number sig" in html
     assert ".big-number.sig .big-number-value{color:#FFD000;}" in html
     assert engine.scan_determinism(html) == []
+
+
+def test_motion_sidecar_only_asserts_selectors_present_in_the_scene(tmp_path):
+    # A big-number signature scene has NO .scene-title (its hero is .big-number-value)
+    # and shows the signature via the gold number, so the highlighter sweep is never
+    # injected. The motion sidecar must assert ONLY selectors that exist in the DOM —
+    # asserting .scene-title/.hl-sweep makes `inspect --strict` fail with
+    # motion_selector_missing and hard-blocks the whole video.
+    ctx = _ctx(layout="big-number", signature=True,
+               effects=[{"name": engine.SIGNATURE_EFFECT, "params": {}}],
+               hero_stat={"value": 40, "unit": "%", "label": "fewer"})
+    html = engine.compose_scene_html(ctx)
+    engine._emit_motion_sidecar(tmp_path, ctx)
+    sidecar = engine.chat_state.load_json(tmp_path / "index.motion.json", {})
+    selectors = [a["selector"] for a in sidecar.get("assertions", [])]
+    assert selectors, "a signature scene must still emit a motion sidecar"
+    body = html.split("<body>", 1)[1]
+    for sel in selectors:
+        assert f'class="{sel.lstrip(".")}' in body, \
+            f"motion sidecar asserts {sel} but no such element exists in the big-number DOM"
+    assert ".scene-title" not in selectors
+    assert ".hl-sweep" not in selectors
 
 
 def test_timeline_emits_one_svg_node_per_parsed_entry():
