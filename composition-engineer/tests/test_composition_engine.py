@@ -64,6 +64,27 @@ def test_vocabulary_matches_the_art_director_exactly():
     assert set(vocab["TEXTURES"]) == set(engine.TEXTURES)
 
 
+def test_new_motion_effects_are_seek_deterministic():
+    # The motion tokens mined from the local hyperframes-animation library (breathe,
+    # bars-grow, drift) must be build-time GSAP on the paused timeline only — no
+    # render-time clock, randomness, infinite repeats, or SMIL — so each seeked frame
+    # is reproducible.
+    ctx = {"duration": 6.0}
+    banned = ("Math.random", "Date.now", "performance.now", "repeat:-1", "repeat: -1",
+              "<animate", "setTimeout", "setInterval", "requestAnimationFrame", "fetch(")
+    for name in ("breathe", "bars-grow", "drift"):
+        frag = engine.EFFECT_BUILDERS[name](ctx)
+        assert frag["tl"], f"{name} produced no timeline motion"
+        blob = " ".join(frag["tl"]) + frag.get("css", "") + frag.get("html", "")
+        for tok in banned:
+            assert tok not in blob, f"{name} uses banned non-deterministic token {tok!r}"
+    # each technique's signature is present
+    assert "sine.inOut" in engine.EFFECT_BUILDERS["breathe"](ctx)["tl"][0]
+    assert "yoyo:true" in engine.EFFECT_BUILDERS["breathe"](ctx)["tl"][0]
+    assert "stagger" in engine.EFFECT_BUILDERS["bars-grow"](ctx)["tl"][0]
+    assert "xPercent" in engine.EFFECT_BUILDERS["drift"](ctx)["tl"][0]
+
+
 # ----------------------------------------------------------------------
 # Input validation: unknown tokens REJECTED (never silently dropped); remote URIs blocked
 # ----------------------------------------------------------------------

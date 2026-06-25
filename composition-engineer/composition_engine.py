@@ -119,6 +119,7 @@ TRANSITIONS = ("cut", "dip-to-black", "push", "wipe", "match-cut")
 EFFECTS = (
     "stutter-12fps", "stepped-ease", SIGNATURE_EFFECT, "map-draw",
     "chromatic-aberration", "push-in", "parallax", "count-up",
+    "breathe", "bars-grow", "drift",
 )
 TEXTURES = ("paper", "grain", "halftone", "vignette", "scanlines")
 
@@ -1116,11 +1117,46 @@ def _fx_count_up(ctx):
                    '})();']}
 
 
+def _fx_breathe(ctx):
+    # Ambient "breathe" — a barely-there sine scale pulse on the title so a HELD scene
+    # has life (the Build -> Breathe -> Resolve doctrine from hyperframes-animation). It
+    # animates SCALE, a distinct property from the title entrance (opacity/y) and starting
+    # after it, so there's no GSAP overwrite. Finite yoyo repeat (computed from duration)
+    # -> fully seek-deterministic; no Math.random/Date.now, no SMIL.
+    one_way = 1.8
+    reps = max(1, int(float(ctx["duration"]) / one_way) - 1)
+    return {"css": "", "html": "",
+            "tl": [f'tl.to(".scene-title",{{scale:1.018,duration:{one_way},'
+                   f'ease:"sine.inOut",yoyo:true,repeat:{reps},'
+                   f'transformOrigin:"50% 50%"}},0.6);']}
+
+
+def _fx_bars_grow(ctx):
+    # Data scenes: the native bar chart's bars + labels rise and stagger in instead of
+    # appearing flat (the stat-bars-and-fills technique). Targets the chart's own elements,
+    # so it's a NO-OP (empty selection) on a scene with no chart. opacity+y, build-time
+    # stagger -> seek-deterministic.
+    return {"css": "", "html": "",
+            "tl": ['tl.from(".bar,.bar-val,.bar-lbl",{opacity:0,y:48,duration:0.55,'
+                   'ease:"power2.out",stagger:0.08},0.15);']}
+
+
+def _fx_drift(ctx):
+    # Slow Ken-Burns drift on the focal media (never embed a flat image — Image Motion
+    # Treatment). Keeps a >=1.04 base scale so the pan never exposes a frame edge; pans
+    # across the scene on sine.inOut. A self-contained pan-zoom alternative to push-in.
+    return {"css": "", "html": "",
+            "tl": [f'tl.fromTo(".media",{{scale:1.04,xPercent:-1.5,yPercent:1.5}},'
+                   f'{{scale:1.08,xPercent:1.5,yPercent:-1.5,'
+                   f'duration:{float(ctx["duration"]):.3f},ease:"sine.inOut"}},0);']}
+
+
 EFFECT_BUILDERS = {
     "stutter-12fps": _fx_stutter, "stepped-ease": _fx_stepped,
     SIGNATURE_EFFECT: _fx_highlighter, "map-draw": _fx_map_draw,
     "chromatic-aberration": _fx_chromatic, "push-in": _fx_push_in,
     "parallax": _fx_parallax, "count-up": _fx_count_up,
+    "breathe": _fx_breathe, "bars-grow": _fx_bars_grow, "drift": _fx_drift,
 }
 
 

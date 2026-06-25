@@ -106,6 +106,9 @@ EFFECTS = (
     "push-in",              # a slow scale-in on a still
     "parallax",             # layered depth on a still
     "count-up",             # the hero number tweens 0->target on the paused timeline
+    "breathe",              # ambient sine scale pulse on the title (the "breathe" phase)
+    "bars-grow",            # the data-chart bars rise + stagger in
+    "drift",                # slow Ken-Burns pan-zoom on a still
 )
 TEXTURES = (
     "paper",
