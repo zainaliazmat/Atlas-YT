@@ -127,7 +127,7 @@ CHART_KINDS = ("bar", "line", "pie")
 EFFECTS = (
     "stutter-12fps", "stepped-ease", SIGNATURE_EFFECT, "map-draw",
     "chromatic-aberration", "push-in", "parallax", "count-up",
-    "breathe", "bars-grow", "drift", "word-reveal",
+    "breathe", "bars-grow", "drift", "word-reveal", "pop-in", "underline-grow",
 )
 TEXTURES = ("paper", "grain", "halftone", "vignette", "scanlines")
 
@@ -1355,13 +1355,42 @@ def _fx_word_reveal(ctx):
                    'ease:"power3.out",stagger:0.08},0);']}
 
 
+def _fx_pop(ctx):
+    # An overshoot "pop" entrance on the title — the back.out(1.8) recipe HyperFrames uses
+    # for its signature element entrances, the one entrance shape Mason lacked. Animates
+    # SCALE only: a property distinct from the default whole-title entrance (opacity/y) and
+    # from breathe's later pulse (which starts at 0.6s), so it COMPOSES with the fade-in
+    # rather than overwriting it. Build-time, finite, no Math.random/Date.now/SMIL ->
+    # seek-deterministic. (Distinct from push-in, which is a slow Ken-Burns on .media.)
+    return {"css": "", "html": "",
+            "tl": ['tl.from(".scene-title",{scale:0.84,duration:0.55,'
+                   'ease:"back.out(1.8)",transformOrigin:"50% 50%"},0);']}
+
+
+def _fx_keyline(ctx):
+    # An editorial accent keyline that draws in UNDER the title (a "design object," not
+    # decoration — the HyperFrames craft ethos). Mirrors the signature highlighter's title-
+    # child injection: compose_scene_html inserts <span class="fx-keyline"> as the title's
+    # first child, but this paints a thin rule at the title's baseline rather than a full
+    # sweep behind the text. scaleX draw-on from the left; its own selector + property, so
+    # no overwrite of the entrance or any other effect. Survives word-reveal (an element
+    # child, not a text node). Seek-deterministic build-time GSAP.
+    color = ctx["highlight"]
+    return {"css": ".scene-title{position:relative;}"
+                   ".fx-keyline{position:absolute;left:0;right:0;bottom:-0.16em;height:6px;"
+                   f"background:{color};transform-origin:left center;border-radius:3px;}}",
+            "html": "",   # injected as a title child by compose_scene_html (like .hl-sweep)
+            "tl": ['tl.fromTo(".fx-keyline",{scaleX:0},{scaleX:1,duration:0.5,'
+                   'ease:"power2.out"},0.35);']}
+
+
 EFFECT_BUILDERS = {
     "stutter-12fps": _fx_stutter, "stepped-ease": _fx_stepped,
     SIGNATURE_EFFECT: _fx_highlighter, "map-draw": _fx_map_draw,
     "chromatic-aberration": _fx_chromatic, "push-in": _fx_push_in,
     "parallax": _fx_parallax, "count-up": _fx_count_up,
     "breathe": _fx_breathe, "bars-grow": _fx_bars_grow, "drift": _fx_drift,
-    "word-reveal": _fx_word_reveal,
+    "word-reveal": _fx_word_reveal, "pop-in": _fx_pop, "underline-grow": _fx_keyline,
 }
 
 
@@ -1621,6 +1650,16 @@ def compose_scene_html(ctx: dict) -> str:
             gt = layout_html.find(">", idx)
             if gt != -1:
                 layout_html = (layout_html[:gt + 1] + '<span class="hl-sweep"></span>'
+                               + layout_html[gt + 1:])
+
+    # The accent keyline (underline-grow) nests as a title child too, so it tracks the
+    # title box and draws its rule at the baseline (same injection shape as the sweep).
+    if any(e["name"] == "underline-grow" for e in ctx["effects"]):
+        idx = layout_html.find('class="scene-title')
+        if idx != -1:
+            gt = layout_html.find(">", idx)
+            if gt != -1:
+                layout_html = (layout_html[:gt + 1] + '<span class="fx-keyline"></span>'
                                + layout_html[gt + 1:])
 
     # Brand-chip entrance (build-time, deterministic; a gentle staggered fade-in).

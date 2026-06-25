@@ -115,6 +115,8 @@ EFFECTS = (
     "bars-grow",            # the data-chart bars rise + stagger in
     "drift",                # slow Ken-Burns pan-zoom on a still
     "word-reveal",          # kinetic typography: the title reveals one word at a time
+    "pop-in",               # overshoot (back.out) scale entrance on the title — a lively pop
+    "underline-grow",       # an accent keyline draws in under the title (editorial design object)
 )
 # data-chart sub-kinds Mason can render natively (chosen ONLY on a data-chart scene).
 # Kept in lock-step with composition_engine.CHART_KINDS (cross-engine parity test).

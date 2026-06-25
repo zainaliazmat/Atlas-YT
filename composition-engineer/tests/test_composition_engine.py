@@ -65,14 +65,14 @@ def test_vocabulary_matches_the_art_director_exactly():
 
 
 def test_new_motion_effects_are_seek_deterministic():
-    # The motion tokens mined from the local hyperframes-animation library (breathe,
-    # bars-grow, drift) must be build-time GSAP on the paused timeline only — no
-    # render-time clock, randomness, infinite repeats, or SMIL — so each seeked frame
-    # is reproducible.
-    ctx = {"duration": 6.0}
+    # The motion tokens mined from the local hyperframes catalogue (breathe, bars-grow,
+    # drift, and the latest pop-in / underline-grow) must be build-time GSAP on the paused
+    # timeline only — no render-time clock, randomness, infinite repeats, or SMIL — so each
+    # seeked frame is reproducible.
+    ctx = {"duration": 6.0, "highlight": "#FFD000"}
     banned = ("Math.random", "Date.now", "performance.now", "repeat:-1", "repeat: -1",
               "<animate", "setTimeout", "setInterval", "requestAnimationFrame", "fetch(")
-    for name in ("breathe", "bars-grow", "drift"):
+    for name in ("breathe", "bars-grow", "drift", "pop-in", "underline-grow"):
         frag = engine.EFFECT_BUILDERS[name](ctx)
         assert frag["tl"], f"{name} produced no timeline motion"
         blob = " ".join(frag["tl"]) + frag.get("css", "") + frag.get("html", "")
@@ -83,6 +83,13 @@ def test_new_motion_effects_are_seek_deterministic():
     assert "yoyo:true" in engine.EFFECT_BUILDERS["breathe"](ctx)["tl"][0]
     assert "stagger" in engine.EFFECT_BUILDERS["bars-grow"](ctx)["tl"][0]
     assert "xPercent" in engine.EFFECT_BUILDERS["drift"](ctx)["tl"][0]
+    # pop-in is a back.out scale entrance (distinct from the opacity/y default entrance)
+    pop = engine.EFFECT_BUILDERS["pop-in"](ctx)["tl"][0]
+    assert "back.out" in pop and "scale:0.84" in pop and "opacity" not in pop
+    # underline-grow draws an accent keyline (its own selector + scaleX, no overwrite)
+    keyline = engine.EFFECT_BUILDERS["underline-grow"](ctx)
+    assert "scaleX:0" in keyline["tl"][0] and ".fx-keyline" in keyline["css"]
+    assert "#FFD000" in keyline["css"]                  # tinted to the signature highlight
 
 
 def test_word_reveal_is_per_word_and_seek_deterministic():
@@ -136,6 +143,25 @@ def test_default_title_entrance_intact_without_word_reveal():
     # Regression guard: scenes WITHOUT word-reveal still get the whole-title entrance.
     html = engine.compose_scene_html(_ctx(effects=[], signature=False))
     assert 'tl.from(".scene-title",{opacity:0,y:24' in html
+
+
+def test_pop_in_composes_with_the_default_entrance():
+    # pop-in adds an overshoot SCALE on top of the default opacity/y fade — both run (it
+    # does NOT own/suppress the entrance the way word-reveal does), and the scene stays
+    # determinism-clean.
+    html = engine.compose_scene_html(_ctx(
+        effects=[{"name": "pop-in", "params": {}}], signature=False))
+    assert 'ease:"back.out(1.8)"' in html
+    assert 'tl.from(".scene-title",{opacity:0,y:24' in html      # default entrance kept
+    assert engine.scan_determinism(html) == []
+
+
+def test_underline_grow_injects_a_keyline_child_into_the_title():
+    html = engine.compose_scene_html(_ctx(
+        effects=[{"name": "underline-grow", "params": {}}], signature=False))
+    assert 'class="fx-keyline"' in html                          # injected as a title child
+    assert 'tl.fromTo(".fx-keyline"' in html
+    assert engine.scan_determinism(html) == []
 
 
 # ----------------------------------------------------------------------
