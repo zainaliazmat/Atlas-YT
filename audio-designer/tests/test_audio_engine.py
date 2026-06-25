@@ -518,6 +518,26 @@ def test_mix_recipe_vo_bed_sfx_delayed():
     assert "amix=inputs=3" in r["filter_complex"]
 
 
+def test_mix_recipe_loudness_normalized_to_target():
+    # Every mix branch must END with a loudness-normalization stage so the master hits
+    # the YouTube target (~-14 LUFS). Shipped masters measured ~-22 LUFS (8 too quiet);
+    # the peak limiter alone never raised quiet content to a target loudness.
+    for kw in ({},
+               {"sfx": {"path": "s.wav", "gain_db": -8, "at_sec": 1.0}},
+               {"bed": {"path": "b.mp3", "gain_db": -20}},
+               {"bed": {"path": "b.mp3", "gain_db": -20},
+                "sfx": {"path": "s.wav", "gain_db": -8, "at_sec": 2.5}}):
+        r = hf_audio.build_mix_recipe("vo.wav", 9.0, out_path="m.wav", **kw)
+        fc = r["filter_complex"]
+        loud = (f"loudnorm=I={hf_audio.TARGET_LUFS}:TP={hf_audio.TARGET_TP}:"
+                f"LRA={hf_audio.TARGET_LRA}")
+        assert loud in fc, f"missing loudnorm-to-target for {kw}: {fc}"
+        # loudnorm is the FINAL filter feeding [master] (final normalization wins).
+        last_stage = fc.split("[master]")[0].split(",")[-1]
+        assert last_stage.startswith("loudnorm"), f"loudnorm not last for {kw}: {last_stage}"
+    assert hf_audio.TARGET_LUFS == -14.0   # YouTube integrated-loudness standard
+
+
 # ======================================================================
 # 9. sfx_kit
 # ======================================================================
