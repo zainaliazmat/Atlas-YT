@@ -1035,9 +1035,11 @@ def _layout_diagram(ctx):
     # (title on top, diagram-frame below — caption-clear by construction, like data-chart).
     # The diagram's reveal rides the paused master timeline. Falls back to the standard
     # media/placeholder when there's no plan, the plan is invalid, or this is a brand scene.
+    # The diagram plan is authoritative on a `diagram` scene (Iris chose this layout and
+    # Magpie planned it) — it WINS over the brand-chip fallback, which is for brand scenes.
     plan = ctx.get("diagram_plan")
     inner, tl = None, []
-    if plan and not ctx.get("brand_keys"):
+    if plan:
         palette = ctx.get("palette") or {}
         try:
             res = diagram_render.render_diagram(

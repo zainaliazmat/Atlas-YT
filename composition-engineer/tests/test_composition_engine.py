@@ -887,6 +887,16 @@ def test_diagram_scene_is_byte_deterministic():
     assert engine.compose_scene_html(_ctx(**ctx)) == engine.compose_scene_html(_ctx(**ctx))
 
 
+def test_diagram_plan_wins_over_brand_chip_fallback():
+    # regression: a diagram shot's prose can trip the generic-roster brand heuristic; on a
+    # `diagram` layout the plan is authoritative and must render, not the brand chips.
+    ctx = _ctx(layout="diagram", signature=False, effects=[], assets=[],
+               diagram_plan=_DIAGRAM_PLAN, diagram_seed=1,
+               brand_keys=["openai", "anthropic"], brand_specs=[])
+    html = engine.compose_scene_html(ctx)
+    assert "diagram-svg" in html and 'class="media brand-media"' not in html  # no chip wrapper
+
+
 def test_diagram_layout_falls_back_when_plan_is_invalid_or_absent():
     # invalid plan -> graceful fallback (placeholder/media), never a crash or bare title
     bad = _ctx(layout="diagram", signature=False, effects=[], assets=[],

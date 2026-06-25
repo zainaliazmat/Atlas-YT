@@ -238,6 +238,55 @@ def test_brand_shot_emits_no_asset_row():
 
 
 # ======================================================================
+# 3b. Conceptual-diagram generation (D15 flag) — plan -> diagram row, with fallback
+# ======================================================================
+import json as _json  # noqa: E402
+
+_GOOD_PLAN = {"layout_hint": "left-to-right", "components": [
+    {"id": "a", "type": "speech-bubble", "label": "AI", "of": "brain", "to": ["b"]},
+    {"id": "b", "type": "glyph", "label": "Act", "of": "button"}]}
+
+
+def test_classify_diagram_gen_flag_routes_conceptual_to_generate_diagram():
+    shot = _shot("diagram", "a chat bubble sprouting robotic arms", "x")
+    assert engine.classify_shot(shot).action == "source"                  # default OFF
+    on = engine.classify_shot(shot, diagram_gen=True)
+    assert on.action == "generate-diagram" and on.asset_type == "diagram"
+    # a DATA diagram still generates a chart even with the flag on (not a concept diagram)
+    ddiag = engine.classify_shot(_shot("diagram", "failure rate by year", "x"), diagram_gen=True)
+    assert ddiag.action == "generate" and ddiag.asset_type == "data-viz"
+
+
+def test_source_assets_emits_a_diagram_row_with_a_cached_plan():
+    sb = {"scenes": [{"scene_no": 1, "shots": [
+        _shot("diagram", "an AI choosing an action", "agentflow")]}]}
+    client = FakeClient(by_source={})
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        m = engine.source_assets(sb, {}, client=client, pdir=d, diagram_gen=True,
+                                 chat_fn=lambda s, u: _json.dumps(_GOOD_PLAN))
+    row = next(a for a in m["assets"] if a["asset_id"] == "agentflow")
+    assert row["type"] == "diagram" and row["status"] == "cleared"
+    assert row["plan"]["components"][0]["type"] == "speech-bubble"
+    assert m["diagnostics"]["diagram"] == {"planned": 1, "failed": 0}
+
+
+def test_source_assets_diagram_planner_failure_falls_back_and_counts():
+    sb = {"scenes": [{"scene_no": 1, "shots": [
+        _shot("diagram", "an abstract idea", "concept")]}]}
+    # planner returns garbage -> ValueError -> fall through to the stock-image path;
+    # no stock available -> a flagged placeholder. Never crashes, never blank.
+    client = FakeClient(by_source={})
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        m = engine.source_assets(sb, {}, client=client, pdir=d, diagram_gen=True,
+                                 chat_fn=lambda s, u: "nope")
+    row = next(a for a in m["assets"] if a["asset_id"] == "concept")
+    assert row["type"] != "diagram"                  # fell back off the diagram path
+    assert m["diagnostics"]["diagram"]["failed"] == 1
+
+
+# ======================================================================
 # 4. Query derivation — era, monochrome bias, filler trim (deterministic)
 # ======================================================================
 def test_derive_query():

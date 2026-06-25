@@ -17,13 +17,15 @@
           "asset_id": {"type": "string"},
           "scene_no": {"type": "integer"},
           "type": {"type": "string",
-                   "enum": ["image", "video", "icon", "data-viz"]},
+                   "enum": ["image", "video", "icon", "data-viz", "diagram"]},
           "source": {"type": "string"},
           "uri": {"type": "string"},
           "license": {"type": "string"},
           "attribution": {"type": "string"},
           "status": {"type": "string",
-                     "enum": ["sourced", "placeholder", "cleared"]}
+                     "enum": ["sourced", "placeholder", "cleared"]},
+          "plan": {"type": "object", "additionalProperties": true,
+                   "description": "DiagramPlan (closed-vocab) for a type:diagram asset; Mason composes it to animated flat SVG at render time. No file/uri."}
         }
       }
     }

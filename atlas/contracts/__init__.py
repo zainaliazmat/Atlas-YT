@@ -57,6 +57,9 @@ CONTRACT_VERSIONS: dict[str, str] = {
     "style_guide": "1.1",
     "storyboard": "1.1",
     "audio_manifest": "1.1",
+    # Magpie bumped asset_manifest to "1.1" when she added the "diagram" asset type +
+    # the optional `plan` object (a cached DiagramPlan Mason composes to SVG at render).
+    "asset_manifest": "1.1",
 }
 
 
