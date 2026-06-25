@@ -9,6 +9,9 @@ validation blocks the stage, it does not crash the run.
 CONTRACTS (artifact name -> schema file):
 - project              project.json            (the master state)
 - research_brief       research_brief.json     (Sage's pack shape, reused + envelope)
+- creative_treatment   creative_treatment.json (the director's creative direction; runs
+                       AFTER research, BEFORE script; Marlow + Iris both consume it;
+                       advisory/optional so it's backward-compatible when absent)
 - script               script.json
 - factcheck_report     factcheck_report.json   (the fact-check gate reads its verdict)
 - style_guide          style_guide.json        (additively extensible via schema_version)
@@ -76,6 +79,7 @@ def version_for(name: str) -> str:
 SCHEMA_FILES: dict[str, str] = {
     "project": "project.schema.json",
     "research_brief": "research_brief.schema.json",
+    "creative_treatment": "creative_treatment.schema.json",
     "script": "script.schema.json",
     "factcheck_report": "factcheck_report.schema.json",
     "style_guide": "style_guide.schema.json",

@@ -148,6 +148,32 @@ def test_write_script_emits_contract_valid_script():
     assert script["est_runtime_sec"] == 17.0
 
 
+def test_creative_treatment_is_injected_when_present():
+    captured = {}
+
+    def chat_fn(system, user):
+        captured["user"] = user
+        return json.dumps(_script_json())
+
+    treatment = {"rhythm": "hook-BUILD-PEAK-breathe-CTA",
+                 "emphasis": "the loop is the whole trick",
+                 "beats": [{"beat": "hook", "concept": "open cold", "emphasis_word": "loop"}]}
+    engine.write_script(BRIEF, chat_fn=chat_fn, treatment=treatment)
+    assert "DIRECTOR'S CREATIVE TREATMENT" in captured["user"]
+    assert "the loop is the whole trick" in captured["user"]
+
+
+def test_no_treatment_means_no_treatment_section():
+    captured = {}
+
+    def chat_fn(system, user):
+        captured["user"] = user
+        return json.dumps(_script_json())
+
+    engine.write_script(BRIEF, chat_fn=chat_fn)            # treatment absent
+    assert "DIRECTOR'S CREATIVE TREATMENT" not in captured["user"]
+
+
 def test_every_shipped_claim_resolves_to_a_brief_source():
     script = engine.write_script(BRIEF, chat_fn=_chat_returning(_script_json()))
     for scene in script["scenes"]:

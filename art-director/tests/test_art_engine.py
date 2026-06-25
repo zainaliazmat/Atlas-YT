@@ -451,6 +451,76 @@ def test_explicit_command_path_does_not_gate(monkeypatch):
 
 
 # ----------------------------------------------------------------------
+# Creative treatment (prompt-expansion) — the director's direction layer
+# ----------------------------------------------------------------------
+_BRIEF = {
+    "topic": "How AI agents actually work",
+    "overview": "Agents loop: a goal, an LLM that reasons, tools it calls, an action.",
+    "verified_facts": [{"claim": "An agent picks a tool, calls it, reads the result, repeats."},
+                       {"claim": "The loop ends when the goal is met."}],
+    "target_audience": "curious general audience",
+}
+
+
+def _treatment_out(**ov):
+    base = {"rhythm": "hook-BUILD-PEAK-breathe-CTA",
+            "visual_world": "clean editorial explainer, calm and confident",
+            "mood_refs": ["editorial calm", "documentary clarity"],
+            "emphasis": "an agent is just a loop with tools",
+            "motifs": ["a recurring arrow of flow"],
+            "negative": ["jargon", "uniform pacing"],
+            "beats": [{"beat": "hook", "concept": "open on the mystery", "mood": "alert",
+                       "emphasis_word": "loop", "intent": "snap in"},
+                      {"beat": "cta", "concept": "close clean", "mood": "resolved",
+                       "emphasis_word": "now", "intent": "settle"}]}
+    base.update(ov)
+    return base
+
+
+def test_design_treatment_returns_a_valid_treatment():
+    t = engine.design_treatment(_BRIEF, chat_fn=_chat_returning(_treatment_out()))
+    assert t["rhythm"] == "hook-BUILD-PEAK-breathe-CTA"
+    assert len(t["beats"]) == 2 and t["beats"][0]["emphasis_word"] == "loop"
+    assert t["emphasis"] and isinstance(t["mood_refs"], list)
+
+
+def test_design_treatment_normalizes_and_caps():
+    fat = _treatment_out(beats=[{"beat": f"b{i}", "concept": "x"} for i in range(20)],
+                         mood_refs=["a"] * 20, rhythm="x" * 500)
+    t = engine.design_treatment(_BRIEF, chat_fn=_chat_returning(fat))
+    assert len(t["beats"]) <= 12 and len(t["mood_refs"]) <= 8
+    assert len(t["rhythm"]) <= 120
+
+
+def test_design_treatment_rejects_an_empty_brief():
+    import pytest
+    with pytest.raises(ValueError):
+        engine.design_treatment({}, chat_fn=_chat_returning(_treatment_out()))
+
+
+def test_treatment_block_is_injected_into_style_and_storyboard_prompts():
+    t = _treatment_out()
+    sp = engine._build_style_prompt(SCRIPT, t)
+    bp = engine._build_storyboard_prompt(SCRIPT, None, t)
+    for prompt in (sp, bp):
+        assert "DIRECTOR'S CREATIVE TREATMENT" in prompt
+        assert "hook-BUILD-PEAK-breathe-CTA" in prompt
+    # absent treatment -> no treatment section (backward-compatible)
+    assert "DIRECTOR'S CREATIVE TREATMENT" not in engine._build_style_prompt(SCRIPT, None)
+
+
+def test_design_style_consumes_the_treatment():
+    captured = {}
+
+    def chat_fn(system, user):
+        captured["user"] = user
+        return json.dumps(_style_out())
+
+    engine.design_style(SCRIPT, chat_fn=chat_fn, treatment=_treatment_out())
+    assert "an agent is just a loop with tools" in captured["user"]
+
+
+# ----------------------------------------------------------------------
 # standalone runner
 # ----------------------------------------------------------------------
 if __name__ == "__main__":

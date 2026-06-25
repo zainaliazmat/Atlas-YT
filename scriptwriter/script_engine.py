@@ -714,7 +714,32 @@ def _supporting_block(brief: dict) -> str:
     return "\n".join(out)
 
 
-def _build_prompt(brief: dict) -> str:
+def _treatment_block(treatment: dict | None) -> str:
+    """The director's creative treatment as a prompt section (empty when absent). Marlow
+    writes the SCRIPT to this rhythm/emphasis; it shapes HOW, never WHAT (the brief fences
+    the claims). Direction only — no vocabulary the scriptwriter can't act on."""
+    if not isinstance(treatment, dict) or not treatment:
+        return ""
+    lines = ["=== THE DIRECTOR'S CREATIVE TREATMENT (write the script to this direction) ==="]
+    if treatment.get("rhythm"):
+        lines.append(f"RHYTHM (pace the script to this arc): {treatment['rhythm']}")
+    if treatment.get("emphasis"):
+        lines.append(f"THE ONE IDEA TO LAND: {treatment['emphasis']}")
+    if treatment.get("visual_world"):
+        lines.append(f"TONE/WORLD: {treatment['visual_world']}")
+    beats = treatment.get("beats") or []
+    if beats:
+        lines.append("BEATS (let these shape the hook→scenes→CTA arc; do NOT invent facts "
+                     "for them — only order/frame what the brief supports):")
+        for b in beats[:12]:
+            ew = f" — land the word '{b.get('emphasis_word')}'" if b.get("emphasis_word") else ""
+            lines.append(f"  · {b.get('beat', '?')}: {b.get('concept', '')}{ew}")
+    if treatment.get("negative"):
+        lines.append("AVOID: " + "; ".join(treatment["negative"]))
+    return "\n".join(lines) + "\n\n"
+
+
+def _build_prompt(brief: dict, treatment: dict | None = None) -> str:
     angle = brief.get("angle") or ""
     audience = brief.get("target_audience") or "a curious general audience"
     overview = brief.get("overview") or ""
@@ -723,6 +748,7 @@ def _build_prompt(brief: dict) -> str:
     title_note = f"\nA working title to consider (improve it if you can): {title}" if title else ""
     return (
         f"=== METHOD ===\n{SKILL}\n\n"
+        f"{_treatment_block(treatment)}"
         f"=== THE RESEARCH BRIEF (your raw material AND your fence — assert nothing "
         f"it doesn't contain) ===\n"
         f"TOPIC: {brief.get('topic','')}\n"
@@ -913,18 +939,22 @@ def assert_traceable(script: dict, brief: dict) -> None:
 # ----------------------------------------------------------------------
 # write_script — the pure seam the adapter uses (no file I/O, no schema envelope)
 # ----------------------------------------------------------------------
-def write_script(brief: dict, *, chat_fn=llm.chat) -> dict:
+def write_script(brief: dict, *, chat_fn=llm.chat, treatment: dict | None = None) -> dict:
     """Turn a research brief into a script dict (frozen shape, minus schema_version).
 
     Validates the brief, makes ONE arc call to the brain (with a single retry if the
     hook throat-clears), resolves every claim's support deterministically, and
     asserts traceability before returning. Atlas stamps schema_version + validates.
+
+    `treatment` (optional) is the director's creative_treatment — when present, Marlow
+    writes to its rhythm + per-beat emphasis. It shapes HOW the story is told; it never
+    relaxes the brief fence (assert nothing the research doesn't support).
     """
     ok, reason = validate_brief(brief)
     if not ok:
         raise ValueError(reason)
 
-    prompt = _build_prompt(brief)
+    prompt = _build_prompt(brief, treatment)
     llm_out = _chat_json(SOUL, prompt, chat_fn=chat_fn)
     script = assemble_script(brief, llm_out)
 

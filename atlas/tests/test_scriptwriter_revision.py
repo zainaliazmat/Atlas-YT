@@ -14,7 +14,7 @@ def test_run_write_folds_revision_hint_into_brief(tmp_path, monkeypatch):
 
     captured = {}
     class FakeEngine:
-        def write_script(self, brief):
+        def write_script(self, brief, *, treatment=None):
             captured["brief"] = brief
             return {"scenes": []}
     monkeypatch.setattr(scriptwriter, "_script_engine", lambda: FakeEngine())
@@ -31,7 +31,7 @@ def test_run_write_omits_hint_when_absent(tmp_path, monkeypatch):
 
     captured = {}
     class FakeEngine:
-        def write_script(self, brief):
+        def write_script(self, brief, *, treatment=None):
             captured["brief"] = brief
             return {"scenes": []}
     monkeypatch.setattr(scriptwriter, "_script_engine", lambda: FakeEngine())

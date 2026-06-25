@@ -56,6 +56,10 @@ HERE = pathlib.Path(__file__).parent
 # make the structured spec chatty. SKILL.md stays the engine method.
 SOUL = (HERE / "soul" / "SOUL.md").read_text()
 SKILL = (HERE / "SKILL.md").read_text()
+# CRAFT is the distilled HyperFrames creative-craft digest, fed ONLY to the creative
+# treatment (prompt-expansion) call — the knowledge that turns a thin brief into intentional
+# direction. It is NOT used by the structured style/storyboard calls (those stay terse).
+CRAFT = (HERE / "craft" / "CRAFT.md").read_text()
 MEMORY = HERE / "memory.json"
 DESIGNS_DIR = HERE / "designs"
 
@@ -472,11 +476,12 @@ def _vocab_block() -> str:
         + ", ".join(CHART_KINDS))
 
 
-def _build_style_prompt(script: dict) -> str:
+def _build_style_prompt(script: dict, treatment: dict | None = None) -> str:
     title = script.get("working_title") or "(untitled)"
     n = len(script.get("scenes") or [])
     return (
         f"=== METHOD ===\n{SKILL}\n\n"
+        f"{_treatment_block(treatment)}"
         f"=== THE SCRIPT YOU ARE DESIGNING FOR ===\n"
         f"WORKING TITLE: {title}\n"
         f"SCENES: {n}\n\n"
@@ -494,11 +499,13 @@ def _build_style_prompt(script: dict) -> str:
     )
 
 
-def _build_storyboard_prompt(script: dict, style_guide: dict) -> str:
+def _build_storyboard_prompt(script: dict, style_guide: dict,
+                             treatment: dict | None = None) -> str:
     motion = (style_guide or {}).get("motion") or {}
     budget = clamp_max_per_scene(motion.get("max_per_scene", DEFAULT_MAX_PER_SCENE))
     return (
         f"=== METHOD ===\n{SKILL}\n\n"
+        f"{_treatment_block(treatment)}"
         f"=== THE APPROVED STYLE GUIDE (design within it) ===\n"
         f"motion budget (max techniques per scene, incl. a non-cut transition): {budget}\n"
         f"palette + type are set; the signature highlight is {SIGNATURE_HIGHLIGHT}.\n\n"
@@ -659,34 +666,170 @@ def assemble_storyboard(script: dict, style_guide: dict, llm_out: dict) -> dict:
 # ======================================================================
 # The pure seams the adapter uses (no file I/O, no schema envelope)
 # ======================================================================
-def design_style(script: dict, *, chat_fn=llm.chat) -> dict:
+def _treatment_block(treatment: dict | None) -> str:
+    """The director's creative treatment as a prompt section for Iris (empty when absent).
+    She MAPS its mood/intent into her closed vocabularies — picking layouts/effects/
+    transitions deliberately and landing the ONE signature beat at the peak — instead of
+    defaulting to restraint. Direction only; it never overrides the closed vocabulary."""
+    if not isinstance(treatment, dict) or not treatment:
+        return ""
+    lines = ["=== THE DIRECTOR'S CREATIVE TREATMENT (design TO this — map it into the "
+             "vocabulary, don't default to plain) ==="]
+    if treatment.get("rhythm"):
+        lines.append(f"RHYTHM: {treatment['rhythm']} — vary layout/effect/transition energy "
+                     "across the arc; the peak earns the signature beat, the breathe stays calm.")
+    if treatment.get("emphasis"):
+        lines.append(f"THE ONE IDEA TO LAND (let the design serve it): {treatment['emphasis']}")
+    if treatment.get("visual_world"):
+        lines.append(f"VISUAL WORLD: {treatment['visual_world']}")
+    if treatment.get("mood_refs"):
+        lines.append("MOOD REFS (translate into palette intensity + motion feel, not literally): "
+                     + "; ".join(treatment["mood_refs"]))
+    if treatment.get("motifs"):
+        lines.append("RECURRING MOTIFS: " + "; ".join(treatment["motifs"]))
+    beats = treatment.get("beats") or []
+    if beats:
+        lines.append("BEATS (use each beat's mood/intent to choose this scene's layout, "
+                     "effects, and transition deliberately):")
+        for b in beats[:12]:
+            lines.append(f"  · {b.get('beat', '?')}: {b.get('mood', '')} — "
+                         f"{b.get('intent', '')}")
+    if treatment.get("negative"):
+        lines.append("AVOID: " + "; ".join(treatment["negative"]))
+    return "\n".join(lines) + "\n\n"
+
+
+def design_style(script: dict, *, chat_fn=llm.chat, treatment: dict | None = None) -> dict:
     """Turn a script into a style_guide dict (frozen shape, minus schema_version).
 
     Validates the script, makes ONE taste call to the brain, then enforces every
     style invariant in code. Atlas stamps schema_version + validates at the boundary.
+    `treatment` (optional): the director's creative direction, folded into the prompt.
     """
     ok, reason = validate_script(script)
     if not ok:
         raise ValueError(reason)
-    llm_out = _chat_json(SOUL, _build_style_prompt(script), chat_fn=chat_fn)
+    llm_out = _chat_json(SOUL, _build_style_prompt(script, treatment), chat_fn=chat_fn)
     return assemble_style(script, llm_out)
 
 
 def build_storyboard(script: dict, style_guide: dict | None = None, *,
-                     chat_fn=llm.chat) -> dict:
+                     chat_fn=llm.chat, treatment: dict | None = None) -> dict:
     """Turn a script (+ the approved style guide) into a storyboard dict.
 
     Validates the script, makes ONE taste call to the brain, then enforces every
     storyboard invariant in code. A missing style_guide falls back to Iris's defaults
     so the engine stays independently runnable. Envelope-free; atlas stamps + validates.
+    `treatment` (optional): the director's creative direction, folded into the prompt.
     """
     ok, reason = validate_script(script)
     if not ok:
         raise ValueError(reason)
     sg = style_guide or {"motion": {"max_per_scene": DEFAULT_MAX_PER_SCENE},
                          "palette": {"signature_highlight": SIGNATURE_HIGHLIGHT}}
-    llm_out = _chat_json(SOUL, _build_storyboard_prompt(script, sg), chat_fn=chat_fn)
+    llm_out = _chat_json(SOUL, _build_storyboard_prompt(script, sg, treatment), chat_fn=chat_fn)
     return assemble_storyboard(script, sg, llm_out)
+
+
+# ======================================================================
+# Creative treatment (prompt-expansion) — the director's direction layer.
+# Runs AFTER research, BEFORE the script, on the strong creative model, grounded in the
+# distilled CRAFT digest. Marlow (script) and Iris (style/storyboard) both consume it so
+# they use the closed vocabularies intentionally instead of defaulting to restraint.
+# ======================================================================
+_TREATMENT_MAX_BEATS = 12
+
+
+def validate_brief_for_treatment(brief) -> tuple[bool, str]:
+    """A brief is treatable if it carries an overview or facts to direct a story around."""
+    if not isinstance(brief, dict):
+        return False, "That's not a research brief — I need the brief JSON object."
+    if not (brief.get("overview") or brief.get("verified_facts") or brief.get("items")):
+        return False, "This brief has no overview or facts — nothing to build direction from."
+    return True, ""
+
+
+def _brief_digest_for_treatment(brief: dict) -> str:
+    topic = brief.get("topic") or brief.get("working_title") or "(untitled)"
+    overview = (brief.get("overview") or "").strip()
+    facts = brief.get("verified_facts") or []
+    fact_lines = []
+    for f in facts[:10]:
+        c = f.get("claim") if isinstance(f, dict) else str(f)
+        if c:
+            fact_lines.append(f"- {str(c).strip()}")
+    audience = brief.get("target_audience") or "a curious general audience"
+    angle = brief.get("angle") or ""
+    angle_note = f"\nANGLE: {angle}" if angle else ""
+    return (f"TOPIC: {topic}\nAUDIENCE: {audience}{angle_note}\n\n"
+            f"OVERVIEW:\n{overview}\n\n"
+            f"VERIFIED FACTS (the spine of the story — direct around these, invent nothing):\n"
+            + ("\n".join(fact_lines) or "(none listed)"))
+
+
+def _build_treatment_prompt(brief: dict) -> str:
+    return (
+        f"=== CREATIVE CRAFT (your method for this job) ===\n{CRAFT}\n\n"
+        f"=== THE RESEARCH BRIEF (your raw material AND your fence) ===\n"
+        f"{_brief_digest_for_treatment(brief)}\n\n"
+        "Produce the CREATIVE TREATMENT for this video: the director's direction the "
+        "scriptwriter and the art director will both build from. Apply the CRAFT. Name the "
+        "rhythm arc, the visual world + mood references (cultural, NOT hex), the ONE idea the "
+        "video must land, the recurring motifs, and a short negative list. Then break the "
+        "story into ordered BEATS (hook → … → cta); for each beat give a concept, a mood, the "
+        "single emphasis word that must land, and the felt pacing intent. Direction ONLY — no "
+        "coordinates, no hex, no per-scene decoratives; every note must be actionable inside "
+        "closed layout/effect/transition vocabularies.\n\n"
+        "Output ONLY this JSON object (no prose, no fences):\n"
+        '{"rhythm":"hook-BUILD-PEAK-breathe-CTA","visual_world":"…","mood_refs":["…"],'
+        '"emphasis":"…","motifs":["…"],"negative":["…"],'
+        '"beats":[{"beat":"hook","concept":"…","mood":"…","emphasis_word":"…","intent":"…"}]}'
+    )
+
+
+def _as_str_list(v) -> list[str]:
+    if isinstance(v, str):
+        return [v.strip()] if v.strip() else []
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    return []
+
+
+def assemble_treatment(brief: dict, llm_out: dict) -> dict:
+    """Normalize the brain's reply into the creative_treatment shape (minus schema_version).
+    Keeps only contract fields, coerces types, caps the beat count. Pure + deterministic."""
+    out = llm_out if isinstance(llm_out, dict) else {}
+    beats = []
+    for b in (out.get("beats") or [])[:_TREATMENT_MAX_BEATS]:
+        if not isinstance(b, dict):
+            continue
+        beats.append({
+            "beat": str(b.get("beat", "")).strip()[:40],
+            "concept": str(b.get("concept", "")).strip()[:400],
+            "mood": str(b.get("mood", "")).strip()[:200],
+            "emphasis_word": str(b.get("emphasis_word", "")).strip()[:80],
+            "intent": str(b.get("intent", "")).strip()[:300],
+        })
+    return {
+        "rhythm": str(out.get("rhythm", "")).strip()[:120],
+        "visual_world": str(out.get("visual_world", "")).strip()[:600],
+        "mood_refs": _as_str_list(out.get("mood_refs"))[:8],
+        "emphasis": str(out.get("emphasis", "")).strip()[:300],
+        "motifs": _as_str_list(out.get("motifs"))[:8],
+        "negative": _as_str_list(out.get("negative"))[:8],
+        "beats": beats,
+    }
+
+
+def design_treatment(brief: dict, *, chat_fn=llm.chat) -> dict:
+    """Turn a research brief into a creative_treatment dict (frozen shape, minus
+    schema_version). Validates the brief, makes ONE direction call to the brain grounded in
+    the CRAFT digest, normalizes in code. Atlas stamps schema_version + validates."""
+    ok, reason = validate_brief_for_treatment(brief)
+    if not ok:
+        raise ValueError(reason)
+    llm_out = _chat_json(SOUL, _build_treatment_prompt(brief), chat_fn=chat_fn)
+    return assemble_treatment(brief, llm_out)
 
 
 # ======================================================================

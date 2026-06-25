@@ -198,6 +198,31 @@ def produce_factcheck(pdir: pathlib.Path, topic: str) -> Artifact:
                     f"{unverifiable} unverifiable")
 
 
+def produce_treatment(pdir: pathlib.Path, topic: str) -> Artifact:
+    data = {
+        "schema_version": CONTRACT_VERSION,
+        "rhythm": "hook-BUILD-PEAK-breathe-CTA",
+        "visual_world": "clean editorial explainer — calm, confident, one idea at a time",
+        "mood_refs": ["editorial calm", "documentary clarity"],
+        "emphasis": f"the core takeaway about {topic or 'the topic'}",
+        "motifs": ["a single recurring accent color"],
+        "negative": ["clutter", "uniform pacing"],
+        "beats": [
+            {"beat": "hook", "concept": "open on the tension", "mood": "alert",
+             "emphasis_word": "why", "intent": "snap in, earn the first five seconds"},
+            {"beat": "build", "concept": "lay out the mechanism", "mood": "steady",
+             "emphasis_word": "how", "intent": "even, legible pacing"},
+            {"beat": "peak", "concept": "the one number/claim that lands", "mood": "weighty",
+             "emphasis_word": "this", "intent": "hold it — the signature moment"},
+            {"beat": "cta", "concept": "the clean close", "mood": "resolved",
+             "emphasis_word": "now", "intent": "settle, breathe, end"},
+        ],
+    }
+    _write_json(pdir, "creative_treatment.json", data)
+    return Artifact("creative_treatment.json", "creative_treatment", data,
+                    "creative direction set; rhythm hook-BUILD-PEAK-breathe-CTA; 4 beats")
+
+
 def produce_style(pdir: pathlib.Path, topic: str) -> Artifact:
     data = {
         "schema_version": CONTRACT_VERSION,

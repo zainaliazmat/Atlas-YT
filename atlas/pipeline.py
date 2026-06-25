@@ -64,8 +64,16 @@ STAGES: list[Stage] = [
     # via ATLAS_RESEARCH_STUB=1 — the real engine is the default. (The other stages stay
     # offline stubs until their specialist lands.)
     Stage("research", "sage", "researching", sage.produce_research, "research_brief"),
-    # REAL script stage: Marlow's engine drafts script.json from the brief. (The
-    # other stages stay offline stubs until their specialist lands.)
+    # REAL creative-treatment stage: Iris's engine expands the brief into a grounded
+    # creative direction (rhythm, visual world, per-beat concept/mood/emphasis), distilled
+    # from the HyperFrames craft library, on the strong creative model. Marlow (script) and
+    # Iris's later style/storyboard stages both consume it — so the closed vocabularies get
+    # used intentionally. Advisory + optional: a missing treatment leaves every downstream
+    # stage on its prior behavior (backward-compatible).
+    Stage("treatment", "art_director", "writing the creative treatment",
+          art_director.produce_treatment, "creative_treatment"),
+    # REAL script stage: Marlow's engine drafts script.json from the brief (+ treatment if
+    # present). (The other stages stay offline stubs until their specialist lands.)
     Stage("script", "scriptwriter", "drafting the script", scriptwriter.produce_script,
           "script"),
     # REAL pass-2 (build step #2): Sage's engine fact-checks the on-disk script vs

@@ -50,7 +50,10 @@ def run_write(pdir: pathlib.Path) -> dict:
     hint = revision.get("hint")
     if hint:
         brief = {**brief, "revision_hint": hint}
-    script = _script_engine().write_script(brief)
+    # The director's creative treatment (if the treatment stage ran) shapes the script's
+    # rhythm + emphasis; absent, Marlow writes exactly as before (backward-compatible).
+    treatment = chat_state.load_json(pdir / "creative_treatment.json", {}) or None
+    script = _script_engine().write_script(brief, treatment=treatment)
     script = {"schema_version": CONTRACT_VERSION, **script}
     chat_state.atomic_write_json(pdir / "script.json", script)
     return script

@@ -78,7 +78,8 @@ def _offline_script(monkeypatch):
 # gates.)
 @pytest.fixture(autouse=True)
 def _offline_art_director(monkeypatch):
-    for key, producer in (("style", stubs.produce_style),
+    for key, producer in (("treatment", stubs.produce_treatment),
+                          ("style", stubs.produce_style),
                           ("storyboard", stubs.produce_storyboard)):
         stage = next(s for s in pipeline.STAGES if s.key == key)
         monkeypatch.setattr(stage, "producer", producer)
@@ -112,7 +113,7 @@ def _offline_audio(monkeypatch):
     mix_stage = next(s for s in pipeline.STAGES if s.key == "audiomix")
     monkeypatch.setattr(mix_stage, "producer", stubs.produce_audiomix)
 
-EXPECTED_ORDER = ["research", "script", "factcheck", "style", "storyboard",
+EXPECTED_ORDER = ["research", "treatment", "script", "factcheck", "style", "storyboard",
                   "assets", "narration", "compose", "audiomix", "render"]
 
 ARTIFACT_CONTRACTS = {

@@ -48,10 +48,24 @@ def run_design_style(pdir: pathlib.Path) -> dict:
     from contracts import version_for
     pdir = pathlib.Path(pdir)
     script = chat_state.load_json(pdir / "script.json", {})
-    style = _art_engine().design_style(script)
+    treatment = chat_state.load_json(pdir / "creative_treatment.json", {}) or None
+    style = _art_engine().design_style(script, treatment=treatment)
     style = {"schema_version": version_for("style_guide"), **style}
     chat_state.atomic_write_json(pdir / "style_guide.json", style)
     return style
+
+
+def run_design_treatment(pdir: pathlib.Path) -> dict:
+    """Read research_brief.json from `pdir`, run Iris's engine, stamp + write
+    creative_treatment.json. Returns the stamped treatment dict. Runs AFTER research and
+    BEFORE the script; Marlow + Iris's later stages consume it."""
+    from contracts import version_for
+    pdir = pathlib.Path(pdir)
+    brief = chat_state.load_json(pdir / "research_brief.json", {})
+    treatment = _art_engine().design_treatment(brief)
+    treatment = {"schema_version": version_for("creative_treatment"), **treatment}
+    chat_state.atomic_write_json(pdir / "creative_treatment.json", treatment)
+    return treatment
 
 
 def run_build_storyboard(pdir: pathlib.Path) -> dict:
@@ -61,10 +75,23 @@ def run_build_storyboard(pdir: pathlib.Path) -> dict:
     pdir = pathlib.Path(pdir)
     script = chat_state.load_json(pdir / "script.json", {})
     style_guide = chat_state.load_json(pdir / "style_guide.json", {}) or None
-    board = _art_engine().build_storyboard(script, style_guide)
+    treatment = chat_state.load_json(pdir / "creative_treatment.json", {}) or None
+    board = _art_engine().build_storyboard(script, style_guide, treatment=treatment)
     board = {"schema_version": version_for("storyboard"), **board}
     chat_state.atomic_write_json(pdir / "storyboard.json", board)
     return board
+
+
+def _treatment_digest(t: dict) -> str:
+    beats = t.get("beats", [])
+    lines = [f"Creative treatment: rhythm {t.get('rhythm') or '—'}; "
+             f"world: {(t.get('visual_world') or '—')[:80]}; {len(beats)} beats."]
+    if t.get("emphasis"):
+        lines.append(f"  The one idea to land: {t['emphasis'][:100]}")
+    for b in beats[:8]:
+        lines.append(f"  · {b.get('beat', '?')}: {(b.get('concept') or '')[:70]} "
+                     f"[lands '{b.get('emphasis_word', '')}']")
+    return "\n".join(lines)
 
 
 def _style_digest(style: dict) -> str:
@@ -92,6 +119,16 @@ def _board_digest(board: dict) -> str:
 # ----------------------------------------------------------------------
 # Pipeline producers (the real style/storyboard stage workers; (pdir, topic))
 # ----------------------------------------------------------------------
+def produce_treatment(pdir: pathlib.Path, topic: str):
+    """REAL producer: Iris's engine writes creative_treatment.json from the research brief."""
+    from adapters.stubs import Artifact  # lazy: avoid an import cycle
+    treatment = run_design_treatment(pdir)
+    n = len(treatment.get("beats", []))
+    rhythm = treatment.get("rhythm") or "—"
+    return Artifact("creative_treatment.json", "creative_treatment", treatment,
+                    f"creative direction set; rhythm {rhythm}; {n} beats")
+
+
 def produce_style(pdir: pathlib.Path, topic: str):
     """REAL producer: Iris's engine designs style_guide.json from the on-disk script."""
     from adapters.stubs import Artifact  # lazy: avoid an import cycle
@@ -146,6 +183,8 @@ class ArtDirectorAdapter(Adapter):
 
     # job name -> (runner, contract, digest builder, what she's doing)
     _JOBS = {
+        "design_treatment": (run_design_treatment, "creative_treatment", _treatment_digest,
+                             "writing the creative treatment"),
         "design_style": (run_design_style, "style_guide", _style_digest,
                          "designing the style"),
         "build_storyboard": (run_build_storyboard, "storyboard", _board_digest,
