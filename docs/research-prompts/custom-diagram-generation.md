@@ -90,3 +90,14 @@ just options.
 - A real failing example: `atlas/projects/how-ai-agents-actually-work-*` — `storyboard.json`
   (the `kind:"diagram"` shots), `asset_manifest.json` (all `status:"placeholder"`), and the
   scene frames (clean captions, empty backgrounds).
+
+
+
+## Research on the following topics, packages and libraries
+- Hand-drawn doodle animation (often called "boiling line" or "sketch" animation) is a charming style defined by its raw, imperfect, and constantly moving linework. It embraces a textured, human feel that digital perfection cannot replicate.
+- https://roughjs.com/
+- https://roughnotation.com/
+
+
+## Look at this spec file for context, it has the the D3 GSAP Lottie specs which we have to implement
+- /home/zain-ali/Documents/YT-AGENTS/docs/superpowers/specs/2026-06-23-motion-stack-d3-gsap-lottie.md
