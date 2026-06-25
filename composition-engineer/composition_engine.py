@@ -56,6 +56,7 @@ import zlib
 import chat_state       # atomic_write_json / load_json — corruption-safe file helpers
 import diagram_render   # conceptual-diagram renderer (DiagramPlan -> animated flat SVG)
 import hf_tools         # subprocess wrappers around the HyperFrames CLI (gate + render)
+import shader_transition  # deterministic WebGL signature transitions (assembly seam)
                    # NOTE: imported at TOP LEVEL (not lazily) so it resolves during the
                    # atlas loader's import window — a lazy import at call time would fail
                    # after the loader restores sys.path. hf_tools is stdlib-only, so this
@@ -1377,6 +1378,14 @@ TRANSITION_ASSEMBLY = {
 }
 
 
+def _shader_transitions_enabled() -> bool:
+    """Signature WebGL transitions are ON by default; MASON_SHADER_TRANSITIONS=0 disables
+    them (a clean, reversible kill switch — execution also falls back gracefully if the
+    headless-Chrome render is unavailable, so the video never depends on them)."""
+    return os.environ.get("MASON_SHADER_TRANSITIONS", "1").strip().lower() \
+        not in ("0", "no", "false", "off")
+
+
 # ======================================================================
 # Per-scene HTML assembly (pure, deterministic)
 # ======================================================================
@@ -1927,21 +1936,51 @@ def _emit_motion_sidecar(scene_dir: pathlib.Path, ctx: dict) -> None:
 def build_assembly_plan(manifest: dict, storyboard: dict, audio_manifest: dict) -> dict:
     """Pure: turn the composition manifest + storyboard transitions + audio into a
     deterministic assembly plan (scene render list, per-boundary transition specs,
-    narration track). Unknown transition tokens are flagged, never silently dropped."""
+    narration track). Unknown transition tokens are flagged, never silently dropped.
+
+    Signature beats get a WebGL shader transition (mode="shader") at the boundary that
+    leads INTO them, capped at shader_transition.SHADER_BUDGET per video. The shader is
+    the storyboard's `signature_transition` token when present (and valid), else the
+    taste-ordered default. The shader step carries the adjacent render paths + a frame
+    count; execution (hf_tools) replaces the outgoing scene's last `frames` with the
+    morph, so total duration — and thus narration sync — is unchanged."""
     board_by_no = {s.get("scene_no"): s for s in (storyboard or {}).get("scenes", [])}
     scenes = sorted(manifest.get("scenes", []), key=lambda s: s.get("scene_no", 0))
+    fps = clamp_fps(next((s.get("fps") for s in scenes if s.get("fps")), DEFAULT_FPS))
+    shaders_on = _shader_transitions_enabled()
+    shader_used = 0
     steps, flags = [], []
     for i, s in enumerate(scenes):
         n = s.get("scene_no")
         steps.append({"scene_no": n, "render": s.get("render_path")})
         if i < len(scenes) - 1:
+            nxt = scenes[i + 1]
             trans = (board_by_no.get(n, {}).get("transition") or "cut")
             spec = TRANSITION_ASSEMBLY.get(trans)
             if spec is None:
-                flags.append(f"scene {n}->{scenes[i+1].get('scene_no')}: unknown "
+                flags.append(f"scene {n}->{nxt.get('scene_no')}: unknown "
                              f"transition {trans!r}")
                 spec = TRANSITION_ASSEMBLY["cut"]
-            steps.append({"boundary_after": n, "transition": trans, **spec})
+            # A signature beat (the incoming scene) earns a shader transition INTO it.
+            board_nxt = board_by_no.get(nxt.get("scene_no"), {})
+            is_sig = bool(board_nxt.get("signature_beat") or nxt.get("signature_beat"))
+            if shaders_on and is_sig and shader_used < shader_transition.SHADER_BUDGET \
+                    and s.get("render_path") and nxt.get("render_path"):
+                override = board_nxt.get("signature_transition")
+                shader = override if shader_transition.validate_shader(override or "") \
+                    else shader_transition.default_signature_shader(shader_used)
+                frames = shader_transition.DEFAULT_FRAMES
+                steps.append({
+                    "boundary_after": n, "transition": trans, "mode": "shader",
+                    "shader": shader, "frames": frames, "fps": fps,
+                    "duration": round(frames / fps, 4),
+                    "from_render": s.get("render_path"),
+                    "to_render": nxt.get("render_path"),
+                    "into_scene": nxt.get("scene_no"),
+                })
+                shader_used += 1
+            else:
+                steps.append({"boundary_after": n, "transition": trans, **spec})
     narration = None
     for t in (audio_manifest or {}).get("tracks", []):
         if t.get("role") == "narration":
@@ -1949,8 +1988,10 @@ def build_assembly_plan(manifest: dict, storyboard: dict, audio_manifest: dict) 
             break
     return {
         "scene_count": len(scenes),
+        "fps": fps,
         "missing_renders": [s.get("scene_no") for s in scenes if not s.get("render_path")],
         "steps": steps, "narration": narration,
+        "shader_count": shader_used,
         "flags": flags,
     }
 

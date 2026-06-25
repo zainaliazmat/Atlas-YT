@@ -623,6 +623,67 @@ def test_build_assembly_plan_flags_unknown_transition_and_missing_renders():
 
 
 # ----------------------------------------------------------------------
+# Signature WebGL shader transitions at the assembly seam (≤budget, into sig beats)
+# ----------------------------------------------------------------------
+import shader_transition  # noqa: E402
+
+
+def _sig_manifest(n_sig_at):
+    scenes = [{"scene_no": i, "render_path": f"scenes/scene-{i:02d}/renders/draft.mp4",
+               "fps": 30, "signature_beat": (i in n_sig_at)} for i in range(1, 6)]
+    return {"scenes": scenes}
+
+
+def test_signature_beat_earns_a_shader_transition_into_it(monkeypatch):
+    monkeypatch.delenv("MASON_SHADER_TRANSITIONS", raising=False)
+    manifest = _sig_manifest({3})                      # scene 3 is the signature beat
+    storyboard = {"scenes": [{"scene_no": i, "transition": "cut"} for i in range(1, 6)]}
+    plan = engine.build_assembly_plan(manifest, storyboard, {})
+    sh = [s for s in plan["steps"] if s.get("mode") == "shader"]
+    assert len(sh) == 1 and plan["shader_count"] == 1
+    step = sh[0]
+    assert step["boundary_after"] == 2 and step["into_scene"] == 3   # boundary INTO sig
+    assert step["shader"] == "sdf-iris"                # premium default first
+    assert step["from_render"].endswith("scene-02/renders/draft.mp4")
+    assert step["to_render"].endswith("scene-03/renders/draft.mp4")
+    assert step["frames"] == shader_transition.DEFAULT_FRAMES and step["fps"] == 30
+
+
+def test_shader_budget_is_capped(monkeypatch):
+    monkeypatch.delenv("MASON_SHADER_TRANSITIONS", raising=False)
+    manifest = _sig_manifest({2, 3, 4})               # three signature beats
+    storyboard = {"scenes": [{"scene_no": i, "transition": "cut"} for i in range(1, 6)]}
+    plan = engine.build_assembly_plan(manifest, storyboard, {})
+    assert plan["shader_count"] == shader_transition.SHADER_BUDGET   # capped at 2
+    assert [s["shader"] for s in plan["steps"] if s.get("mode") == "shader"] \
+        == ["sdf-iris", "glitch"]                      # taste order
+
+
+def test_storyboard_can_override_signature_shader(monkeypatch):
+    monkeypatch.delenv("MASON_SHADER_TRANSITIONS", raising=False)
+    manifest = _sig_manifest({3})
+    storyboard = {"scenes": [
+        {"scene_no": i, "transition": "cut",
+         **({"signature_transition": "glitch"} if i == 3 else {})} for i in range(1, 6)]}
+    plan = engine.build_assembly_plan(manifest, storyboard, {})
+    step = next(s for s in plan["steps"] if s.get("mode") == "shader")
+    assert step["shader"] == "glitch"                  # honored the per-beat override
+    # an invalid override silently falls back to the default
+    storyboard["scenes"][2]["signature_transition"] = "wormhole"
+    plan2 = engine.build_assembly_plan(manifest, storyboard, {})
+    assert next(s for s in plan2["steps"] if s.get("mode") == "shader")["shader"] == "sdf-iris"
+
+
+def test_shader_transitions_kill_switch(monkeypatch):
+    monkeypatch.setenv("MASON_SHADER_TRANSITIONS", "0")
+    manifest = _sig_manifest({3})
+    storyboard = {"scenes": [{"scene_no": i, "transition": "cut"} for i in range(1, 6)]}
+    plan = engine.build_assembly_plan(manifest, storyboard, {})
+    assert plan["shader_count"] == 0
+    assert not any(s.get("mode") == "shader" for s in plan["steps"])
+
+
+# ----------------------------------------------------------------------
 # compose() end-to-end manifest shape — CLI gate MOCKED, renders skipped (offline)
 # ----------------------------------------------------------------------
 def _write_fixture_project(tmp_path):
