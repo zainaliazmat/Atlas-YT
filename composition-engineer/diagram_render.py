@@ -40,6 +40,28 @@ def _esc(s) -> str:
     return _html.escape(str(s), quote=True)
 
 
+def _luma(hex_color: str) -> float:
+    """Relative luminance (0..1) of a #rgb/#rrggbb color; ~0=black, ~1=white. Used only to
+    pick a label color that contrasts a node fill — pure + deterministic."""
+    s = (hex_color or "").strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(c * 2 for c in s)
+    if len(s) != 6:
+        return 0.0
+    try:
+        r, g, b = (int(s[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+    except ValueError:
+        return 0.0
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b  # Rec. 709 luma weights
+
+
+def _on_fill_ink(fill: str) -> str:
+    """A legible text color for a label sitting ON `fill` — light ink on a dark box, dark
+    ink on a light box. (A node's label must contrast the BOX, not the page; the page ink
+    is wrong when the box is filled with the dark `muted` swatch on a light scene.)"""
+    return "#F5F5F5" if _luma(fill) < 0.5 else "#1c1c1c"
+
+
 def _seeded(seed: int):
     """A tiny deterministic PRNG (mulberry32) -> floats in [0,1). Used ONLY at compose to
     bake constants (e.g. particle offsets); never runs at render time."""
@@ -152,7 +174,7 @@ def _node_box(cx, cy, w, h, label, ink, accent, fill, glyph=None, rounded=18):
     if label:
         parts.append(f'<text class="dg-label" x="{cx:.1f}" y="{ly:.1f}" '
                      f'text-anchor="middle" dominant-baseline="middle" '
-                     f'fill="{ink}">{_esc(label)}</text>')
+                     f'fill="{_on_fill_ink(fill)}">{_esc(label)}</text>')
     return "".join(parts)
 
 
@@ -177,7 +199,7 @@ def _bubble(cx, cy, w, h, label, ink, accent, fill, thought=False, glyph=None):
     if label:
         parts.append(f'<text class="dg-label" x="{cx:.1f}" y="{ly:.1f}" '
                      f'text-anchor="middle" dominant-baseline="middle" '
-                     f'fill="{ink}">{_esc(label)}</text>')
+                     f'fill="{_on_fill_ink(fill)}">{_esc(label)}</text>')
     return "".join(parts)
 
 

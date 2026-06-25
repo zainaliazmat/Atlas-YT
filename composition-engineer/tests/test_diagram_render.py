@@ -80,6 +80,28 @@ def test_every_glyph_renders_a_path():
         assert "dg-glyph" in r["svg"], f"glyph {g} produced no art"
 
 
+def test_node_labels_contrast_the_node_fill_not_the_page():
+    # Regression: on a LIGHT scene, ink is the dark page text. The node box is filled
+    # `muted` (dark), so a label drawn in `ink` is dark-on-dark = invisible (caught only
+    # by looking at a real render). The label must contrast the NODE fill, not the page.
+    dark_page_ink = "#1c1c1c"
+    plan = {"layout_hint": "left-to-right", "components": [
+        {"id": "a", "type": "labeled-box", "label": "Model"},
+        {"id": "b", "type": "node", "label": "App"}]}
+    r = d.render_diagram(plan, seed=1, ink=dark_page_ink, muted="#1c1c1c")
+    import re
+    labels = re.findall(r'<text class="dg-label"[^>]*fill="([^"]+)"', r["svg"])
+    assert labels, "no labels emitted"
+    for fill in labels:
+        assert d._luma(fill) > d._luma("#1c1c1c") + 0.4, (
+            f"label fill {fill!r} does not contrast the dark node box")
+
+
+def test_on_fill_ink_flips_with_fill_luminance():
+    assert d._luma(d._on_fill_ink("#1c1c1c")) > 0.6   # light text on a dark box
+    assert d._luma(d._on_fill_ink("#f5f5f5")) < 0.4   # dark text on a light box
+
+
 def test_flow_layout_connects_consecutive_nodes():
     # a left-to-right flow with NO explicit edges still draws n-1 connectors
     plan = {"layout_hint": "left-to-right", "components": [
