@@ -109,6 +109,7 @@ EFFECTS = (
     "breathe",              # ambient sine scale pulse on the title (the "breathe" phase)
     "bars-grow",            # the data-chart bars rise + stagger in
     "drift",                # slow Ken-Burns pan-zoom on a still
+    "word-reveal",          # kinetic typography: the title reveals one word at a time
 )
 TEXTURES = (
     "paper",

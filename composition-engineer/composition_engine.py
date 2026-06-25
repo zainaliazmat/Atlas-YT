@@ -119,7 +119,7 @@ TRANSITIONS = ("cut", "dip-to-black", "push", "wipe", "match-cut")
 EFFECTS = (
     "stutter-12fps", "stepped-ease", SIGNATURE_EFFECT, "map-draw",
     "chromatic-aberration", "push-in", "parallax", "count-up",
-    "breathe", "bars-grow", "drift",
+    "breathe", "bars-grow", "drift", "word-reveal",
 )
 TEXTURES = ("paper", "grain", "halftone", "vignette", "scanlines")
 
@@ -1151,12 +1151,50 @@ def _fx_drift(ctx):
                    f'duration:{float(ctx["duration"]):.3f},ease:"sine.inOut"}},0);']}
 
 
+def _fx_word_reveal(ctx):
+    # Kinetic typography — the title reveals one WORD at a time (per-word stagger) instead
+    # of the whole line fading in at once (the marquee explainer upgrade). A build-time IIFE
+    # walks the title's child TEXT nodes only (nodeType===3), wrapping each word in a
+    # <span class="word"> and leaving ELEMENT children untouched — so the signature .hl-sweep
+    # span (injected as the title's first child when the highlighter is also present) survives
+    # intact. The default whole-title entrance is suppressed by compose_scene_html when this
+    # effect is on the scene (word-reveal OWNS the entrance). Words are inline-block so the
+    # per-word y-transform moves; whitespace text nodes are preserved so words don't run
+    # together. opacity+y stagger on the paused timeline -> seek-deterministic; no
+    # Math.random/Date.now, no SMIL, no late gsap.set, finite build-time stagger only.
+    #
+    # isolation:isolate on the title is load-bearing: the signature .hl-sweep is a z-index:-1
+    # child that paints "behind the text but above the scene background" ONLY when .scene-title
+    # forms a stacking context. Normally the default whole-title entrance's transform supplies
+    # that context — but word-reveal SUPPRESSES that entrance, so without an explicit stacking
+    # context the z-index:-1 sweep would fall behind the opaque scene background and vanish.
+    # isolation:isolate restores it deterministically and is a no-op when no highlighter is on
+    # the scene.
+    return {"css": ".scene-title{isolation:isolate;}"
+                   ".scene-title .word{display:inline-block;will-change:transform,opacity;}",
+            "html": "",
+            "tl": ['(function(){var t=document.querySelector(".scene-title");if(!t)return;'
+                   'var kids=Array.prototype.slice.call(t.childNodes);'
+                   'for(var i=0;i<kids.length;i++){var node=kids[i];'
+                   'if(node.nodeType!==3)continue;'
+                   'var parts=node.textContent.split(/(\\s+)/);'
+                   'var frag=document.createDocumentFragment();'
+                   'for(var j=0;j<parts.length;j++){var p=parts[j];if(p==="")continue;'
+                   'if(/^\\s+$/.test(p)){frag.appendChild(document.createTextNode(p));}'
+                   'else{var s=document.createElement("span");s.className="word";'
+                   's.textContent=p;frag.appendChild(s);}}'
+                   'node.parentNode.replaceChild(frag,node);}})();',
+                   'tl.from(".scene-title .word",{opacity:0,y:28,duration:0.5,'
+                   'ease:"power3.out",stagger:0.08},0);']}
+
+
 EFFECT_BUILDERS = {
     "stutter-12fps": _fx_stutter, "stepped-ease": _fx_stepped,
     SIGNATURE_EFFECT: _fx_highlighter, "map-draw": _fx_map_draw,
     "chromatic-aberration": _fx_chromatic, "push-in": _fx_push_in,
     "parallax": _fx_parallax, "count-up": _fx_count_up,
     "breathe": _fx_breathe, "bars-grow": _fx_bars_grow, "drift": _fx_drift,
+    "word-reveal": _fx_word_reveal,
 }
 
 
@@ -1369,6 +1407,7 @@ def compose_scene_html(ctx: dict) -> str:
     # --- EFFECTS (per-scene motion) ---
     effect_html: list[str] = []
     has_highlighter = any(e["name"] == SIGNATURE_EFFECT for e in ctx["effects"])
+    has_word_reveal = any(e["name"] == "word-reveal" for e in ctx["effects"])
     for fx in ctx["effects"]:
         eb = EFFECT_BUILDERS.get(fx["name"])
         if eb:
@@ -1394,9 +1433,12 @@ def compose_scene_html(ctx: dict) -> str:
         tl_lines.append('tl.from(".brand-chip",{opacity:0,y:24,duration:0.5,'
                         'ease:"power2.out",stagger:0.08},0.1);')
 
-    # Title entrance (core motion, gentle ease; stepped effects own their own motion)
-    tl_lines.insert(0, 'tl.from(".scene-title",{opacity:0,y:24,duration:0.6,'
-                       'ease:"power2.out"},0);')
+    # Title entrance (core motion, gentle ease; stepped effects own their own motion).
+    # word-reveal owns the entrance per-word, so suppress the whole-title fade when present
+    # (otherwise the line would both fade as a block AND stagger per word — a double move).
+    if not has_word_reveal:
+        tl_lines.insert(0, 'tl.from(".scene-title",{opacity:0,y:24,duration:0.6,'
+                           'ease:"power2.out"},0);')
 
     # --- CAPTIONS (native .clip mechanism; LOCAL timing; build-time only) ---
     # Suppressed on layouts whose title is itself a text lower-third OVER the image

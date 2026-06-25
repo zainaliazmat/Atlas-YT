@@ -85,6 +85,59 @@ def test_new_motion_effects_are_seek_deterministic():
     assert "xPercent" in engine.EFFECT_BUILDERS["drift"](ctx)["tl"][0]
 
 
+def test_word_reveal_is_per_word_and_seek_deterministic():
+    # Kinetic typography: the title reveals one WORD at a time on the paused timeline.
+    # Must be build-time GSAP only — no render-time clock/randomness/infinite repeat/SMIL.
+    frag = engine.EFFECT_BUILDERS["word-reveal"]({"duration": 6.0})
+    blob = " ".join(frag["tl"]) + frag.get("css", "") + frag.get("html", "")
+    banned = ("Math.random", "Date.now", "performance.now", "repeat:-1", "repeat: -1",
+              "<animate", "setTimeout", "setInterval", "requestAnimationFrame", "fetch(")
+    for tok in banned:
+        assert tok not in blob, f"word-reveal uses banned non-deterministic token {tok!r}"
+    assert ".scene-title .word" in blob          # animates per-word, not the whole title
+    assert "stagger" in blob                      # staggered reveal
+    # inline-block so the per-word y-transform actually moves
+    assert "display:inline-block" in frag["css"]
+
+
+def test_word_reveal_only_wraps_text_nodes_so_it_preserves_hl_sweep():
+    # The split walks child TEXT nodes only (nodeType===3); the injected .hl-sweep span is
+    # an ELEMENT child and must survive untouched when both effects land on one scene.
+    frag = engine.EFFECT_BUILDERS["word-reveal"]({"duration": 6.0})
+    blob = " ".join(frag["tl"])
+    assert "nodeType" in blob and "3" in blob     # guards on text nodes
+    assert "replaceChild" in blob                 # in-place, leaves siblings (hl-sweep) alone
+
+
+def test_word_reveal_suppresses_the_default_whole_title_entrance():
+    html = engine.compose_scene_html(_ctx(
+        effects=[{"name": "word-reveal", "params": {}}], signature=False))
+    # the per-word reveal is present...
+    assert 'tl.from(".scene-title .word"' in html
+    # ...and the default whole-title fade is NOT (word-reveal owns the entrance)
+    assert 'tl.from(".scene-title",{opacity:0,y:24' not in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_word_reveal_with_signature_keeps_the_highlighter_sweep():
+    html = engine.compose_scene_html(_ctx(
+        effects=[{"name": engine.SIGNATURE_EFFECT, "params": {}},
+                 {"name": "word-reveal", "params": {}}], signature=True))
+    assert 'class="hl-sweep"' in html             # signature span survives alongside word-reveal
+    assert 'tl.from(".scene-title .word"' in html
+    # word-reveal suppresses the title entrance whose transform incidentally gave .scene-title
+    # the stacking context the z-index:-1 sweep needs — so word-reveal must supply it itself,
+    # else the sweep falls behind the scene background and vanishes (caught on a real render).
+    assert ".scene-title{isolation:isolate;}" in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_default_title_entrance_intact_without_word_reveal():
+    # Regression guard: scenes WITHOUT word-reveal still get the whole-title entrance.
+    html = engine.compose_scene_html(_ctx(effects=[], signature=False))
+    assert 'tl.from(".scene-title",{opacity:0,y:24' in html
+
+
 # ----------------------------------------------------------------------
 # Input validation: unknown tokens REJECTED (never silently dropped); remote URIs blocked
 # ----------------------------------------------------------------------
