@@ -863,6 +863,13 @@ def test_chart_kinds_vocab_matches_the_art_director():
         assert set(vocab["CHART_KINDS"]) == set(engine.CHART_KINDS)
 
 
+def test_shader_vocab_matches_the_art_director():
+    # Iris's signature_transition menu must equal the shaders Mason can actually render.
+    vocab = _extract_art_director_vocab()
+    if vocab is not None and "SHADER_TRANSITIONS" in vocab:
+        assert set(vocab["SHADER_TRANSITIONS"]) == set(shader_transition.SHADER_TRANSITIONS)
+
+
 def test_render_line_chart_is_a_drawon_ready_polyline():
     svg = engine.render_line_chart(_CHART_DATA)
     assert "line-chart" in svg and "line-path" in svg

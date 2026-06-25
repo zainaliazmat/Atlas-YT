@@ -320,6 +320,30 @@ def test_highlighter_effect_is_on_exactly_the_signature_beat():
         assert has_hl == (s["scene_no"] == sig_no), (s["scene_no"], has_hl)
 
 
+def test_signature_transition_is_attached_on_the_beat_only():
+    # scene 2 is the first flagged beat -> it carries the shader; scene 1's stray token is dropped
+    raw = _board_out()
+    raw["scenes"][0]["signature_transition"] = "glitch"      # non-beat -> ignored
+    raw["scenes"][1]["signature_transition"] = "sdf-iris"    # the beat -> kept
+    board = engine.build_storyboard(SCRIPT, None, chat_fn=_chat_returning(raw))
+    sig = next(s for s in board["scenes"] if s["signature_beat"])
+    assert sig["signature_transition"] == "sdf-iris"
+    assert all("signature_transition" not in s
+               for s in board["scenes"] if not s["signature_beat"])
+
+
+def test_invalid_signature_transition_is_dropped_for_masons_default():
+    raw = _board_out()
+    raw["scenes"][1]["signature_transition"] = "wormhole"    # not in SHADER_TRANSITIONS
+    board = engine.build_storyboard(SCRIPT, None, chat_fn=_chat_returning(raw))
+    sig = next(s for s in board["scenes"] if s["signature_beat"])
+    assert "signature_transition" not in sig                 # left off -> Mason picks default
+
+
+def test_shader_transitions_vocab_is_closed():
+    assert engine.SHADER_TRANSITIONS == ("whip-pan", "sdf-iris", "glitch", "domain-warp")
+
+
 def test_build_storyboard_respects_the_budget_and_vocab():
     style = {"motion": {"max_per_scene": 2}}
     board = engine.build_storyboard(SCRIPT, style, chat_fn=_chat_returning(_board_out()))

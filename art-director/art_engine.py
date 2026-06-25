@@ -119,6 +119,11 @@ EFFECTS = (
 # data-chart sub-kinds Mason can render natively (chosen ONLY on a data-chart scene).
 # Kept in lock-step with composition_engine.CHART_KINDS (cross-engine parity test).
 CHART_KINDS = ("bar", "line", "pie")
+# Signature WebGL transitions Mason can render at the boundary INTO the signature beat
+# (a deliberate, rare production-value moment). Chosen ONLY for the signature scene; a
+# missing/unknown value falls back to Mason's taste default. Kept in lock-step with
+# shader_transition.SHADER_TRANSITIONS (cross-engine parity test).
+SHADER_TRANSITIONS = ("whip-pan", "sdf-iris", "glitch", "domain-warp")
 TEXTURES = (
     "paper",
     "grain",
@@ -473,7 +478,9 @@ def _vocab_block() -> str:
         "TEXTURES (global, always-on hand-made layer — set once in the style guide):\n  "
         + ", ".join(TEXTURES) + "\n"
         "CHART_KINDS (ONLY on a 'data-chart' scene — set chart_kind to one of these):\n  "
-        + ", ".join(CHART_KINDS))
+        + ", ".join(CHART_KINDS) + "\n"
+        "SHADER_TRANSITIONS (ONLY on the signature beat — set signature_transition to one):\n  "
+        + ", ".join(SHADER_TRANSITIONS))
 
 
 def _build_style_prompt(script: dict, treatment: dict | None = None) -> str:
@@ -528,8 +535,13 @@ def _build_storyboard_prompt(script: dict, style_guide: dict,
         "ONE transition within budget, and assign a small effects "
         "array within budget. Flag EXACTLY ONE scene as the signature beat — the one "
         f"moment that earns the animated '{SIGNATURE_EFFECT}' flourish; every other "
-        "scene leaves that effect alone. Stay ruthless: most scenes want a plain "
-        "'cut' and zero or one effect. Return ONLY the JSON object from 'Your "
+        "scene leaves that effect alone. On THAT signature scene only, also set "
+        "'signature_transition' to ONE token from SHADER_TRANSITIONS — the cinematic "
+        "WebGL transition that carries the viewer INTO the beat, matched to its mood: "
+        "'sdf-iris' for a clean reveal/zoom-to-focus, 'glitch' for disruption/'everything "
+        "breaks' energy, 'whip-pan' for a fast momentum cut, 'domain-warp' for a dreamy/"
+        "melting shift. Omit it on every other scene. Stay ruthless: most scenes want a "
+        "plain 'cut' and zero or one effect. Return ONLY the JSON object from 'Your "
         "storyboard output contract'."
     )
 
@@ -653,9 +665,17 @@ def assemble_storyboard(script: dict, style_guide: dict, llm_out: dict) -> dict:
         sc["signature_beat"] = is_sig
         # Strip the signature effect from every scene first (it's the beat's alone)...
         sc["effects"] = [e for e in sc["effects"] if e["name"] != SIGNATURE_EFFECT]
+        sc.pop("signature_transition", None)   # the shader belongs to the beat alone
         if is_sig:
             # ...then guarantee it on the beat (prepended so the budget keeps it).
             sc["effects"] = [{"name": SIGNATURE_EFFECT, "params": {}}] + sc["effects"]
+            # Iris's chosen WebGL transition INTO the beat (Mason renders it at assembly).
+            # Honor her pick when it's in the closed vocab; otherwise leave it off and let
+            # Mason apply its taste default — never invent an unknown token.
+            raw_sig = raw_by_no.get(sc["scene_no"]) or raw_by_no.get(i + 1) or {}
+            shader = str(raw_sig.get("signature_transition", "")).strip()
+            if shader in SHADER_TRANSITIONS:
+                sc["signature_transition"] = shader
         mandatory = {SIGNATURE_EFFECT} if is_sig else set()
         sc["transition"], sc["effects"] = apply_motion_budget(
             sc["transition"], sc["effects"], max_per_scene, mandatory)
