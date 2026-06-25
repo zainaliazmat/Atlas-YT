@@ -51,9 +51,11 @@ import pathlib
 import re
 import shutil
 import time
+import zlib
 
-import chat_state  # atomic_write_json / load_json — corruption-safe file helpers
-import hf_tools    # subprocess wrappers around the HyperFrames CLI (gate + render)
+import chat_state       # atomic_write_json / load_json — corruption-safe file helpers
+import diagram_render   # conceptual-diagram renderer (DiagramPlan -> animated flat SVG)
+import hf_tools         # subprocess wrappers around the HyperFrames CLI (gate + render)
                    # NOTE: imported at TOP LEVEL (not lazily) so it resolves during the
                    # atlas loader's import window — a lazy import at call time would fail
                    # after the loader restores sys.path. hf_tools is stdlib-only, so this
@@ -114,7 +116,7 @@ FALLBACK_BODY_FAMILY = "Noto Sans"               # guaranteed-present OFL body f
 LAYOUTS = (
     "centered-statement", "split-screen", "full-bleed-image", "lower-third",
     "data-chart", "quote-card", "map-focus", "list-stack", "comparison-2up",
-    "title-card", "big-number", "timeline",
+    "title-card", "big-number", "timeline", "diagram",
 )
 TRANSITIONS = ("cut", "dip-to-black", "push", "wipe", "match-cut")
 # data-chart sub-kinds (ported from the HF `data-chart` registry block). NOT one of the
@@ -163,12 +165,13 @@ BRAND_CHIPS = {
 # slot for these; for the text-only layouts they are injected as a centered focal layer.
 MEDIA_SLOT_LAYOUTS = frozenset({
     "split-screen", "full-bleed-image", "lower-third", "data-chart", "map-focus",
+    "diagram",
 })
 
-# Photo-hero layouts: a media slot that expects a real PHOTO. (data-chart is excluded —
-# it has its own native-bar-chart fallback and never needs a photo.) When such a scene
+# Photo-hero layouts: a media slot that expects a real PHOTO. (data-chart and diagram are
+# excluded — each renders its own native visual and never needs a photo.) When such a scene
 # has no relevant photo, we prefer a clean text card over a striped placeholder-panel.
-_PHOTO_SLOT_LAYOUTS = MEDIA_SLOT_LAYOUTS - {"data-chart"}
+_PHOTO_SLOT_LAYOUTS = MEDIA_SLOT_LAYOUTS - {"data-chart", "diagram"}
 
 
 def _should_text_forward(ctx: dict) -> bool:
@@ -426,6 +429,9 @@ def resolve_scene_assets(asset_manifest: dict, scene_no: int,
             "uri": uri, "status": status, "present": present,
             "placeholder": placeholder, "integrity_flag": integrity_flag,
             "label": str(a.get("asset_id") or "asset"),
+            # a conceptual-diagram asset carries a cached DiagramPlan, not a file (D16);
+            # pass it through so Mason can compose the diagram at render time.
+            "plan": a.get("plan"),
         })
     return out
 
@@ -1024,6 +1030,31 @@ def _render_chart(kind: str, data: list) -> str:
     return render_bar_chart(data)
 
 
+def _layout_diagram(ctx):
+    # A conceptual-diagram scene: compose the cached DiagramPlan as animated flat SVG
+    # (title on top, diagram-frame below — caption-clear by construction, like data-chart).
+    # The diagram's reveal rides the paused master timeline. Falls back to the standard
+    # media/placeholder when there's no plan, the plan is invalid, or this is a brand scene.
+    plan = ctx.get("diagram_plan")
+    inner, tl = None, []
+    if plan and not ctx.get("brand_keys"):
+        palette = ctx.get("palette") or {}
+        try:
+            res = diagram_render.render_diagram(
+                plan, seed=int(ctx.get("diagram_seed", 0)),
+                ink=palette.get("text", "#F5F5F5"),
+                accent=ctx.get("highlight", SIGNATURE_HIGHLIGHT))
+            inner, tl = res["svg"], res["tl"]
+        except ValueError:
+            inner = None       # invalid plan -> graceful fallback below
+    if inner is None:
+        inner = _media_html(ctx)
+    return {"css": "", "html":
+            f'<div class="layout diagram">'
+            f'<h2 class="scene-title">{_esc(ctx["title"])}</h2>'
+            f'<div class="diagram-frame">{inner}</div></div>', "tl": tl}
+
+
 def _layout_quote(ctx):
     return {"css": "", "html":
             f'<div class="layout quote-card"><blockquote class="scene-title">'
@@ -1144,6 +1175,7 @@ LAYOUT_BUILDERS = {
     "map-focus": _layout_map_focus, "list-stack": _layout_list_stack,
     "comparison-2up": _layout_comparison, "title-card": _layout_title_card,
     "big-number": _layout_big_number, "timeline": _layout_timeline,
+    "diagram": _layout_diagram,
 }
 
 
@@ -1406,6 +1438,14 @@ _BASE_CSS = (
     ".pie-chart{width:100%;height:100%;max-height:78%;}"
     ".pie-chart .pie-lbl{fill:#0d0d0d;font-size:30px;font-weight:800;}"
     ".pie-chart .pie-pct{fill:#0d0d0d;font-size:26px;font-weight:600;}"
+    # Conceptual DIAGRAM (DiagramPlan -> animated flat SVG; title on top, frame below).
+    ".diagram{flex-direction:column;gap:40px;}"
+    ".diagram .diagram-frame{width:100%;flex:1;display:flex;align-items:center;"
+    "justify-content:center;min-height:0;}"
+    ".diagram-svg{width:100%;height:100%;max-height:82%;}"
+    # draw-on edges: natural state is fully drawn (offset 0); the timeline tweens FROM 1.
+    ".diagram-svg .dg-edge{stroke-dasharray:1;stroke-dashoffset:0;}"
+    ".diagram-svg .dg-label{font-size:34px;font-weight:700;}"
     # Brand chips (issue #2, Direction A): a clean logo card — the real inline SVG mark
     # over the model name, framed by the brand color. A row of them when several models
     # appear (the matchup); dim cards de-emphasize a scene's non-winners. Static —
@@ -1707,6 +1747,12 @@ def _scene_ctx(n, script_scene, style_guide, board_scene, segments, scene_assets
         "chart_kind": (board_scene.get("chart_kind")
                        if board_scene.get("chart_kind") in CHART_KINDS else "bar"),
         "hero_stat": hero_stat, "timeline_data": timeline_data,
+        # conceptual-diagram plan (cached by Magpie) + a stable per-scene seed for any
+        # baked "random" value (D16/§7: seed = stable hash of the scene id, never random).
+        "diagram_plan": next((a.get("plan") for a in resolved
+                              if a.get("type") in ("diagram", "diagram-svg") and a.get("plan")),
+                             None),
+        "diagram_seed": zlib.crc32(f"scene-{n:02d}".encode()),
     }
 
 

@@ -89,6 +89,7 @@ LAYOUTS = (
     "title-card",           # the cold-open / chapter card
     "big-number",           # a single dominant statistic, hero scale (the Vox big number)
     "timeline",             # a horizontal SVG baseline of chronological / process nodes
+    "diagram",              # a conceptual illustration (boxes/arrows/glyphs) from a DiagramPlan
 )
 TRANSITIONS = (
     "cut",            # the default — zero motion
@@ -508,7 +509,8 @@ def _build_storyboard_prompt(script: dict, style_guide: dict) -> str:
         "/ on_screen_text density / claims. Layout heuristics: a single dominant "
         "statistic -> 'big-number'; a chronological history or an ordered process "
         "-> 'timeline'; a magnitude comparison of several numbers -> 'data-chart'; a "
-        "head-to-head -> 'comparison-2up'. On a 'data-chart' scene set chart_kind from "
+        "head-to-head -> 'comparison-2up'; a conceptual relationship/process/how-it-works "
+        "illustration with NO numbers (boxes, arrows, glyphs) -> 'diagram'. On a 'data-chart' scene set chart_kind from "
         "CHART_KINDS: 'bar' for category magnitude (default), 'line' for a trend over an "
         "ordered sequence (>=2 points), 'pie' for parts of a whole. Define its shots (each a `kind` + a "
         "content description — you reference assets, you do NOT resolve URLs or "

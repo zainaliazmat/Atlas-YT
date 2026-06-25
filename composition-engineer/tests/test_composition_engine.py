@@ -864,6 +864,41 @@ def test_unknown_chart_kind_is_rejected():
 
 
 # ----------------------------------------------------------------------
+# Conceptual diagrams: the `diagram` layout composes a cached DiagramPlan as animated
+# flat SVG (Magpie plans off the render path; Mason renders deterministically).
+# ----------------------------------------------------------------------
+_DIAGRAM_PLAN = {"layout_hint": "left-to-right", "components": [
+    {"id": "g", "type": "labeled-box", "label": "Goal", "of": "document"},
+    {"id": "b", "type": "speech-bubble", "label": "LLM", "of": "brain", "to": ["t"]},
+    {"id": "t", "type": "glyph", "label": "Tools", "of": "gear"}]}
+
+
+def test_diagram_layout_composes_the_plan_and_self_scans_clean():
+    ctx = _ctx(layout="diagram", signature=False, effects=[], assets=[],
+               diagram_plan=_DIAGRAM_PLAN, diagram_seed=777)
+    html = engine.compose_scene_html(ctx)
+    assert "diagram-svg" in html and "dg-node" in html
+    assert 'class="layout diagram"' in html
+    assert engine.scan_determinism(html) == []
+
+
+def test_diagram_scene_is_byte_deterministic():
+    ctx = dict(layout="diagram", diagram_plan=_DIAGRAM_PLAN, diagram_seed=777)
+    assert engine.compose_scene_html(_ctx(**ctx)) == engine.compose_scene_html(_ctx(**ctx))
+
+
+def test_diagram_layout_falls_back_when_plan_is_invalid_or_absent():
+    # invalid plan -> graceful fallback (placeholder/media), never a crash or bare title
+    bad = _ctx(layout="diagram", signature=False, effects=[], assets=[],
+               diagram_plan={"components": [{"id": "x", "type": "nope"}]}, diagram_seed=1)
+    html = engine.compose_scene_html(bad)
+    assert "dg-node" not in html and engine.scan_determinism(html) == []
+    # no plan at all -> also fine
+    none = _ctx(layout="diagram", signature=False, effects=[], assets=[])
+    assert engine.scan_determinism(engine.compose_scene_html(none)) == []
+
+
+# ----------------------------------------------------------------------
 # C4 — caption legibility: a scrim/background panel behind the caption text
 # ----------------------------------------------------------------------
 def test_captions_have_a_legibility_scrim():
