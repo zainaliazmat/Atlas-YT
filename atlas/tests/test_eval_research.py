@@ -24,7 +24,8 @@ def _target():
 
 def test_research_flag_threads_to_delegate(monkeypatch):
     captured = {}
-    def fake_delegate(target, direction, preserve, *, research=False):
+    def fake_delegate(target, direction, preserve, *, research=False,
+                      roundtable_context=None):
         captured["research"] = research
         return {"addendum": "## note\nTry a researched technique.\n",
                 "coach": "editorial_coach", "source": "llm-research"}

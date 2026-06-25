@@ -42,6 +42,7 @@ class ProductionCoachAdapter(Adapter):
                 measured_value=params.get("measured_value"),
                 owner=params.get("owner", "") or "",
                 research=bool(params.get("research", False)),
+                roundtable_context=params.get("roundtable_context"),
             )
         except Exception as exc:
             if progress is not None:

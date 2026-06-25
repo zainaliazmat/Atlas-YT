@@ -29,6 +29,7 @@ from eval.types import EvalContext, Measurement
 from eval.analyzers import audio as audio_an
 from eval.analyzers import video as video_an
 from eval.analyzers import text as text_an
+from eval.analyzers import roundtable as roundtable_an
 from eval import judged as judged_an
 from eval.tracking import TrackingStore
 
@@ -99,6 +100,15 @@ def run_inspection(project_dir: str | Path, *, chat_fn: Optional[Callable] = Non
         "analyzer_errors": analyzer_errors,
         "generated_at": ts,
     })
+
+    # Roundtable process diagnostics (a SIDE CHANNEL, not rubric-gated). When a
+    # specialist's internal Critic→Researcher→Craftsman review left a
+    # roundtable_log.json, attach the process read-out so the coaches + CEO can
+    # see HOW the work was made, not just the final scores. Absent log ⇒ no-op.
+    rt_diagnostics = roundtable_an.analyze_roundtable(ctx.dir)
+    scorecard["roundtable_analyzed"] = rt_diagnostics is not None
+    if rt_diagnostics is not None:
+        scorecard["roundtable"] = rt_diagnostics
 
     if write:
         _atomic_write_json(ctx.dir / "eval_scorecard.json", scorecard)

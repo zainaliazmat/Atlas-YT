@@ -64,7 +64,8 @@ def test_injected_coach_fn_authors_addendum():
 
 def test_use_coaches_delegates_to_owning_coach(monkeypatch):
     calls = {}
-    def fake_delegate(target, direction, preserve, *, research=False):
+    def fake_delegate(target, direction, preserve, *, research=False,
+                      roundtable_context=None):
         calls["stage"] = target["stage"]
         return {"addendum": "## Coach note (Quill)\nTighten the claims.\n",
                 "coach": "editorial_coach", "source": "llm"}

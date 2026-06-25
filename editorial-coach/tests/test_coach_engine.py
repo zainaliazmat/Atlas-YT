@@ -103,3 +103,43 @@ def test_domain_and_coached_stages():
     assert coach_engine.DOMAIN == "editorial"
     for stage in ("research", "script", "factcheck", "assets"):
         assert stage in coach_engine.COACHED_STAGES
+
+
+# ----------------------------------------------------------------------
+# Roundtable process data — folded into the prompt when supplied (additive)
+# ----------------------------------------------------------------------
+def test_roundtable_context_reaches_the_prompt():
+    seen = {}
+
+    def chat_fn(system, user):
+        seen["user"] = user
+        return "Strengthen the Critic's eye on scene 1."
+
+    ctx = {
+        "roundtable_used": True, "specialist": "Marlow", "process_health": "healthy",
+        "criticisms": [{"severity": "critical", "principle": "Rule 1",
+                        "diagnosis": "the hook buries the surprise"}],
+        "research_quality": {"total_findings": 2, "findings_with_sources": 1},
+        "craftsman_impact": {"scenes_modified": 0},
+    }
+    result = coach_engine.propose_addendum(
+        band_id="script:hook_strength", direction="RAISE it", owner="Marlow",
+        chat_fn=chat_fn, roundtable_context=ctx)
+    assert result["source"] == "llm"
+    # the internal process record was handed to the brain
+    assert "INTERNAL CREATIVE PROCESS DATA" in seen["user"]
+    assert "the hook buries the surprise" in seen["user"]
+    assert "Marlow" in seen["user"]
+
+
+def test_no_roundtable_context_leaves_prompt_clean():
+    seen = {}
+
+    def chat_fn(system, user):
+        seen["user"] = user
+        return "Tighten the hook."
+
+    coach_engine.propose_addendum(
+        band_id="script:hook_strength", direction="RAISE it", chat_fn=chat_fn)
+    # absent context -> no process block (purely additive)
+    assert "INTERNAL CREATIVE PROCESS DATA" not in seen["user"]
