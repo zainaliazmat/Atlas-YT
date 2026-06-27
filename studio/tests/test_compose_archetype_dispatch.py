@@ -154,7 +154,12 @@ class TestRegistryDispatch:
 
     def test_missing_registry_falls_through_to_existing_beat(self, tmp_path, monkeypatch):
         """When REGISTRY has no builder for the archetype, _scene_beat uses the
-        existing generic beat logic unchanged (the safe fallthrough)."""
+        existing generic beat logic unchanged (the safe fallthrough).
+
+        Updated (C6): centered-statement now has a builder; we use 'map-focus'
+        (a valid vocab archetype with no Phase-C builder yet) via a storyboard
+        tag to exercise the same fallthrough code path.
+        """
         from studio import config
         monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path)
         pdir = tmp_path / "proj"
@@ -174,9 +179,12 @@ class TestRegistryDispatch:
         c.spray = c.colors.get("spray", "#2e5e1f")
         c.ink = c.colors.get("ink", "#1f1f1e")
         c._inlines = []
-        c._storyboard = {}
-        # REGISTRY is empty (no builders yet in B3), so existing logic runs
-        assert "centered-statement" not in A.REGISTRY
+        # Force a storyboard tag to 'map-focus' — a vocab archetype with no builder yet.
+        # _archetype_for() uses str(scene_no) as the key.
+        c._storyboard = {"5": "map-focus"}
+        assert "map-focus" not in A.REGISTRY, (
+            "'map-focus' must not be in REGISTRY for this fallthrough test to be valid"
+        )
         scene = {"scene_no": 5, "on_screen_text": "THE MACHINE",
                  "point": "p", "narration": "n", "duration_est_sec": 6, "claims": []}
         beat, extra_html = c._scene_beat(4, scene, 24.0)

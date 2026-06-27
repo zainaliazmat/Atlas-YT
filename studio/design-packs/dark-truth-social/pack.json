@@ -180,6 +180,14 @@
       "exports": [
         "makeShatterGlitch"
       ]
+    },
+    {
+      "id": "strike-stamp",
+      "partial": "motion-library/strike-stamp.js",
+      "kind": "js",
+      "exports": [
+        "makeStrikeStamp"
+      ]
     }
   ],
   "partials": {
