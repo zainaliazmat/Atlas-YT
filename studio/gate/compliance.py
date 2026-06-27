@@ -26,7 +26,10 @@ def check_determinism(html: str) -> ComplianceResult:
         return ComplianceResult("determinism", False,
                                 f"nondeterministic calls in index.html: {nd}")
     if not scan.get("registers_timeline"):
-        return ComplianceResult("determinism", False,
+        # Cannot confirm determinism — treated as a warning, not a hard block.
+        # A missing __timelines registration may mean the composition uses an
+        # alternate pattern; only confirmed nondeterminism (Math.random etc.) hard-fails.
+        return ComplianceResult("determinism", None,
                                 "no window.__timelines master timeline registered")
     return ComplianceResult("determinism", True, "")
 

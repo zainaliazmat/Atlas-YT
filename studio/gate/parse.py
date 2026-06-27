@@ -6,15 +6,15 @@ from __future__ import annotations
 import re
 
 _SECTION_RE = re.compile(
-    r'<section\b[^>]*\bid="(?P<id>s\d+)"[^>]*\bclass="[^"]*\bscene\b[^"]*"[^>]*>'
+    r'''<section\b[^>]*\bid=["'](?P<id>s\d+)["'][^>]*\bclass=["'][^"']*\bscene\b[^"']*["'][^>]*>'''
     r'(?P<body>.*?)</section>', re.DOTALL | re.IGNORECASE)
 
 # Beat/layout tokens we recognize in the choreography + markup. Order = priority.
 _BEAT_TOKENS = [
     ("count-up", r'count-host|countUp|count-up'),
-    ("orbit", r'makeOrbitCluster|class="[^"]*orbit'),
+    ("orbit", r'''makeOrbitCluster|class=["'][^"']*orbit'''),
     ("bell", r'\bbell\b|notif'),
-    ("quote-cards", r'quoteCards|class="[^"]*cards'),
+    ("quote-cards", r'''quoteCards|class=["'][^"']*cards'''),
     ("shatter", r'shatter|crumble'),
     ("drain", r'grayscale|drain'),
     ("checklist", r'checklist|checkmark'),
