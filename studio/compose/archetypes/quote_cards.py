@@ -47,7 +47,7 @@ _SWEEP_DUR     = 0.45   # highlighter-swipe duration per card
 _ENTRY_Y       = 28     # pixels each card rises from on entry
 
 
-def _build_beats_js(scene: dict, sid: str, color: str) -> str:
+def _build_beats_js(scene: dict, sid: str, color: str, at_base: float = 0.6) -> str:
     """Return inline GSAP choreography JS for the quote-card scene.
 
     For each `.quote-card` inside `#<sid>`:
@@ -56,16 +56,20 @@ def _build_beats_js(scene: dict, sid: str, color: str) -> str:
 
     Uses the `tl` variable (master timeline) injected by the Composer.
     Deterministic: constants only, no RNG/Date/fetch.
+
+    ``at_base`` is the scene's authored start time (``ctx["at"]``); tweens are
+    anchored relative to it so they land in the correct scene window, not at t=0.
     """
     lines = [
         f"// quote-card archetype — scene #{scene.get('scene_no', '?')} sid={sid}",
         f"(function() {{",
         f"  var _sid = {repr(sid)};",
         f"  var _color = {repr(color)};",
+        f"  var _base = {at_base};",
         f"  var _cards = document.querySelectorAll('#' + _sid + ' .quote-card');",
         f"  for (var _i = 0; _i < _cards.length; _i++) {{",
         f"    var _card = _cards[_i];",
-        f"    var _at = _i * {_STAGGER_ENTRY};",
+        f"    var _at = _base + _i * {_STAGGER_ENTRY};",
         # parallax entry: card rises into view
         f"    tl.from(_card, {{ y: {_ENTRY_Y}, opacity: 0, duration: {_ENTRY_DUR},"
         f" ease: 'power2.out' }}, _at);",
@@ -104,11 +108,12 @@ def build(scene: dict, ctx: dict) -> dict:
     Returns:
         {"html": str, "beats_js": str, "token": str}
     """
-    sid    = ctx.get("sid", "s0")
-    color  = ctx.get("spray", "var(--spray,#2e5e1f)")
+    sid     = ctx.get("sid", "s0")
+    color   = ctx.get("spray", "var(--spray,#2e5e1f)")
+    at_base = ctx.get("at", 0.6)
 
     html_block = _build_html(scene)
-    beats_js   = _build_beats_js(scene, sid, color)
+    beats_js   = _build_beats_js(scene, sid, color, at_base)
 
     return {
         "html":     html_block,

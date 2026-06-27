@@ -146,7 +146,7 @@ class TestRegistryDispatch:
             c._storyboard = {}
             scene = {"scene_no": 1, "on_screen_text": "THE MACHINE",
                      "point": "p", "narration": "n", "duration_est_sec": 6, "claims": []}
-            beat, extra_html = c._scene_beat(0, scene)
+            beat, extra_html = c._scene_beat(0, scene, 0.0)
             assert len(called) == 1, "builder should have been called once"
             assert "<div class='custom-archetype'>" in extra_html or "custom-archetype" in extra_html
         finally:
@@ -179,6 +179,6 @@ class TestRegistryDispatch:
         assert "centered-statement" not in A.REGISTRY
         scene = {"scene_no": 5, "on_screen_text": "THE MACHINE",
                  "point": "p", "narration": "n", "duration_est_sec": 6, "claims": []}
-        beat, extra_html = c._scene_beat(4, scene)
+        beat, extra_html = c._scene_beat(4, scene, 24.0)
         # scene index 4 = not i==0, not numeric, not social → underline
         assert beat["kind"] == "underline"

@@ -52,3 +52,17 @@ def classify(scene: dict) -> str:
     if any(w in ost.lower() for w in ("checklist", "steps", "off", "on ")):
         return "list-stack"
     return "centered-statement"
+
+
+def _load_builders() -> None:
+    """Import every builder submodule so its register() side-effect populates REGISTRY
+    when this package is imported (compose imports `from . import archetypes`)."""
+    import importlib
+    import pkgutil
+    for mod in pkgutil.iter_modules(__path__):
+        if mod.name.startswith("_"):
+            continue
+        importlib.import_module(f"{__name__}.{mod.name}")
+
+
+_load_builders()

@@ -304,7 +304,7 @@ class Composer:
             scene.get("on_screen_text") or scene.get("point") or "")
         claims_html = _content.render_claims(scene)
 
-        beat, extra_html = self._scene_beat(i, scene)
+        beat, extra_html = self._scene_beat(i, scene, author_start)
         # the .clip window is the NEW VO window (it already overlaps the next seam)
         sec = (
             f'      <section id="{sid}" class="scene clip" data-start="{_fmt(sec_start)}" '
@@ -321,7 +321,7 @@ class Composer:
         return {"sid": sid, "i": i, "start": author_start, "dur": author_dur,
                 "beat": beat, "scene": scene, "html": sec}
 
-    def _scene_beat(self, i: int, scene: dict) -> tuple[dict, str]:
+    def _scene_beat(self, i: int, scene: dict, author_start: float) -> tuple[dict, str]:
         """Decide the bespoke beat for a scene from its content. Returns
         (beat_descriptor, extra_scene_html).
 
@@ -341,11 +341,12 @@ class Composer:
                 "ink": self.ink,
                 "width": self.width,
                 "height": self.height,
-                "at": round(0.6, 3),
+                "at": round(author_start + 0.6, 3),
             }
             result = archetypes.REGISTRY[arch](scene, ctx)
-            beat = {"kind": arch, "token": result.get("token", arch)}
-            return beat, result.get("html", "") + result.get("beats_js", "")
+            beat = {"kind": arch, "token": result.get("token", arch),
+                    "beats_js": result.get("beats_js", "")}
+            return beat, result.get("html", "")        # html only -> section body
 
         # --- existing generic beat logic (unchanged) -------------------------
         text = f"{scene.get('on_screen_text','')} {scene.get('narration','')}".lower()
@@ -516,6 +517,9 @@ class Composer:
         window.__timelines["{self.slug}"] = tlReal;"""
 
     def _beat_js(self, p, count_factory, bell_factory) -> str:
+        beat = p["beat"]
+        if beat.get("beats_js"):
+            return beat["beats_js"]
         sid, start, beat = p["sid"], p["start"], p["beat"]
         at = round(start + 0.6, 3)
         kind = beat["kind"]
