@@ -92,6 +92,12 @@ def fake_review_with_blocker(slug, mode):
         "apply": {"applied": []}}
 
 
+def fake_storyboard(script, pdir):
+    """Offline storyboard seam — classify() fallback for every scene, no Iris call."""
+    from studio import storyboard as sb_mod
+    return sb_mod.tag_archetypes(script, pdir, iris_fn=lambda s, p: {})
+
+
 def fake_motion_pass(slug):
     return {"any_flag": False, "scenes": []}
 
@@ -107,7 +113,8 @@ def fake_gate_pass(slug):
 
 def _seams(**over):
     base = dict(research_fn=fake_research, script_fn=fake_script,
-                factcheck_fn=fake_factcheck_pass, vo_fn=fake_vo, compose_fn=fake_compose,
+                factcheck_fn=fake_factcheck_pass, storyboard_fn=fake_storyboard,
+                vo_fn=fake_vo, compose_fn=fake_compose,
                 render_fn=make_fake_render(), review_fn=fake_review_clean,
                 motion_fn=fake_motion_pass, gate_fn=fake_gate_pass)
     base.update(over)
