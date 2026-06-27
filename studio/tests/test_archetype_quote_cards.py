@@ -172,6 +172,32 @@ def test_scene_signature_not_plain():
     )
 
 
+# === (c2) non-quote "cards" class must NOT be mislabelled ===================
+
+def test_non_quote_cards_class_not_mislabelled_as_quote_cards():
+    """Regression guard for the greedy bare-`cards` terminal that was removed.
+
+    A scene whose ONLY card-ish class is a non-quote class ending in 'cards'
+    (e.g. 'stat-cards') must NOT be labelled 'quote-cards'.  Before the fix the
+    pattern `class=["'][^"']*cards` would match any class ending in 'cards',
+    causing false positives that corrupt the motion_variety distinctness metric.
+    After the fix only 'quoteCards', 'makeHighlighterSwipe', or 'quote-card'
+    class names trigger the 'quote-cards' token.
+    """
+    from studio.gate.parse import scene_signature
+
+    # Scene with stat-cards class only — no quoteCards / makeHighlighterSwipe / quote-card
+    inner_html = "<div class='stat-cards'><p>Some stats here</p></div>"
+    choreo_js  = ""
+    sid        = "s3"
+
+    sig = scene_signature(inner_html, choreo_js, sid)
+    assert sig != "quote-cards", (
+        f"scene_signature returned 'quote-cards' for a stat-cards scene — "
+        f"the greedy 'cards' pattern is still active (got {sig!r})"
+    )
+
+
 # === (d) parity regression guard ============================================
 
 def test_parity_invariant_still_holds():

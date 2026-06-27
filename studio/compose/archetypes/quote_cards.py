@@ -57,16 +57,6 @@ def _build_beats_js(scene: dict, sid: str, color: str) -> str:
     Uses the `tl` variable (master timeline) injected by the Composer.
     Deterministic: constants only, no RNG/Date/fetch.
     """
-    claims = scene.get("claims") or []
-    # Count attributed quote claims to know how many cards there will be
-    from studio.gate.parse import is_attributed_quote
-    n_quotes = sum(
-        1 for c in claims
-        if is_attributed_quote((c.get("text") if isinstance(c, dict) else c) or "")
-    )
-    # Even if 0 quotes we still emit a safe (no-op) block so the beats_js never breaks
-    n_cards = max(n_quotes, 1)
-
     lines = [
         f"// quote-card archetype — scene #{scene.get('scene_no', '?')} sid={sid}",
         f"(function() {{",
