@@ -1,5 +1,9 @@
 {
   "default_floor": 3.0,
+  "_notes": {
+    "calibration": "PROVISIONAL — tuned to a single anchor PAIR (LOW: studio/projects/dark-truth-v2 draft vs HIGH: reference/dark-truth-social). motion_energy.floor (1.0, lenient — the structural dims carry the blocking weight) and dead_air.floor (4.0, strict) are n=1 fits. Recalibrate against a corpus of known-good/known-bad videos before trusting the bands beyond this pair.",
+    "compliance_charter": "overflow_blocks/likeness_blocks are WARN-ONLY today (false): an UNAVAILABLE check (no Node-22 `npx hyperframes inspect`; no vision_fn wired) does not block. A REAL finding (passed=False) always blocks. GAP: the no-real-person-likeness check is INERT until a vision_fn is wired into gate.score()/collect_evidence — until then likeness is never actually evaluated. Flip the *_blocks flags to true (and wire the toolchain) when the studio runs where they are reliably available; build_scorecard already honors the flag (a required-but-unavailable check then blocks)."
+  },
   "dimensions": {
     "motion_energy":       {"floor": 1.0, "weight": 0.15, "band": [1.5, 6.0]},
     "motion_variety":      {"floor": 3.0, "weight": 0.25, "band": [0.4, 1.0]},

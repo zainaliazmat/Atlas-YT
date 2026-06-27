@@ -30,6 +30,25 @@ def test_all_pass_is_pass():
     assert sc["verdict"] == "PASS"
 
 
+def test_unavailable_required_compliance_blocks_when_threshold_flips_it_on():
+    # warn-only by default (overflow_blocks=false) → an unavailable overflow check PASSes
+    # (see test_all_pass_is_pass). But if a CEO flips overflow_blocks=true in thresholds,
+    # the same unavailable check must BLOCK (not silently pass) and surface the reason.
+    t_strict = {"dimensions": dict(T["dimensions"]),
+                "compliance": {"overflow_blocks": True, "likeness_blocks": False}}
+    dims = [DimResult("motion_variety", 5.0, 3.0, True, [], {})]
+    comp = [ComplianceResult("determinism", True, ""),
+            ComplianceResult("overflow", None, "hyperframes inspect unavailable")]
+    sc = scorecard.build_scorecard(dims, comp, t_strict)
+    assert sc["verdict"] == "BLOCKED"
+    assert any("overflow" in r.lower() and "required" in r.lower() for r in sc["reasons"])
+
+    # and with the SHIPPED warn-only thresholds the identical input still PASSes
+    t_warn = {"dimensions": dict(T["dimensions"]),
+              "compliance": {"overflow_blocks": False, "likeness_blocks": False}}
+    assert scorecard.build_scorecard(dims, comp, t_warn)["verdict"] == "PASS"
+
+
 def test_score_with_explicit_paths_uses_injected_evidence():
     # the reference path: no studio project, evidence injected directly
     ev = {"index_html": "<section id='s1' class='scene clip'><div class='lead'>A</div></section>",

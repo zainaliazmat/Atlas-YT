@@ -51,7 +51,11 @@ def build_scorecard(dims, compliance, t: dict) -> dict:
         dim_rows.append({"name": d.name, "score": d.score, "floor": d.floor,
                          "passed": d.passed, "diagnostics": d.diagnostics, "detail": d.detail})
 
-    blocked = any(r["passed"] is False for r in comp_rows) or \
+    # Honor the per-row `blocking` flag (not just passed is False): a compliance check
+    # marked required-when-unavailable (overflow_blocks / likeness_blocks) must flip the
+    # verdict, not merely log a reason. With the shipped warn-only thresholds those flags
+    # are false, so `blocking` reduces to `passed is False` and behavior is unchanged.
+    blocked = any(r["blocking"] for r in comp_rows) or \
         any(d.passed is False for d in dims)
     overall = round(weighted / wsum, 3) if wsum else None
     return {"verdict": "BLOCKED" if blocked else "PASS",

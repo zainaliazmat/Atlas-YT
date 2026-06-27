@@ -254,3 +254,23 @@ documents the exact line refs and the technique teardown — it is the porting g
 - **Compose refactor surface** — the archetype refactor touches the Composer's core authoring
   loop; the determinism guarantee (`_enforce_determinism`) is the backstop and every archetype
   is determinism-tested.
+
+## Post-build notes (Plan 1 shipped 2026-06-28)
+
+- **Calibration is provisional (n=1 anchor pair).** Thresholds were tuned to a single
+  LOW/HIGH pair (`dark-truth-v2` draft vs `dark-truth-social`). `motion_energy.floor=1.0`
+  (lenient; structural dims carry the blocking weight) and `dead_air.floor=4.0` (strict) are
+  n=1 fits — recorded in `studio/gate/thresholds.json` `_notes.calibration`. Recalibrate with
+  a corpus before trusting the bands beyond this pair.
+- **Compliance charter — likeness is inert until a `vision_fn` is wired.** `overflow_blocks`
+  and `likeness_blocks` are warn-only today (false): an *unavailable* check does not block; a
+  *real* finding always does. The no-real-person-likeness check is **not actually evaluated**
+  until a `vision_fn` is wired into `gate.score()` / `collect_evidence`. Recorded in
+  `thresholds.json` `_notes.compliance_charter`. `build_scorecard` honors the `*_blocks` flags,
+  so flipping them on (with the toolchain wired) makes a required-but-unavailable check block —
+  the fail-open hole the first reviews flagged is closed.
+- **`motion_variety` token vocab must grow with the compose archetype library (Plan 2).** The
+  real reference passes at a thin margin (0.78 ratio vs ~0.76 effective floor) because 2 of its
+  bespoke beats aren't yet in the beat-token vocabulary. Plan 2 makes "a new archetype ships
+  with its `motion_variety` token in the same commit" a parity-tested invariant so genuinely
+  varied future videos are never false-blocked.
