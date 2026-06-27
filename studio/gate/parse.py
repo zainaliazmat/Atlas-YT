@@ -14,7 +14,7 @@ _BEAT_TOKENS = [
     ("count-up", r'count-host|countUp|count-up'),
     ("orbit", r'''makeOrbitCluster|class=["'][^"']*orbit'''),
     ("bell", r'\bbell\b|notif'),
-    ("quote-cards", r'''quoteCards|class=["'][^"']*cards'''),
+    ("quote-cards", r'''quoteCards|makeHighlighterSwipe|class=["'][^"']*quote-card'''),
     ("shatter", r'shatter|crumble'),
     ("drain", r'grayscale|drain'),
     ("checklist", r'checklist|checkmark'),

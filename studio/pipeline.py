@@ -34,12 +34,13 @@ SCHEMA_VERSION = "studio-1"
 STAGES: tuple[str, ...] = (
     "research",
     "script",
-    "factcheck",   # GATE (hard, un-approvable on "block")
+    "factcheck",    # GATE (hard, un-approvable on "block")
+    "storyboard",   # Iris tags each scene with an archetype from the closed LAYOUTS vocab
     "vo",
     "compose",
     "draft",
     "review",
-    "final",       # GATE (human pause; approvable)
+    "final",        # GATE (human pause; approvable)
 )
 GATES: frozenset[str] = frozenset({"factcheck", "final"})
 
@@ -321,6 +322,7 @@ def produce(
     research_fn=None,
     script_fn=None,
     factcheck_fn=None,
+    storyboard_fn=None,
     vo_fn=None,
     compose_fn=None,
     render_fn=None,
@@ -414,6 +416,23 @@ def produce(
         return state
 
     pack_id = run_config["pack_id"]
+
+    # 3b. storyboard — Iris tags each scene with an archetype (compose reads the tag)
+    if _stage_status(state, "storyboard") != "done":
+        from . import storyboard as sb_mod
+        script = _read_json(pdir / "script.json", {})
+        run_sb = storyboard_fn or (lambda s, d: sb_mod.tag_archetypes(s, d))
+        board = run_sb(script, pdir)
+        _write_json(pdir / "storyboard.json", board)
+        state["artifacts"]["storyboard"] = "storyboard.json"
+        _set_stage(state, "storyboard", "done")
+        _log(state, "storyboard", "scene archetypes tagged",
+             f"{len(board.get('scenes', []))} scenes")
+        _save_state(pdir, state)
+    if stop_after == "storyboard":
+        state["status"] = "stopped_after_storyboard"
+        _save_state(pdir, state)
+        return state
 
     # 4. vo (re-timer) — record VO, conform the NS/ND grid, write vo.grid.json
     if _stage_status(state, "vo") != "done":

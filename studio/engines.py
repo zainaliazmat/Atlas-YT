@@ -125,6 +125,18 @@ def iris_layouts() -> tuple:
     return tuple(getattr(mod, "LAYOUTS"))
 
 
+def storyboard(script: dict, pdir=None) -> dict:  # noqa: ARG001 — pdir accepted for interface symmetry
+    """Run Iris's storyboard planner; returns {scenes:[{scene_no, layout, ...}]}.
+
+    Calls ``art_engine.build_storyboard(script, None)`` (style_guide=None so Iris
+    falls back to her defaults — the studio does not supply a style_guide at this
+    stage). The pdir argument is accepted for interface symmetry but not forwarded
+    (Iris does not write to disk; the pipeline stage writes storyboard.json).
+    """
+    mod = load_engine(config.ART_DIRECTOR_DIR, "art_engine")
+    return mod.build_storyboard(script, None)
+
+
 def audio_hf():
     """Cadence's Kokoro/ffmpeg toolchain wrappers (audio-designer/hf_audio.py).
 

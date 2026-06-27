@@ -29,8 +29,8 @@ HIGH_EV = {
         f"<section id='s{i}' class='scene clip'><div class='lead'>L{i}</div>{extra}</section>"
         for i, extra in enumerate(
             ["<span class='count-host'></span>", "<div class='fx'>portrait</div>",
-             "<div class='cards'></div>", "<div class='fx'>phone</div>",
-             "<div class='cards'>quote</div>", "<div class='shatter'></div>",
+             "<div class='quote-card'></div>", "<div class='fx'>phone</div>",
+             "<div class='quote-card'>quote</div>", "<div class='shatter'></div>",
              "<div class='strike'></div>", "<div class='checklist'></div>",
              "<div class='signature'></div>"], start=1))
     + "<script>countUp();makeOrbitCluster();quoteCards();window.__timelines[\"main\"]=gsap.timeline();</script>",
