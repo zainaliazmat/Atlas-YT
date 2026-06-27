@@ -36,3 +36,6 @@ atlas/projects/_eval_holdout_tmp/
 # Control Room runtime settings (dashboard-owned, not source)
 atlas/dashboard/control_room_settings.json
 .gstack/
+
+# studio render outputs (large mp4/wav/png; reproducible from the engine)
+studio/projects/

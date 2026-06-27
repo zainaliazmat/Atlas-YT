@@ -1,0 +1,26 @@
+{
+  "id": "clean-explainer",
+  "name": "Clean Tech Explainer",
+  "blurb": "Bright, minimal sans-serif explainer: white canvas, faint grid, soft-shadow cards, single blue accent. Reuses the shared motion mechanism.",
+  "aspect_defaults": { "width": 1920, "height": 1080, "fps": 30 },
+  "fonts": [
+    { "family": "Inter", "weights": [400, 700, 800], "role": "body", "file": "fonts/Inter-VariableFont.ttf", "source": "Google Fonts" },
+    { "family": "Space Mono", "weights": [400], "role": "mono", "file": "fonts/SpaceMono-Regular.ttf", "source": "Google Fonts" }
+  ],
+  "required_assets": [
+    { "id": "font-inter", "kind": "font", "license": "OFL", "ref": "fonts/Inter-VariableFont.ttf", "note": "heading / subhead / body" },
+    { "id": "font-space-mono", "kind": "font", "license": "OFL", "ref": "fonts/SpaceMono-Regular.ttf", "note": "mono labels / captions" }
+  ],
+  "motion_index": [
+    { "id": "retimer", "partial": "_shared/retimer.js", "kind": "js", "exports": ["makeRetimer"] },
+    { "id": "transitions", "partial": "_shared/transitions.js", "kind": "js", "exports": ["makeTransitions"] },
+    { "id": "ticker", "partial": "_shared/ticker.js", "kind": "js", "exports": ["makeTicker"] }
+  ],
+  "partials": {
+    "filters": "partials/filters.html",
+    "base_css": "partials/base.css",
+    "transitions": "_shared/transitions.js",
+    "ticker": "_shared/ticker.js",
+    "retimer": "_shared/retimer.js"
+  }
+}

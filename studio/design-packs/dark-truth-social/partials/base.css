@@ -1,0 +1,132 @@
+/* ============================================================
+   Design Pack: dark-truth-social — base.css
+   Lifted from reference/dark-truth-social/index.html:
+     - the §2 palette CSS custom properties (verbatim values)
+     - the .grain layer + its "alive" animation
+     - the decorative metadata (.v-tag / .reg-ticks / .credit)
+     - the burned-in .vo-cap caption styles
+   Deterministic: no Math.random / Date.now / fetch. The CSS
+   @keyframes below are RNG-free and clock-free.
+
+   NOTE on "alive" motion: the golden reference drives grain drift/
+   breathe/pulse and the reg-tick flicker via GSAP on the seekable
+   timeline (frame-seek-exact). The @keyframes here are a faithful,
+   self-contained CSS approximation so the texture is alive in a
+   plain browser preview; for frame-seek-exact renders the Composer
+   may instead drive .grain / .reg-ticks from the GSAP timeline (see
+   GOLDEN_REFERENCE.md §5). @font-face for the type roles is generated
+   by the Composer from pack.fonts[] — not declared here.
+   ============================================================ */
+
+/* ---- §2 color tokens (palette) ---- */
+:root {
+  --paper: #f2eed6;
+  --paper-shade: #e4e0c8;
+  --ink: #1f1f1e;
+  --charcoal: #3a3a39;
+  --spray: #2e5e1f;
+  --spray-deep: #1a5614;
+  --lime: #8fb573;
+  --paper-line: #c9c5ae;
+}
+
+.mono {
+  font-family: "Space Mono", monospace;
+}
+
+/* ---- Procedural grunge speckle (drifts slowly, multiply ~7%) ---- */
+.grain {
+  position: absolute;
+  inset: -220px;
+  width: calc(100% + 440px);
+  height: calc(100% + 440px);
+  opacity: 0.07;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  z-index: 50;
+  will-change: transform;
+  /* "Texture is alive" — slow drift + subtle scale, plus an opacity breathe.
+     (CSS approximation of the reference's GSAP grain tweens.) */
+  animation: grainDrift 240s linear infinite alternate,
+             grainBreathe 3.6s ease-in-out infinite;
+}
+@keyframes grainDrift {
+  from { transform: translate(0, 0) scale(1); }
+  to   { transform: translate(70px, -45px) scale(1.035); }
+}
+@keyframes grainBreathe {
+  0%, 100% { opacity: 0.07; }
+  50%      { opacity: 0.105; }
+}
+
+/* ---- Decorative metadata (injected into every scene) ---- */
+.v-tag {
+  position: absolute;
+  left: 50px;
+  top: 50%;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  font-size: 15px;
+  letter-spacing: 5px;
+  color: var(--paper-line);
+  white-space: nowrap;
+  z-index: 3;
+}
+.reg-ticks {
+  position: absolute;
+  top: 44px;
+  right: 52px;
+  color: var(--paper-line);
+  z-index: 3;
+  line-height: 0;
+  /* deterministic stepped flicker — "texture is alive" on the corner ticks */
+  animation: regFlicker 0.58s steps(1) infinite;
+}
+@keyframes regFlicker {
+  0%   { opacity: 0.55; }
+  15%  { opacity: 0.92; }
+  40%  { opacity: 0.66; }
+  55%  { opacity: 1; }
+  70%  { opacity: 0.5; }
+  100% { opacity: 0.85; }
+}
+.credit {
+  position: absolute;
+  bottom: 44px;
+  right: 52px;
+  text-align: right;
+  font-size: 13px;
+  line-height: 1.55;
+  letter-spacing: 1px;
+  color: var(--paper-line);
+  z-index: 3;
+}
+.credit .l {
+  display: block;
+}
+
+/* ===== Burned-in VO captions — Space Mono, ink on subtle paper, lower third ===== */
+.vo-cap {
+  position: absolute;
+  left: 50%;
+  bottom: 92px;
+  transform: translateX(-50%);
+  max-width: 1160px;
+  width: max-content;
+  padding: 12px 26px;
+  background: rgba(242, 238, 214, 0.82);
+  border: 1px solid var(--paper-line);
+  box-shadow: 0 5px 0 rgba(31, 31, 30, 0.05);
+  font-family: "Space Mono", monospace;
+  font-weight: 700;
+  font-size: 32px;
+  line-height: 1.3;
+  letter-spacing: 0.3px;
+  color: var(--ink);
+  text-align: center;
+  z-index: 60;
+}
+/* drop captions below a busy lower-centre region (e.g. a grid/calendar) */
+.vo-cap.vo-cap-low {
+  bottom: 46px;
+}

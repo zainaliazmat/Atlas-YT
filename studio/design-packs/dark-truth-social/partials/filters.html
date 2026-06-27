@@ -1,0 +1,49 @@
+<!-- ============================================================
+     Design Pack: dark-truth-social — procedural SVG filters
+     Lifted VERBATIM from reference/dark-truth-social/index.html
+     (the #spray-rough and #halftone <filter> defs). Only the
+     per-instance framework attributes (data-hf-id="hf-...") were
+     dropped — every filter primitive + attribute is unchanged, so
+     these are deterministic and byte-stable (fixed seeds).
+
+     Inject this once at the top of #root. Reference by CSS:
+       filter: url(#spray-rough);   /* rough spray-paint edge */
+       filter: url(#halftone);      /* in-engine 1-bit B&W dither */
+     The pack's .grain layer (base.css) references #grain-noise, also
+     defined here so the whole texture system travels with the pack.
+     ============================================================ -->
+<svg width="0" height="0" style="position: absolute" aria-hidden="true">
+  <defs>
+    <!-- Rough spray edge for hero words / hand-drawn accents -->
+    <filter id="spray-rough" x="-15%" y="-15%" width="130%" height="130%">
+      <feturbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7" result="n" />
+      <fedisplacementmap in="SourceGraphic" in2="n" scale="2.5" xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+
+    <!-- In-engine 1-bit halftone dither: luminance -> contrast -> noise dither
+         -> posterize to 1-bit -> recolor inked pixels to --ink, paper transparent -->
+    <filter id="halftone" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <fecolormatrix type="matrix" values=".299 .587 .114 0 0  .299 .587 .114 0 0  .299 .587 .114 0 0  0 0 0 1 0" result="g" />
+      <fecomponenttransfer in="g" result="c">
+        <fefuncr type="linear" slope="1.5" intercept="0.05" />
+        <fefuncg type="linear" slope="1.5" intercept="0.05" />
+        <fefuncb type="linear" slope="1.5" intercept="0.05" />
+      </fecomponenttransfer>
+      <feturbulence type="fractalNoise" baseFrequency="0.65" numOctaves="1" seed="7" stitchTiles="stitch" result="n2" />
+      <fecolormatrix in="n2" type="saturate" values="0" result="ng" />
+      <fecomposite in="c" in2="ng" operator="arithmetic" k1="0" k2="1" k3="0.35" k4="-0.175" result="mix" />
+      <fecomponenttransfer in="mix" result="bits">
+        <fefuncr type="discrete" tableValues="0 1" />
+        <fefuncg type="discrete" tableValues="0 1" />
+        <fefuncb type="discrete" tableValues="0 1" />
+      </fecomponenttransfer>
+      <fecolormatrix in="bits" type="matrix" values="0 0 0 0 0.122  0 0 0 0 0.122  0 0 0 0 0.118  -1 0 0 0 1" />
+    </filter>
+
+    <!-- Procedural grain speckle (referenced by .grain in base.css) -->
+    <filter id="grain-noise">
+      <feturbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" stitchTiles="stitch" seed="11" />
+      <fecolormatrix type="saturate" values="0" />
+    </filter>
+  </defs>
+</svg>

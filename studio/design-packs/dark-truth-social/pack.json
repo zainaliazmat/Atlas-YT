@@ -1,0 +1,160 @@
+{
+  "id": "dark-truth-social",
+  "name": "Dark Truth Behind the Social Media",
+  "blurb": "Warm-paper grunge editorial: spray-paint hero type, 1-bit halftone cutouts, live grain, news-conveyor ticker, VO-locked choreography.",
+  "aspect_defaults": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30
+  },
+  "fonts": [
+    {
+      "family": "Rubik Spray Paint",
+      "weights": [
+        400
+      ],
+      "role": "hero",
+      "file": "fonts/RubikSprayPaint-Regular.ttf",
+      "source": "Google Fonts"
+    },
+    {
+      "family": "Roboto Slab",
+      "weights": [
+        900
+      ],
+      "role": "slab",
+      "file": "fonts/RobotoSlab-Black.ttf",
+      "source": "Google Fonts"
+    },
+    {
+      "family": "Space Mono",
+      "weights": [
+        400,
+        700
+      ],
+      "role": "mono",
+      "file": "fonts/SpaceMono-Regular.ttf",
+      "source": "Google Fonts"
+    },
+    {
+      "family": "Inter",
+      "weights": [
+        100,
+        900
+      ],
+      "role": "body",
+      "file": "fonts/Inter-VariableFont.ttf",
+      "source": "Google Fonts"
+    },
+    {
+      "family": "Sacramento",
+      "weights": [
+        400
+      ],
+      "role": "signature",
+      "file": "fonts/Sacramento-Regular.ttf",
+      "source": "Google Fonts"
+    }
+  ],
+  "required_assets": [
+    {
+      "id": "font-rubik-spray-paint",
+      "kind": "font",
+      "license": "OFL",
+      "ref": "fonts/RubikSprayPaint-Regular.ttf",
+      "note": "hero grunge display"
+    },
+    {
+      "id": "font-roboto-slab-black",
+      "kind": "font",
+      "license": "OFL",
+      "ref": "fonts/RobotoSlab-Black.ttf",
+      "note": "secondary slab / big numbers"
+    },
+    {
+      "id": "font-space-mono",
+      "kind": "font",
+      "license": "OFL",
+      "ref": "fonts/SpaceMono-Regular.ttf",
+      "note": "mono metadata labels + captions"
+    },
+    {
+      "id": "font-space-mono-bold",
+      "kind": "font",
+      "license": "OFL",
+      "ref": "fonts/SpaceMono-Bold.ttf",
+      "note": "mono bold"
+    },
+    {
+      "id": "font-inter",
+      "kind": "font",
+      "license": "OFL",
+      "ref": "fonts/Inter-VariableFont.ttf",
+      "note": "quote/body sans"
+    },
+    {
+      "id": "font-sacramento",
+      "kind": "font",
+      "license": "OFL",
+      "ref": "fonts/Sacramento-Regular.ttf",
+      "note": "signature flourish"
+    }
+  ],
+  "motion_index": [
+    {
+      "id": "retimer",
+      "partial": "partials/retimer.js",
+      "kind": "js",
+      "exports": [
+        "makeRetimer"
+      ]
+    },
+    {
+      "id": "transitions",
+      "partial": "partials/transitions.js",
+      "kind": "js",
+      "exports": [
+        "makeTransitions"
+      ]
+    },
+    {
+      "id": "ticker",
+      "partial": "partials/ticker.js",
+      "kind": "js",
+      "exports": [
+        "makeTicker"
+      ]
+    },
+    {
+      "id": "outline-self-draw",
+      "partial": "motion-library/outline-self-draw.js",
+      "kind": "js",
+      "exports": [
+        "makeOutlineDraw"
+      ]
+    },
+    {
+      "id": "highlighter-swipe",
+      "partial": "motion-library/highlighter-swipe.js",
+      "kind": "js",
+      "exports": [
+        "makeHighlighterSwipe"
+      ]
+    },
+    {
+      "id": "orbit-cluster",
+      "partial": "motion-library/orbit-cluster.js",
+      "kind": "js",
+      "exports": [
+        "makeOrbitCluster"
+      ]
+    }
+  ],
+  "partials": {
+    "filters": "partials/filters.html",
+    "base_css": "partials/base.css",
+    "transitions": "partials/transitions.js",
+    "ticker": "partials/ticker.js",
+    "retimer": "partials/retimer.js"
+  }
+}
