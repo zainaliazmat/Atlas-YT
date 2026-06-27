@@ -11,7 +11,8 @@ LOW_EV = {
     "index_html": "".join(
         f"<section id='s{i}' class='scene clip'><div class='lead'>X</div>"
         f"<div class='fx'></div></section><script>makeOutlineDraw({{mount:'#s{i} .fx'}});</script>"
-        for i in range(1, 10)),
+        for i in range(1, 10))
+    + "<script>window.__timelines[\"main\"] = 1;</script>",
     "script": {"scenes": [
         {"scene_no": 5, "on_screen_text": '"Behavioral cocaine." — Aza Raskin', "claims": []}]},
     "scenes": [{"scene_no": i, "on_screen_text": ""} for i in range(1, 10)],
@@ -32,7 +33,7 @@ HIGH_EV = {
              "<div class='cards'>quote</div>", "<div class='shatter'></div>",
              "<div class='strike'></div>", "<div class='checklist'></div>",
              "<div class='signature'></div>"], start=1))
-    + "<script>countUp();makeOrbitCluster();quoteCards();</script>",
+    + "<script>countUp();makeOrbitCluster();quoteCards();window.__timelines[\"main\"]=gsap.timeline();</script>",
     "script": {"scenes": []},
     "scenes": [{"scene_no": i, "on_screen_text": ""} for i in range(1, 10)],
     "global": {"motion_energy": 5.5, "cut_rhythm": 4.0},
