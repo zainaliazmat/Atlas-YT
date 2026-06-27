@@ -137,4 +137,18 @@ def composition_css(tokens: dict, width: int, height: int) -> str:
       }}
       .ticker-track .tk {{ padding: 0 26px; }}
       .ticker-track .tk b {{ color: var(--spray); font-weight: 700; }}
+
+      /* ---- content blocks: multi-line lead text ---- */
+      .lead-line {{ display: block; }}
+
+      /* ---- content blocks: claims / attributed quote cards ---- */
+      .claims {{ display: flex; flex-direction: column; gap: 18px; margin-top: 28px; }}
+      .claim-card {{
+        background: var(--paper-shade, #e4e0c8);
+        border-left: 4px solid var(--spray, #2e5e1f);
+        padding: 18px 22px; border-radius: 6px;
+      }}
+      .quote-card .quote-body {{ font-size: 34px; line-height: 1.25; color: var(--ink, #1f1f1e); }}
+      .quote-card .byline {{ margin-top: 10px; color: var(--spray, #2e5e1f); font-size: 18px; }}
+      .claim {{ color: var(--ink, #1f1f1e); font-size: 24px; }}
 """

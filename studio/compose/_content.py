@@ -28,11 +28,19 @@ from studio.gate.parse import is_attributed_quote   # reuse the gate's quote det
 
 
 def _split_quote(text: str) -> tuple[str, str]:
-    """('"quote body"', 'Attribution') from a `"..." — Name` string. Best-effort."""
-    m = re.split(r"\s*[—–-]\s*", text.strip(), maxsplit=1)
-    body = m[0].strip()
-    who = m[1].strip() if len(m) > 1 else ""
-    return body, who
+    """('"quote body"', 'Attribution') from a `"..." — Name` string. Best-effort.
+    Prefers em-dash/en-dash over a plain hyphen so hyphens within the quote body
+    (e.g. 'pull-to-refresh') are not split."""
+    stripped = text.strip()
+    # Try em-dash or en-dash first (typical attribution separator)
+    m = re.split(r"\s*[—–]\s*", stripped, maxsplit=1)
+    if len(m) == 2:
+        return m[0].strip(), m[1].strip()
+    # Fall back to hyphen-dash only when followed by an uppercase letter (attribution)
+    m2 = re.split(r"\s+-\s+(?=[A-Z])", stripped, maxsplit=1)
+    if len(m2) == 2:
+        return m2[0].strip(), m2[1].strip()
+    return stripped, ""
 
 
 def render_claims(scene: dict) -> str:

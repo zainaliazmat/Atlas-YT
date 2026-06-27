@@ -266,11 +266,11 @@ class Composer:
         NEW (VO-driven) window the ``.clip`` is actually visible for."""
         sid = f"s{i + 1}"
         ti = 1 if i % 2 == 0 else 3
-        ost = html.escape(scene.get("on_screen_text") or scene.get("point") or "")
-        words = ost.split()
-        if words:
-            words[-1] = f'<span class="em">{words[-1]}</span>'
-        lead = " ".join(words) if words else "&nbsp;"
+
+        from . import _content
+        lead_html = _content.render_on_screen_text(
+            scene.get("on_screen_text") or scene.get("point") or "")
+        claims_html = _content.render_claims(scene)
 
         beat, extra_html = self._scene_beat(i, scene)
         # the .clip window is the NEW VO window (it already overlaps the next seam)
@@ -279,7 +279,8 @@ class Composer:
             f'data-duration="{_fmt(sec_dur)}" data-track-index="{ti}">\n'
             f'        <div class="scene-content">\n'
             f'          <div class="label faint mono anim">FIELD REPORT // FIG. {i+1:02d}</div>\n'
-            f'          <div class="lead">{lead}</div>\n'
+            f'{lead_html}\n'
+            f'{claims_html}\n'
             f'{extra_html}'
             f'        </div>\n'
             f'        <div class="fx" data-layout-ignore="" aria-hidden="true"></div>\n'
