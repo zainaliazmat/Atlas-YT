@@ -120,3 +120,54 @@ def score_motion_variety(ev: dict, t: dict) -> DimResult:
         diags.append(f"only {distinct} distinct beat(s) across {len(sigs)} scenes")
     return DimResult("motion_variety", score, floor, score >= floor, diags,
                      {"distinct": distinct, "scenes": len(sigs), "signatures": sigs})
+
+
+def score_content_fidelity(ev: dict, t: dict) -> DimResult:
+    cfg = t["dimensions"]["content_fidelity"]
+    floor = float(cfg["floor"])
+    script_scenes = ((ev.get("script") or {}).get("scenes")) or []
+    html = ev.get("index_html") or ""
+    if not script_scenes or not html:
+        return DimResult("content_fidelity", None, floor, None,
+                         ["no script scenes / no index.html to compare"], {})
+    blocks = {b["scene_no"]: _parse.normalize_text(b["html"]) for b in _parse.scene_blocks(html)}
+    whole = _parse.normalize_text(html)
+
+    total = present = 0
+    missing_quote = False
+    diags = []
+    for sc in script_scenes:
+        no = sc.get("scene_no")
+        hay = blocks.get(no, whole)   # fall back to whole doc if block id differs
+        items = []
+        ost = sc.get("on_screen_text")
+        if ost:
+            items.append(("text", ost))
+        for c in (sc.get("claims") or []):
+            ctext = c.get("text") if isinstance(c, dict) else c
+            if ctext:
+                items.append(("claim", ctext))
+        for kind, raw in items:
+            total += 1
+            # match if a healthy fraction of the item's content words appear
+            words = [w for w in _parse.normalize_text(raw).split() if len(w) > 2]
+            if not words:
+                present += 1
+                continue
+            hit = sum(1 for w in words if w in hay)
+            ok = hit / len(words) >= 0.6
+            if ok:
+                present += 1
+            else:
+                if _parse.is_attributed_quote(raw):
+                    missing_quote = True
+                    who = (raw.split("—")[-1].split("-")[-1].strip()[:24]) if ("—" in raw or "-" in raw) else "?"
+                    diags.append(f"scene {no} dropped the attributed QUOTE ({who})")
+                else:
+                    diags.append(f"scene {no} missing on-screen {kind}: {raw[:40]!r}")
+    frac = present / total if total else 1.0
+    score = band_score(frac, *cfg["band"])
+    if missing_quote:
+        score = min(score, floor - 0.5)   # a dropped attributed quote cannot pass
+    return DimResult("content_fidelity", round(score, 3), floor, score >= floor, diags,
+                     {"present": present, "total": total, "missing_quote": missing_quote})

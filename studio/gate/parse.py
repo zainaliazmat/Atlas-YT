@@ -52,3 +52,14 @@ def scene_signature(block_html: str, choreo_js: str, sid: str = "") -> str:
         if re.search(pat, hay, re.IGNORECASE):
             return name
     return "plain"
+
+
+def normalize_text(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+def is_attributed_quote(s: str) -> bool:
+    s = s or ""
+    has_quote = ('"' in s) or ("“" in s) or ("”" in s)
+    has_attrib = bool(re.search(r"[—\-–]\s*[A-Z][a-z]", s))
+    return has_quote and has_attrib
