@@ -172,6 +172,14 @@
       "exports": [
         "makeCalendarCrumble"
       ]
+    },
+    {
+      "id": "shatter-glitch",
+      "partial": "motion-library/shatter-glitch.js",
+      "kind": "js",
+      "exports": [
+        "makeShatterGlitch"
+      ]
     }
   ],
   "partials": {
