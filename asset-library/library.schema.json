@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "asset-library/library.schema.json",
+  "title": "Shared Asset Library manifest (library.json)",
+  "description": "Index of every cached, license-cleared asset the studio reuses across videos. The folder layout (fonts/ icons/ textures/ lottie/ snippets/ audio/sfx audio/music img/) holds the bytes; this manifest holds the provenance + retrieval metadata.",
+  "type": "object",
+  "required": ["schema_version", "assets"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string" },
+    "assets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": [
+        "id", "kind", "tags", "file", "license", "attribution", "source",
+        "sha256", "recolorable", "provenance", "created_at", "used_in"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$", "description": "stable, unique id." },
+        "kind": {
+          "type": "string",
+          "enum": ["font", "icon", "texture", "lottie", "snippet", "sfx", "music", "img"],
+          "description": "asset class; also selects the storage subfolder."
+        },
+        "tags": { "type": "array", "items": { "type": "string" }, "description": "semantic search tags (lowercase)." },
+        "file": { "type": "string", "description": "path relative to asset-library/." },
+        "license": { "type": "string", "description": "canonical license string, e.g. OFL-1.1 / Apache-2.0 / ISC / CC0-1.0 / Pixabay / Pexels / Unknown." },
+        "attribution": { "type": "string", "description": "renderable credit line (may be empty for CC0/PD)." },
+        "source": { "type": "string", "description": "where it came from (URL, library name, or originating project)." },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "content hash; the dedupe key." },
+        "recolorable": { "type": "boolean", "description": "true if the asset can be safely recolored (currentColor SVG / token-var snippet)." },
+        "provenance": {
+          "type": "string",
+          "enum": ["sourced", "generated", "procedural"],
+          "description": "sourced = external file; generated = produced by a tool/run; procedural = code-defined (e.g. SVG filter)."
+        },
+        "created_at": { "type": "string", "description": "ISO-8601 timestamp the entry was added." },
+        "used_in": { "type": "array", "items": { "type": "string" }, "description": "project slugs that have used this asset." },
+        "duration": { "type": "number", "description": "seconds — for sfx/music." },
+        "mood": { "type": "array", "items": { "type": "string" }, "description": "mood tags — for music beds." },
+        "family": { "type": "string", "description": "font family name — for fonts." },
+        "weight": { "type": "integer", "description": "font weight — for fonts." }
+      }
+    }
+  }
+}
