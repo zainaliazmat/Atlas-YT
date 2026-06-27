@@ -114,6 +114,17 @@ def factcheck(script: dict, brief: dict, *, chat_fn=None) -> dict:
     return mod.factcheck(script, brief, quiet=True)
 
 
+def iris_layouts() -> tuple:
+    """Iris's closed LAYOUTS vocab — the canonical archetype vocabulary.
+
+    Reads ``LAYOUTS`` from the art_engine (``art-director/art_engine.py``) via the
+    isolated load_engine seam so the art-director's sibling imports (llm, chat_state …)
+    are kept isolated from the studio's namespace.
+    """
+    mod = load_engine(config.ART_DIRECTOR_DIR, "art_engine")
+    return tuple(getattr(mod, "LAYOUTS"))
+
+
 def audio_hf():
     """Cadence's Kokoro/ffmpeg toolchain wrappers (audio-designer/hf_audio.py).
 

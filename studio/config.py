@@ -40,6 +40,7 @@ PROJECTS_DIR: Path = STUDIO_DIR / "projects"       # HyperFrames-native per-vide
 SAGE_DIR: Path = REPO_ROOT / "topic-researcher"     # research + factcheck engine
 SCRIPTWRITER_DIR: Path = REPO_ROOT / "scriptwriter"  # script_engine.write_script
 AUDIO_DIR: Path = REPO_ROOT / "audio-designer"       # Kokoro tts/concat/transcribe + mix
+ART_DIRECTOR_DIR: Path = REPO_ROOT / "art-director"  # Iris art_engine (LAYOUTS + storyboard)
 
 # --- Registry file locations -------------------------------------------------
 # Design Pack registry: one entry per pack, discovered under DESIGN_PACKS_DIR.
