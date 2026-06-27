@@ -212,35 +212,6 @@ def produce_research(pdir: pathlib.Path, topic: str):
     return Artifact("research_brief.json", "research_brief", brief, summary)
 
 
-# ----------------------------------------------------------------------
-# Project-dir resolution for the conversational factcheck (params stay {topic})
-# ----------------------------------------------------------------------
-def _resolve_project_dir(topic: str) -> pathlib.Path | None:
-    """Best-effort: find the project dir a conversational fact-check should target.
-
-    The registry's factcheck job takes only `topic` (no registry change), so we look
-    under the pipeline's projects/ for a project that (a) has both a script and a
-    brief and (b) matches the topic — newest first. Returns None if none is usable.
-    """
-    import pipeline  # lazy to avoid an import cycle (pipeline imports this module)
-    root = pipeline.PROJECTS_DIR
-    if not root.exists():
-        return None
-    want = pipeline._slug(topic or "")
-    best: list[tuple[float, pathlib.Path]] = []
-    for d in root.iterdir():
-        if not (d / "script.json").exists() or not (d / "research_brief.json").exists():
-            continue
-        proj = chat_state.load_json(d / "project.json", {})
-        ptopic = proj.get("topic") or proj.get("brief") or ""
-        if want and (pipeline._slug(ptopic) == want or want in d.name):
-            best.append((proj.get("updated", 0) or 0, d))
-    if not best:
-        return None
-    best.sort(reverse=True)
-    return best[0][1]
-
-
 class SageAdapter(Adapter):
     module_name = "researcher"   # topic-researcher/researcher.py (the research job)
 
@@ -251,9 +222,19 @@ class SageAdapter(Adapter):
         if job_name != "research":
             return {"ok": False, "text": f"Sage has no job named {job_name!r}."}
 
+        import projects
+        from contracts import validate
         topic = (params.get("topic") or "").strip()
         angle = (params.get("angle") or "").strip() or None
+        slug = (params.get("slug") or "").strip()
         who = self.entry.display
+
+        pdir = self.resolve_pdir(slug)
+        if pdir is None:
+            msg = ("No project to research into. Start one with start_project, then pass "
+                   "its slug so the research brief is saved into the video's workspace.")
+            progress.fail(who, msg)
+            return {"ok": False, "text": msg}
 
         # Sage validates topics in its engine; mirror it so we fail fast/cleanly.
         ok, reason = self.engine().validate_topic(topic)
@@ -262,28 +243,42 @@ class SageAdapter(Adapter):
             return {"ok": False, "text": reason}
 
         progress.start(self.entry.emoji, who, "researching", topic)
-        pack, json_path, _md_path = self.engine().run(topic, angle, quiet=True)
+        # Write research_brief.json INTO the project workspace (run_research stamps +
+        # persists it), so downstream jobs in this slug read it off disk.
+        try:
+            brief = run_research(pdir, topic, angle)
+        except Exception as exc:  # ThinResearchError or a search failure, said plainly
+            progress.fail(who, str(exc))
+            return {"ok": False, "text": str(exc)}
+        ok, errors = validate("research_brief", brief)
+        if not ok:
+            msg = f"Research brief failed contract validation: {'; '.join(errors)}"
+            progress.fail(who, msg)
+            return {"ok": False, "text": msg, "saved": str(pdir / "research_brief.json")}
+        projects.mark_artifact(slug, "research_brief", pdir / "research_brief.json")
         progress.done(who, "finished the research pack")
-
-        return {"ok": True, "text": _research_digest(pack), "topic": topic,
-                "saved": str(json_path)}
+        return {"ok": True, "text": _research_digest(brief), "topic": topic, "slug": slug,
+                "saved": str(pdir / "research_brief.json")}
 
     # ---- pass-2: fact-check a drafted script against its brief (REAL engine) ----
     def _run_factcheck_job(self, progress, **params) -> dict:
+        import projects
         from contracts import validate
         who = self.entry.display
         topic = (params.get("topic") or "").strip()
+        slug = (params.get("slug") or "").strip()
 
-        pdir = _resolve_project_dir(topic)
-        if pdir is None:
-            msg = (f"Couldn't find a project with a script + brief to fact-check for "
-                   f"{topic!r}. Run the pipeline (or research + script) first.")
+        pdir = self.resolve_pdir(slug)
+        if pdir is None or not (pdir / "script.json").exists() \
+                or not (pdir / "research_brief.json").exists():
+            msg = ("No project with a script + brief to fact-check. Run research + script "
+                   "for this slug first.")
             if progress is not None:
                 progress.fail(who, msg)
             return {"ok": False, "text": msg}
 
         if progress is not None:
-            progress.start(self.entry.emoji, who, "fact-checking the script", topic)
+            progress.start(self.entry.emoji, who, "fact-checking the script", topic or slug)
         report = run_factcheck(pdir)
         ok, errors = validate("factcheck_report", report)
         if not ok:
@@ -291,9 +286,11 @@ class SageAdapter(Adapter):
             if progress is not None:
                 progress.fail(who, msg)
             return {"ok": False, "text": msg, "saved": str(pdir / "factcheck_report.json")}
+        projects.mark_artifact(slug, "factcheck_report", pdir / "factcheck_report.json",
+                               verdict=report.get("verdict"))
         if progress is not None:
             progress.done(who, "finished the fact-check")
-        return {"ok": True, "text": _digest(report), "topic": topic,
+        return {"ok": True, "text": _digest(report), "topic": topic, "slug": slug,
                 "saved": str(pdir / "factcheck_report.json")}
 
 

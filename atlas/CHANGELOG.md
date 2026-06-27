@@ -1,5 +1,40 @@
 # Changelog — Atlas (the YT Manager / Showrunner)
 
+## 0.4.0 — Atlas-only, chat-driven (2026-06-27)
+
+A decisive restructure: **Atlas is the SOLE orchestrator, reached only through chat.**
+The deterministic pipeline and the monitoring dashboard are gone; the end-to-end video
+flow now lives as a **playbook in Atlas's system prompt** that he runs by calling the
+team's tools in sequence against one project workspace.
+
+- **Removed the pipeline.** Deleted `pipeline.py`, the `produce_video` tool, the
+  `produce` CLI subcommand, and the assembly-line belt (`dispatcher.py`,
+  `supervisor.py`, `atlas_decider.py`). Stage order, gates-as-state-machine, and
+  per-stage mandatory validation are gone.
+- **Atlas orchestrates via a PLAYBOOK.** `orchestrator.py`'s system prompt now carries
+  the canonical sequence (start_project → research → script → factcheck → style →
+  storyboard → assets → narration → compose → audiomix → render) and runs it by calling
+  the agent job tools. Fact-check is a **conversational checkpoint** — a `block` verdict
+  routes back to Marlow and re-checks; it is never approved away. Atlas pauses and asks
+  before the final render, and deviates freely for partial/iterative requests.
+- **Lightweight per-project manifest** (`projects.py`): `projects/<slug>/project.json`
+  is a flat **checklist** of produced artifacts (done/pending + path, + the factcheck
+  verdict) — not a state machine. `start_project`, `project_status`, and the optional
+  `validate_artifact` are the only non-registry tools. Every job tool is now **slug-wired**:
+  it reads upstream artifacts from `projects/<slug>/` and writes its output there, so a
+  sequence of delegations accumulates ONE video. The old topic-heuristic
+  `_resolve_project_dir` in each adapter is replaced by explicit-slug resolution.
+- **Removed the dashboard.** Deleted `atlas/dashboard/` entirely (FastAPI monitoring UI
+  + its 19 test files / Playwright e2e) and `project_view.py` (the gate-card read views).
+- **One chat UI.** The Chainlit `web/app.py` is the single interface; its gate-button
+  machinery is removed (approvals are conversational). `session.py` is decoupled from the
+  pipeline (`approve_gate` / `latest_blocked_project` removed). The terminal REPL
+  (`chat.py`) remains as a dev fallback over the same session core.
+- **Kept:** `registry.py`, `adapters/`, the registry-driven tool generation, the 6
+  specialist projects + engines and their determinism, `contracts/` (now surfaced via the
+  optional `validate_artifact` tool), and `eval/` + `rubric/` + the off-playbook agents
+  (Scout/Vera/Quill/Flux), untouched.
+
 ## 0.3.0 — Full fleet, real engines (2026-06-22)
 
 The state-of-the-world entry. Everything the 0.2.0 notes called a "stub" is now a

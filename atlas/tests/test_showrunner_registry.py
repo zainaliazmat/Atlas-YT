@@ -74,7 +74,7 @@ def test_asset_sourcer_slot_is_filled_by_magpie():
     assert as_.display == "Magpie"
 
 
-def test_generated_tools_cover_every_role_plus_produce_video():
+def test_generated_tools_cover_every_role_plus_orchestration():
     adapters = registry.build_adapters()
     prog, _ = list_progress()
     _server, allowed = tools.build_server(adapters, prog)
@@ -85,8 +85,11 @@ def test_generated_tools_cover_every_role_plus_produce_video():
               "composition_engineer_compose_scenes",
               "composition_engineer_render_video"):
         assert f"mcp__atlas__{t}" in allowed, t
-    # the one non-registry tool: the production spine
-    assert "mcp__atlas__produce_video" in allowed
+    # the non-registry orchestration tools: project workspace + checklist + contract check
+    for t in ("start_project", "project_status", "validate_artifact"):
+        assert f"mcp__atlas__{t}" in allowed, t
+    # the pipeline tool is GONE — Atlas orchestrates via the playbook, not a spine tool
+    assert "mcp__atlas__produce_video" not in allowed
     # persona tool for every role
     for n in SEVEN:
         assert f"mcp__atlas__ask_{n}" in allowed
@@ -154,12 +157,12 @@ def test_sage_factcheck_job_runs_engine_and_returns_digest(tmp_path, monkeypatch
         "scenes": [{"scene_no": 1, "point": "p", "narration": "n",
                     "claims": [{"claim_id": "c1", "text": "a", "source_ref": 0}]}]})
 
-    monkeypatch.setattr(sage_mod, "_resolve_project_dir", lambda topic: pdir)
+    monkeypatch.setattr(SageAdapter, "resolve_pdir", staticmethod(lambda slug: pdir))
     monkeypatch.setattr(sage_mod, "_factcheck_engine", lambda: _FakeFactcheckEngine())
 
     adapter = SageAdapter(registry.get_entry("sage"))
     prog, _ = list_progress()
-    out = adapter.run_job("factcheck", prog, topic="x")
+    out = adapter.run_job("factcheck", prog, topic="x", slug="proj")
 
     assert out["ok"] is True
     assert "verdict" in out["text"].lower() and "pass" in out["text"].lower()
@@ -171,11 +174,10 @@ def test_sage_factcheck_job_runs_engine_and_returns_digest(tmp_path, monkeypatch
 
 def test_sage_factcheck_job_reports_missing_project(monkeypatch):
     # No resolvable project -> an honest failure, not a crash.
-    from adapters import sage as sage_mod
     from adapters.sage import SageAdapter
-    monkeypatch.setattr(sage_mod, "_resolve_project_dir", lambda topic: None)
+    monkeypatch.setattr(SageAdapter, "resolve_pdir", staticmethod(lambda slug: None))
     adapter = SageAdapter(registry.get_entry("sage"))
     prog, _ = list_progress()
-    out = adapter.run_job("factcheck", prog, topic="nothing here")
+    out = adapter.run_job("factcheck", prog, topic="nothing here", slug="")
     assert out["ok"] is False
     assert adapter._engine is None  # research engine never loaded for a factcheck

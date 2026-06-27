@@ -21,7 +21,6 @@ from typing import Any, Callable
 
 import chat_state
 import llm
-import project_view
 import registry
 from orchestrator import Orchestrator
 from progress import Progress
@@ -194,14 +193,6 @@ def memory_snapshot(adapters: dict) -> str:
     return "[Fleet memory — recent work]\n" + "\n".join(lines)
 
 
-def _pipeline_produce(**kwargs) -> dict:
-    """Default gate-resume runner: the real deterministic pipeline. Lazy-imported so a
-    terminal/test session that never approves a gate doesn't pull the (heavy) pipeline
-    + stub specialists at import time. The gate logic inside is untouched."""
-    import pipeline
-    return pipeline.produce(**kwargs)
-
-
 def build_context(state: dict, snapshot: str,
                   recent_window: int = RECENT_WINDOW) -> str:
     """Bounded context for the orchestrator: summary + snapshot + recent window."""
@@ -276,15 +267,11 @@ class AtlasSession:
 
     def __init__(self, *, state: dict, distiller, state_path: str | pathlib.Path,
                  build_orch: Callable[[Progress], Any] | None = None,
-                 projects_dir: str | pathlib.Path | None = None,
-                 produce_fn: Callable[..., dict] | None = None):
+                 projects_dir: str | pathlib.Path | None = None):
         self.state = state
         self.distiller = distiller
         self.state_path = pathlib.Path(state_path)
         self.projects_dir = pathlib.Path(projects_dir) if projects_dir else PROJECTS_DIR
-        # The pipeline runner used by approve_gate. Injectable so tests drive the gate
-        # feedback without running the real (heavy) pipeline; default lazy-imports it.
-        self._produce_fn = produce_fn
         self._status_cb: Callable[[str], None] | None = None
         # The orchestrator's deterministic status lines (🔎/✅) are emitted on this
         # one Progress; its sink dispatches to whatever on_status the current turn
@@ -297,14 +284,13 @@ class AtlasSession:
     # ---- construction ----
     @classmethod
     def start(cls, *, state_path: str | pathlib.Path = STATE_PATH, distiller=None,
-              build_orch=None, projects_dir=None, produce_fn=None,
+              build_orch=None, projects_dir=None,
               note_cb: Callable[[str], None] | None = None) -> "AtlasSession":
         """Load durable state (summary + fresh transcript), fold in any pending."""
         state = chat_state.load_state(state_path)
         distiller = distiller or make_distiller()
         self = cls(state=state, distiller=distiller, state_path=state_path,
-                   build_orch=build_orch, projects_dir=projects_dir,
-                   produce_fn=produce_fn)
+                   build_orch=build_orch, projects_dir=projects_dir)
         recover_pending(state, distiller, state_path, note_cb=note_cb)
         return self
 
@@ -388,48 +374,6 @@ class AtlasSession:
     def snapshot(self) -> str:
         """The cross-fleet 'recent work' snapshot (read-only, bounded)."""
         return memory_snapshot(self.orch.adapters)
-
-    # ---- gates (Phase B): detection + APPROVE (direct, deterministic) ----
-    def latest_blocked_project(self) -> dict | None:
-        """The project (if any) currently paused at a human gate — read-only.
-        Returns {slug, gate, status, details, project_dir, label} or None."""
-        return project_view.find_latest_blocked(self.projects_dir)
-
-    def approve_gate(self, slug: str, gate: str, *,
-                     on_status: Callable[[str], None] | None = None) -> dict:
-        """Sign off a gate by calling the pipeline DIRECTLY (not via Atlas):
-        pipeline.produce(slug, approve=[gate]). The gate code runs unchanged — incl.
-        the re-earn protection that a `block` verdict can't be approved away. The
-        resulting state is then recorded into Atlas's transcript so its next turn
-        narrates coherently and never thinks it's still blocked."""
-        progress = Progress(sink=on_status) if on_status is not None else None
-        produce = self._produce_fn or _pipeline_produce
-        result = produce(slug=slug, approve=[gate], progress=progress) or {}
-        self._record_gate_outcome(gate, result)
-        return result
-
-    def _record_gate_outcome(self, gate: str, result: dict) -> None:
-        status = result.get("status")
-        if status == "blocked":
-            nxt = result.get("gate")
-            if nxt == gate:
-                # A `block` verdict can't be approved away — it re-blocks at the same
-                # gate. Record that plainly so Atlas doesn't claim it advanced.
-                note = (f"The {gate} gate still blocks after sign-off — "
-                        f"{result.get('reason', '')}").strip()
-            else:
-                note = (f"Pipeline resumed past the {gate} gate and is now paused at "
-                        f"the {nxt} gate. {result.get('reason', '')}").strip()
-        elif status == "done":
-            note = (f"Pipeline resumed past the {gate} gate and finished — video at "
-                    f"{result.get('video')}.")
-        elif status == "failed":
-            note = (f"Pipeline could not advance past the {gate} gate: "
-                    f"{result.get('errors')}.")
-        else:
-            note = f"Pipeline state after approving the {gate} gate: {status}."
-        chat_state.append_turn(self.state, "user", f"[CEO approved the {gate} gate]")
-        chat_state.append_turn(self.state, "atlas", f"[{note}]")
 
 
 class AgentSession:

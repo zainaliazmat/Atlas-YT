@@ -64,7 +64,9 @@ def test_job_tool_calls_adapter_and_emits_progress_in_order():
 
     result = asyncio.run(job_tool.handler({"niche": "home espresso"}))
 
-    assert adapter.job_calls == [("find_topics", {"niche": "home espresso"})]
+    # the slug param is always injected (empty when not provided)
+    assert adapter.job_calls == [("find_topics",
+                                  {"niche": "home espresso", "slug": ""})]
     assert "home espresso" in _text(result)
     # deterministic lines, in order: start (🔎 …scanning…) then done (✅ …)
     assert lines[0].startswith("🔎") and "scanning 'home espresso'" in lines[0]
@@ -125,67 +127,74 @@ def test_slow_job_times_out_and_reports():
 
 
 # ----------------------------------------------------------------------
-# produce_video: the guard accepts an approve-only resume; the arg-logging surfaces.
-# pipeline.produce is patched so these stay pure-unit (no real project dirs / network).
+# The slug is the spine now: every job tool carries a `slug` param, and the
+# orchestration tools (start_project / project_status / validate_artifact) manage the
+# per-project workspace Atlas runs the playbook against. projects.PROJECTS_DIR is
+# redirected to a tmp dir so these stay pure-unit (no real project dirs / network).
 # ----------------------------------------------------------------------
-def test_produce_guard_allows_approve_only_resume(monkeypatch):
-    # TEST 1 (guard half): {approve} alone must NOT be rejected as "Nothing to produce",
-    # and must reach pipeline.produce with approve parsed + forwarded.
-    import pipeline
-    seen = {}
+def test_job_tool_carries_a_slug_param_and_forwards_it():
+    e = _entry()
+    adapter = _MockAdapter(e)
+    adapter.progress, _ = list_progress()
+    job_tool = tools._make_job_tool(adapter, e.jobs[0])
 
-    def fake_produce(brief=None, *, slug=None, approve=None, **kw):
-        seen.update(brief=brief, slug=slug, approve=approve)
-        return {"status": "blocked", "gate": "final_render", "slug": "demo",
-                "reason": "ok", "details": {}}
-
-    monkeypatch.setattr(pipeline, "produce", fake_produce)
-    prog, _ = list_progress()
-    ptool = tools._make_produce_tool(prog)
-
-    result = asyncio.run(ptool.handler({"approve": "factcheck"}))
-    assert "Nothing to produce" not in _text(result)
-    assert seen["brief"] is None and seen["slug"] is None
-    assert seen["approve"] == ["factcheck"]
+    asyncio.run(job_tool.handler({"niche": "espresso", "slug": "espresso-123"}))
+    # the slug reaches run_job alongside the domain params
+    name, params = adapter.job_calls[0]
+    assert params.get("slug") == "espresso-123"
 
 
-def test_produce_guard_still_rejects_a_truly_empty_call(monkeypatch):
-    import pipeline
-    monkeypatch.setattr(pipeline, "produce",
-                        lambda *a, **k: pytest_fail_never_called())
-    prog, _ = list_progress()
-    ptool = tools._make_produce_tool(prog)
-    result = asyncio.run(ptool.handler({}))  # no brief, no slug, no approve
-    assert "Nothing to produce" in _text(result)
+def test_start_project_tool_mints_a_project(tmp_path, monkeypatch):
+    import projects
+    monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path)
+    ptool = tools._make_start_project_tool()
+    result = asyncio.run(ptool.handler({"brief": "the attention economy"}))
+    txt = _text(result)
+    assert "Started project" in txt and "attention-economy" in txt
+    # exactly one project dir with a manifest was created
+    made = [d for d in tmp_path.iterdir() if (d / "project.json").exists()]
+    assert len(made) == 1
 
 
-def pytest_fail_never_called():  # pragma: no cover — guard must short-circuit first
-    raise AssertionError("pipeline.produce should not be reached for an empty call")
+def test_start_project_tool_needs_a_brief(tmp_path, monkeypatch):
+    import projects
+    monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path)
+    ptool = tools._make_start_project_tool()
+    result = asyncio.run(ptool.handler({}))
+    assert "give me a brief" in _text(result).lower()
 
 
-def test_produce_video_arg_logging_is_captured(tmp_path, monkeypatch):
-    # TEST 7: the permanent INFO arg-line now actually lands (in the file handler).
+def test_project_status_tool_reads_the_checklist(tmp_path, monkeypatch):
+    import projects
+    monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path)
+    info = projects.start_project("home espresso", slug="home-espresso")
+    projects.mark_artifact("home-espresso", "research_brief",
+                           info["project_dir"] + "/research_brief.json")
+    stool = tools._make_project_status_tool()
+    txt = _text(asyncio.run(stool.handler({"slug": "home-espresso"})))
+    assert "✓ research_brief" in txt and "· script" in txt
+    # no slug -> lists known projects
+    listing = _text(asyncio.run(stool.handler({})))
+    assert "home-espresso" in listing
+
+
+def test_start_project_arg_logging_is_captured(tmp_path, monkeypatch):
     import logging
 
-    import pipeline
+    import projects
+    monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path)
     logger = logging.getLogger("atlas")
     for h in list(logger.handlers):           # ensure THIS test's path is used
         if getattr(h, "_atlas_file", False):
             h.close()
             logger.removeHandler(h)
-
     logpath = tmp_path / "atlas.log"
     tools.configure_logging(logpath)
     try:
-        monkeypatch.setattr(pipeline, "produce", lambda *a, **k: {
-            "status": "blocked", "gate": "factcheck", "slug": "demo-slug",
-            "reason": "r", "details": {}})
-        prog, _ = list_progress()
-        ptool = tools._make_produce_tool(prog)
+        ptool = tools._make_start_project_tool()
         asyncio.run(ptool.handler({"brief": "kokoro tts deep dive"}))
-
         contents = logpath.read_text()
-        assert "produce_video args:" in contents
+        assert "start_project:" in contents
         assert "kokoro tts deep dive" in contents
     finally:
         for h in list(logger.handlers):

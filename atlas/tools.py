@@ -31,9 +31,8 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 SERVER_NAME = "atlas"
 ASK_TIMEOUT = 150   # seconds for a single-turn persona reply
 
-# Permanent instrumentation: every produce_video invocation logs the literal args it
-# received (see _make_produce_tool). Turns "Atlas did something weird with the pipeline"
-# into a one-line log check instead of a transcript hunt.
+# Permanent instrumentation: start_project logs the slug it minted for each video, so
+# "Atlas started a weird project" is a one-line log check instead of a transcript hunt.
 log = logging.getLogger("atlas.tools")
 
 
@@ -41,10 +40,9 @@ def configure_logging(path=None):
     """Route the `atlas` logger's INFO records to a FILE (never stdout, so the
     interactive meeting stays clean). Idempotent; call once at chat startup.
 
-    Without this, the permanent produce_video arg-logging in `_make_produce_tool`
-    goes nowhere — Python drops sub-WARNING records when no handler is configured.
-    Configuring the parent `atlas` logger captures every `atlas.*` child (e.g.
-    `atlas.tools`) via propagation.
+    Without this, the permanent start_project arg-logging goes nowhere — Python drops
+    sub-WARNING records when no handler is configured. Configuring the parent `atlas`
+    logger captures every `atlas.*` child (e.g. `atlas.tools`) via propagation.
     """
     import pathlib
     logger = logging.getLogger("atlas")
@@ -66,11 +64,31 @@ def _ok(text: str) -> dict:
 
 
 def _make_job_tool(adapter, job):
-    """Build one async SDK tool that runs `job` on `adapter`, safely + bounded."""
+    """Build one async SDK tool that runs `job` on `adapter`, safely + bounded.
+
+    Every job tool carries a uniform `slug` param (the active project from
+    `start_project`): the producer jobs read their upstream artifact(s) from
+    `projects/<slug>/` and write their output there, so a sequence of delegations
+    accumulates ONE video. Intake/standard/coach jobs (Scout, Vera, the coaches) don't
+    need a project and simply ignore the slug.
+    """
     who = adapter.entry.display
+
+    # A full JSON Schema so we can add `slug` alongside the job's domain params without
+    # the SDK force-marking everything required (the {name: type} form does that).
+    properties = {name: {"type": "string"} for name in job.params}
+    properties["slug"] = {
+        "type": "string",
+        "description": ("The active project slug from start_project. Production jobs read "
+                        "upstream artifacts from projects/<slug>/ and write their output "
+                        "there. Omit only for intake/standards/coaching jobs."),
+    }
+    schema = {"type": "object", "properties": properties,
+              "required": list(job.params)}
 
     async def _fn(args):
         params = {k: (args.get(k) or "") for k in job.params}
+        params["slug"] = args.get("slug") or ""
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(adapter.run_job, job.name, adapter.progress, **params),
@@ -85,7 +103,7 @@ def _make_job_tool(adapter, job):
                        "to the CEO and continue or pause; do not retry blindly.")
         return _ok(result.get("text", "(no result)"))
 
-    return tool(job.tool, job.description, job.params)(_fn)
+    return tool(job.tool, job.description, schema)(_fn)
 
 
 def _make_ask_tool(adapter):
@@ -115,108 +133,105 @@ def _make_ask_tool(adapter):
     return tool(name, desc, {"question": str, "context": str})(_fn)
 
 
-def _make_produce_tool(progress):
-    """The Showrunner's production-pipeline tool.
+def _make_start_project_tool():
+    """Mint a new project workspace + checklist manifest, returning the slug Atlas
+    threads through every subsequent job for this video."""
+    desc = ("Start a NEW video: create its project workspace and lightweight checklist "
+            "manifest, and return the 'slug'. Pass 'brief' (the topic/angle). Call this "
+            "FIRST, then pass the returned slug to every production job so all artifacts "
+            "accumulate in one workspace.")
+    schema = {"type": "object",
+              "properties": {"brief": {"type": "string",
+                                       "description": "The topic/brief for the video."}},
+              "required": ["brief"]}
 
-    Runs the deterministic spine (pipeline.py) end-to-end against the specialists,
-    enforcing contracts and the two human gates. Gates are PAUSE-AND-RESUME: the
-    tool returns a `blocked` result with the gate + details (it never blocks
-    mid-tool); Atlas relays it to the CEO and re-invokes with `approve` to resume.
-    """
-    desc = ("Run (or resume) the full video production pipeline. Stages validate "
-            "against frozen contracts and stop at two human gates (fact-check, final "
-            "render). To start a NEW video, pass 'brief' only and OMIT 'slug'. To "
-            "RESUME after the CEO signs off, pass the 'slug' from the blocked result "
-            "plus 'approve'. Set 'unattended' = 'yes' to run straight through.")
+    async def _fn(args):
+        import projects
+        brief = (args.get("brief") or "").strip()
+        if not brief:
+            return _ok("Give me a brief to start a project (the topic/angle for the video).")
+        info = await asyncio.to_thread(projects.start_project, brief)
+        log.info("start_project: slug=%r brief=%r", info["slug"], brief)
+        return _ok(f"Started project '{info['slug']}' at {info['project_dir']}. "
+                   f"Pass slug='{info['slug']}' to every job for this video. "
+                   "Next in the playbook: research (sage_research).")
 
-    # A FULL JSON Schema (not a {name: type} dict). The SDK passes a schema with
-    # type+properties straight through (create_sdk_mcp_server._build_schema), so we
-    # control `required` ourselves: NOTHING is required. The {name: type} form the
-    # other tools use is force-marked all-required by the SDK — which is exactly the
-    # trap that made the LLM fill 'slug' on a fresh call and trip the resume path.
-    # Here both valid shapes — {brief} (new) and {slug, approve} (resume) — are
-    # schema-valid; the handler enforces "exactly one of" them.
-    params = {
-        "type": "object",
-        "properties": {
-            "brief": {
-                "type": "string",
-                "description": ("The topic/brief for the video. Provide this to start a "
-                                "NEW video. Leave empty when resuming."),
-            },
-            "slug": {
-                "type": "string",
-                "description": ("RESUME ONLY. The exact existing project directory name "
-                                "from a prior blocked result. OMIT entirely to start a "
-                                "NEW video — never synthesize a slug from the topic."),
-            },
-            "approve": {
-                "type": "string",
-                "description": ("RESUME ONLY. The gate to clear when resuming: "
-                                "'factcheck' or 'final_render'. Omit on a new video."),
-            },
-            "unattended": {
-                "type": "string",
-                "description": ("Set to 'yes' to run straight through both human gates "
-                                "without pausing. Default (empty) honors the gates; use "
-                                "only when the CEO explicitly asks for an unattended run."),
-            },
-        },
-        "required": [],
+    return tool("start_project", desc, schema)(_fn)
+
+
+def _make_project_status_tool():
+    """Read a project's checklist so Atlas knows what's produced and can resume."""
+    desc = ("Read a project's checklist manifest: which artifacts are produced (done/"
+            "pending) and the fact-check verdict. Use to resume a video without re-doing "
+            "or skipping a step. Pass 'slug'. Omit it to list all known projects.")
+    schema = {"type": "object",
+              "properties": {"slug": {"type": "string",
+                                      "description": "The project slug (omit to list all)."}},
+              "required": []}
+
+    async def _fn(args):
+        import projects
+        slug = (args.get("slug") or "").strip()
+        if not slug:
+            items = await asyncio.to_thread(projects.list_projects)
+            if not items:
+                return _ok("No projects yet. Start one with start_project.")
+            lines = ["Known projects (newest first):"]
+            lines += [f"  · {p['slug']} — {p['topic']}" for p in items[:20]]
+            return _ok("\n".join(lines))
+        return _ok(await asyncio.to_thread(projects.status_text, slug))
+
+    return tool("project_status", desc, schema)(_fn)
+
+
+def _make_validate_artifact_tool():
+    """Optional sanity-check of one produced artifact against its frozen contract."""
+    desc = ("Optionally sanity-check one produced artifact against its frozen schema "
+            "(e.g. 'script', 'research_brief', 'style_guide', 'storyboard', "
+            "'asset_manifest', 'factcheck_report', 'composition_manifest', "
+            "'audio_manifest'). Pass 'name' and the project 'slug'. Returns OK or the "
+            "validation errors. This is a tool you MAY use — it is not a required gate.")
+    schema = {"type": "object",
+              "properties": {
+                  "name": {"type": "string", "description": "The artifact/contract name."},
+                  "slug": {"type": "string", "description": "The project slug."}},
+              "required": ["name", "slug"]}
+
+    # artifact/contract name -> the file it lives in under projects/<slug>/
+    _FILES = {
+        "research_brief": "research_brief.json",
+        "script": "script.json",
+        "factcheck_report": "factcheck_report.json",
+        "creative_treatment": "creative_treatment.json",
+        "narrative_intent": "narrative_intent.json",
+        "motion_mood_board": "motion_mood_board.json",
+        "style_guide": "style_guide.json",
+        "storyboard": "storyboard.json",
+        "asset_manifest": "asset_manifest.json",
+        "narration_transcript": "narration.transcript.json",
+        "composition_manifest": "composition_manifest.json",
+        "audio_manifest": "audio/audio_manifest.json",
     }
 
     async def _fn(args):
-        import pipeline
-        # Permanent INFO instrumentation — the literal args the LLM passed.
-        log.info("produce_video args: brief=%r slug=%r approve=%r unattended=%r",
-                 args.get("brief"), args.get("slug"), args.get("approve"),
-                 args.get("unattended"))
-        brief = (args.get("brief") or "").strip() or None
-        slug = (args.get("slug") or "").strip() or None
-        approve = [g for g in (args.get("approve") or "").replace(",", " ").split() if g]
-        unattended = (args.get("unattended") or "").strip().lower() in ("1", "yes", "true")
+        import chat_state
+        import contracts
+        import projects
+        name = (args.get("name") or "").strip()
+        slug = (args.get("slug") or "").strip()
+        pdir = projects.project_dir(slug)
+        if pdir is None:
+            return _ok(f"No project named {slug!r}. Start one with start_project.")
+        rel = _FILES.get(name, f"{name}.json")
+        data = chat_state.load_json(pdir / rel, None)
+        if data is None:
+            return _ok(f"No '{name}' artifact found at {pdir / rel} yet.")
+        ok, errors = contracts.validate(name, data)
+        if ok:
+            return _ok(f"'{name}' is valid against its contract. ✓")
+        return _ok(f"'{name}' FAILS its contract: {'; '.join(errors)}")
 
-        # The schema permits any shape; the REAL contract lives here: exactly one of
-        # {brief} (new) or {slug (+approve)} (resume). A bare call can neither start
-        # nor resume anything — coach instead of spawning a blank project.
-        if not brief and not slug and not approve:
-            return _ok("Nothing to produce: provide a 'brief' to start a NEW video, a "
-                       "'slug' (+ 'approve') to RESUME a specific project, or just "
-                       "'approve' to resume the project waiting at that gate.")
-
-        try:
-            result = await asyncio.to_thread(
-                pipeline.produce, brief, slug=slug, approve=approve or None,
-                unattended=unattended, progress=progress)
-        except Exception as exc:  # noqa: BLE001 — containment: never crash the meeting
-            return _ok(f"The pipeline hit a problem: {exc}. Report it and pause.")
-        status = result.get("status")
-        if status == "done":
-            return _ok(f"Pipeline complete. Video at {result['video']} "
-                       f"(project: {result['project_dir']}).")
-        if status == "blocked":
-            return _ok(f"PAUSED at the {result['gate']} gate. {result.get('reason','')} "
-                       f"Details: {result.get('details')}. To resume after the CEO "
-                       f"signs off, call produce_video with slug='{result['slug']}' and "
-                       f"approve='{result['gate']}'.")
-        # A resume whose slug didn't resolve fails BEFORE any stage runs: status
-        # 'failed' + stage None + a slug was passed. Key the recovery coaching off
-        # that STRUCTURED signal (not the error string) — a mid-pipeline resume
-        # failure carries a real stage name and must NOT be told to "retry without
-        # slug".
-        if status == "failed" and result.get("stage") is None and slug:
-            return _ok(f"No project named '{slug}'. To start a NEW video, call "
-                       "produce_video again with no slug. To RESUME, pass an existing "
-                       "project directory name.")
-        # An approve-only resume that couldn't resolve a UNIQUE blocked project (zero
-        # candidates, or ambiguous) fails before any stage with no slug — surface the
-        # resolver's clear message verbatim so Atlas can relay it / disambiguate.
-        if status == "failed" and result.get("stage") is None and not slug:
-            return _ok((result.get("errors") or ["Couldn't resume."])[0])
-        return _ok(f"Pipeline {status} at stage {result.get('stage')}: "
-                   f"{result.get('errors')}.")
-
-    return tool("produce_video", desc, params)(_fn)
+    return tool("validate_artifact", desc, schema)(_fn)
 
 
 def build_server(adapters: dict, progress):
@@ -237,9 +252,14 @@ def build_server(adapters: dict, progress):
             sdk_tools.append(_make_ask_tool(adapter))
             allowed.append(f"mcp__{SERVER_NAME}__ask_{adapter.entry.name}")
 
-    # The one non-registry tool: the production pipeline spine.
-    sdk_tools.append(_make_produce_tool(progress))
-    allowed.append(f"mcp__{SERVER_NAME}__produce_video")
+    # The non-registry orchestration tools: project workspace + checklist + optional
+    # contract check. Atlas runs the production PLAYBOOK by calling the agent job tools
+    # in sequence against one slug; these manage the workspace it accumulates into.
+    for name, make in (("start_project", _make_start_project_tool),
+                       ("project_status", _make_project_status_tool),
+                       ("validate_artifact", _make_validate_artifact_tool)):
+        sdk_tools.append(make())
+        allowed.append(f"mcp__{SERVER_NAME}__{name}")
 
     server = create_sdk_mcp_server(SERVER_NAME, tools=sdk_tools)
     return server, allowed

@@ -142,61 +142,40 @@ def produce_audiomix(pdir: pathlib.Path, topic: str):
 
 
 # ----------------------------------------------------------------------
-# Project-dir resolution for the conversational jobs (params stay {topic})
-# ----------------------------------------------------------------------
-def _resolve_project_dir(topic: str, *, needs: str) -> pathlib.Path | None:
-    """Best-effort: find the project dir a conversational job should target. `needs` is
-    the artifact that must exist (script.json for both jobs). Newest match first."""
-    import pipeline  # lazy to avoid an import cycle (pipeline imports this module)
-    root = pipeline.PROJECTS_DIR
-    if not root.exists():
-        return None
-    want = pipeline._slug(topic or "")
-    best: list[tuple[float, pathlib.Path]] = []
-    for d in root.iterdir():
-        if not (d / needs).exists():
-            continue
-        proj = chat_state.load_json(d / "project.json", {})
-        ptopic = proj.get("topic") or proj.get("brief") or ""
-        if want and (pipeline._slug(ptopic) == want or want in d.name):
-            best.append((proj.get("updated", 0) or 0, d))
-    if not best:
-        return None
-    best.sort(reverse=True)
-    return best[0][1]
-
-
 class AudioAdapter(Adapter):
     module_name = "audio_engine"   # audio-designer/audio_engine.py
 
-    # job name -> (runner, contract, digest, needs-artifact, what she's doing)
+    # job name -> (runner, contract, digest, needs-artifact, manifest-name, what she's doing)
     _JOBS = {
         "record_narration": (run_record_narration, "narration_transcript",
-                             _transcript_summary, "script.json", "recording the narration"),
+                             _transcript_summary, "script.json", "narration",
+                             "recording the narration"),
         "mix_audio": (run_mix_audio, "audio_manifest", _manifest_digest,
-                      "script.json", "mixing the audio"),
+                      "script.json", "audio_manifest", "mixing the audio"),
     }
 
     def run_job(self, job_name: str, progress, **params) -> dict:
         spec = self._JOBS.get(job_name)
         if spec is None:
             return {"ok": False, "text": f"Cadence has no job named {job_name!r}."}
-        runner, contract, digest, needs, doing = spec
+        runner, contract, digest, needs, manifest_name, doing = spec
 
+        import projects
         from contracts import validate
         who = self.entry.display
         topic = (params.get("topic") or "").strip()
+        slug = (params.get("slug") or "").strip()
 
-        pdir = _resolve_project_dir(topic, needs=needs)
-        if pdir is None:
-            msg = (f"Couldn't find a project with {needs} to {doing} for {topic!r}. "
-                   "Run the upstream stages (or the pipeline) first.")
+        pdir = self.resolve_pdir(slug)
+        if pdir is None or not (pdir / needs).exists():
+            msg = (f"No project with {needs} to {doing}. Run the upstream steps for this "
+                   "slug first.")
             if progress is not None:
                 progress.fail(who, msg)
             return {"ok": False, "text": msg}
 
         if progress is not None:
-            progress.start(self.entry.emoji, who, doing, topic)
+            progress.start(self.entry.emoji, who, doing, topic or slug)
         try:
             result = runner(pdir)
         except Exception as exc:  # bad inputs / toolchain, said plainly
@@ -211,9 +190,10 @@ class AudioAdapter(Adapter):
                 progress.fail(who, msg)
             return {"ok": False, "text": msg, "saved": str(pdir / f"{contract}.json")}
 
-        if progress is not None:
-            progress.done(who, f"finished {doing}")
         saved = ("audio/narration.transcript.json" if contract == "narration_transcript"
                  else "audio/audio_manifest.json")
-        return {"ok": True, "text": digest(result), "topic": topic,
+        projects.mark_artifact(slug, manifest_name, pdir / saved)
+        if progress is not None:
+            progress.done(who, f"finished {doing}")
+        return {"ok": True, "text": digest(result), "topic": topic, "slug": slug,
                 "saved": str(pdir / saved)}

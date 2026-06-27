@@ -120,35 +120,6 @@ def produce_script(pdir: pathlib.Path, topic: str):
                     f"~{script.get('est_runtime_sec', 0)}s")
 
 
-# ----------------------------------------------------------------------
-# Project-dir resolution for the conversational write (params stay {topic})
-# ----------------------------------------------------------------------
-def _resolve_project_dir(topic: str) -> pathlib.Path | None:
-    """Best-effort: find the project dir a conversational write should target.
-
-    The registry's write_script job takes only `topic` (no registry change), so we
-    look under the pipeline's projects/ for a project that (a) has a research brief
-    and (b) matches the topic — newest first. Returns None if none is usable.
-    """
-    import pipeline  # lazy to avoid an import cycle (pipeline imports this module)
-    root = pipeline.PROJECTS_DIR
-    if not root.exists():
-        return None
-    want = pipeline._slug(topic or "")
-    best: list[tuple[float, pathlib.Path]] = []
-    for d in root.iterdir():
-        if not (d / "research_brief.json").exists():
-            continue
-        proj = chat_state.load_json(d / "project.json", {})
-        ptopic = proj.get("topic") or proj.get("brief") or ""
-        if want and (pipeline._slug(ptopic) == want or want in d.name):
-            best.append((proj.get("updated", 0) or 0, d))
-    if not best:
-        return None
-    best.sort(reverse=True)
-    return best[0][1]
-
-
 class ScriptwriterAdapter(Adapter):
     module_name = "script_engine"   # scriptwriter/script_engine.py
 
@@ -156,20 +127,22 @@ class ScriptwriterAdapter(Adapter):
         if job_name != "write_script":
             return {"ok": False, "text": f"Marlow has no job named {job_name!r}."}
 
+        import projects
         from contracts import validate
         who = self.entry.display
         topic = (params.get("topic") or "").strip()
+        slug = (params.get("slug") or "").strip()
 
-        pdir = _resolve_project_dir(topic)
-        if pdir is None:
-            msg = (f"Couldn't find a project with a research brief to script for "
-                   f"{topic!r}. Run research (or the pipeline) first.")
+        pdir = self.resolve_pdir(slug)
+        if pdir is None or not (pdir / "research_brief.json").exists():
+            msg = ("No project with a research brief to script. Start a project "
+                   "(start_project) and run research first, then pass that slug.")
             if progress is not None:
                 progress.fail(who, msg)
             return {"ok": False, "text": msg}
 
         if progress is not None:
-            progress.start(self.entry.emoji, who, "drafting the script", topic)
+            progress.start(self.entry.emoji, who, "drafting the script", topic or slug)
         try:
             script = run_write(pdir)
         except Exception as exc:  # an unusable brief / ungroundable draft, said plainly
@@ -183,7 +156,8 @@ class ScriptwriterAdapter(Adapter):
             if progress is not None:
                 progress.fail(who, msg)
             return {"ok": False, "text": msg, "saved": str(pdir / "script.json")}
+        projects.mark_artifact(slug, "script", pdir / "script.json")
         if progress is not None:
             progress.done(who, "finished the script")
-        return {"ok": True, "text": _digest(script), "topic": topic,
+        return {"ok": True, "text": _digest(script), "topic": topic, "slug": slug,
                 "saved": str(pdir / "script.json")}

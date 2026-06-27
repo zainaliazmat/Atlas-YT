@@ -127,8 +127,8 @@ def handle_command(sess: AtlasSession, raw: str) -> bool:
         print(f"The team — {len(registry.REGISTRY)} roles "
               f"({ready} ready, {stub} stub slots):\n")
         print(registry.roster())
-        print("\nShowrunner can also run the production line directly: produce_video "
-              "(brief → … → fact-check gate → … → render gate → video.mp4).")
+        print("\nAtlas runs the full video playbook by delegating to these tools in "
+              "order (start_project → research → script → fact-check → … → render).")
         print(f"\nAtlas's own brain: {llm.effective_provider()}  "
               "(jobs run on each agent's own engine/provider).")
     elif cmd == "/ask":
@@ -190,7 +190,7 @@ def _recover_note(event: str) -> None:
 # ----------------------------------------------------------------------
 def start():
     import tools
-    tools.configure_logging()  # surface the produce_video arg-logs to atlas/atlas.log
+    tools.configure_logging()  # surface the start_project arg-logs to atlas/atlas.log
 
     # Construct the session (no recovery yet), wire the SIGINT handler, THEN recover —
     # preserving the original ordering (signal handler armed before the recovery distill).

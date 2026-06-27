@@ -115,62 +115,39 @@ def produce_render(pdir: pathlib.Path, topic: str):
 
 
 # ----------------------------------------------------------------------
-# Project-dir resolution for the conversational jobs (params stay {topic})
-# ----------------------------------------------------------------------
-def _resolve_project_dir(topic: str, *, needs: str) -> pathlib.Path | None:
-    """Best-effort: find the project dir a conversational job should target. `needs` is
-    the artifact that must exist (storyboard.json for compose; composition_manifest.json
-    for render). Newest match first; None if none usable."""
-    import pipeline  # lazy to avoid an import cycle (pipeline imports this module)
-    root = pipeline.PROJECTS_DIR
-    if not root.exists():
-        return None
-    want = pipeline._slug(topic or "")
-    best: list[tuple[float, pathlib.Path]] = []
-    for d in root.iterdir():
-        if not (d / needs).exists():
-            continue
-        proj = chat_state.load_json(d / "project.json", {})
-        ptopic = proj.get("topic") or proj.get("brief") or ""
-        if want and (pipeline._slug(ptopic) == want or want in d.name):
-            best.append((proj.get("updated", 0) or 0, d))
-    if not best:
-        return None
-    best.sort(reverse=True)
-    return best[0][1]
-
-
 class CompositionEngineerAdapter(Adapter):
     module_name = "composition_engine"   # composition-engineer/composition_engine.py
 
-    # job name -> (runner, contract|None, digest, needs-artifact, what he's doing)
+    # job name -> (runner, contract|None, digest, needs-artifact, manifest-name, doing)
     _JOBS = {
         "compose_scenes": (run_compose, "composition_manifest", _compose_digest,
-                           "storyboard.json", "composing the scenes"),
+                           "storyboard.json", "composition", "composing the scenes"),
         "render_video": (run_render, None, None, "composition_manifest.json",
-                         "assembling the final video"),
+                         "render", "assembling the final video"),
     }
 
     def run_job(self, job_name: str, progress, **params) -> dict:
         spec = self._JOBS.get(job_name)
         if spec is None:
             return {"ok": False, "text": f"Mason has no job named {job_name!r}."}
-        runner, contract, digest, needs, doing = spec
+        runner, contract, digest, needs, manifest_name, doing = spec
 
+        import projects
         from contracts import validate
         who = self.entry.display
         topic = (params.get("topic") or "").strip()
+        slug = (params.get("slug") or "").strip()
 
-        pdir = _resolve_project_dir(topic, needs=needs)
-        if pdir is None:
-            msg = (f"Couldn't find a project with {needs} to {doing} for {topic!r}. "
-                   "Run the upstream stages (or the pipeline) first.")
+        pdir = self.resolve_pdir(slug)
+        if pdir is None or not (pdir / needs).exists():
+            msg = (f"No project with {needs} to {doing}. Run the upstream steps for this "
+                   "slug first.")
             if progress is not None:
                 progress.fail(who, msg)
             return {"ok": False, "text": msg}
 
         if progress is not None:
-            progress.start(self.entry.emoji, who, doing, topic)
+            progress.start(self.entry.emoji, who, doing, topic or slug)
         try:
             result = runner(pdir)
         except Exception as exc:  # bad inputs / gate-block / toolchain, said plainly
@@ -198,6 +175,7 @@ class CompositionEngineerAdapter(Adapter):
                 return {"ok": False, "text": text}
             saved = str(pdir / result.get("video", "video.mp4"))
 
+        projects.mark_artifact(slug, manifest_name, saved)
         if progress is not None:
             progress.done(who, f"finished {doing}")
-        return {"ok": True, "text": text, "topic": topic, "saved": saved}
+        return {"ok": True, "text": text, "topic": topic, "slug": slug, "saved": saved}

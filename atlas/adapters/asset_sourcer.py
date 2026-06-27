@@ -94,35 +94,6 @@ def produce_assets(pdir: pathlib.Path, topic: str):
                     f"{st['sourced']} sourced, {st['placeholder']} placeholder")
 
 
-# ----------------------------------------------------------------------
-# Project-dir resolution for the conversational job (params stay {topic})
-# ----------------------------------------------------------------------
-def _resolve_project_dir(topic: str) -> pathlib.Path | None:
-    """Best-effort: find the project dir a conversational job should target.
-
-    The job takes only `topic` (no registry change), so we look under the pipeline's
-    projects/ for a project that has a storyboard.json and matches the topic — newest
-    first. Returns None if none is usable.
-    """
-    import pipeline  # lazy to avoid an import cycle (pipeline imports this module)
-    root = pipeline.PROJECTS_DIR
-    if not root.exists():
-        return None
-    want = pipeline._slug(topic or "")
-    best: list[tuple[float, pathlib.Path]] = []
-    for d in root.iterdir():
-        if not (d / "storyboard.json").exists():
-            continue
-        proj = chat_state.load_json(d / "project.json", {})
-        ptopic = proj.get("topic") or proj.get("brief") or ""
-        if want and (pipeline._slug(ptopic) == want or want in d.name):
-            best.append((proj.get("updated", 0) or 0, d))
-    if not best:
-        return None
-    best.sort(reverse=True)
-    return best[0][1]
-
-
 class AssetSourcerAdapter(Adapter):
     module_name = "source_engine"   # asset-sourcer/source_engine.py
 
@@ -130,20 +101,22 @@ class AssetSourcerAdapter(Adapter):
         if job_name != "source_assets":
             return {"ok": False, "text": f"Magpie has no job named {job_name!r}."}
 
+        import projects
         from contracts import validate
         who = self.entry.display
         topic = (params.get("topic") or "").strip()
+        slug = (params.get("slug") or "").strip()
 
-        pdir = _resolve_project_dir(topic)
-        if pdir is None:
-            msg = (f"Couldn't find a project with a storyboard to source for {topic!r}. "
-                   "Run the storyboard (or the pipeline) first.")
+        pdir = self.resolve_pdir(slug)
+        if pdir is None or not (pdir / "storyboard.json").exists():
+            msg = ("No project with a storyboard to source assets for. Run the storyboard "
+                   "for this slug first.")
             if progress is not None:
                 progress.fail(who, msg)
             return {"ok": False, "text": msg}
 
         if progress is not None:
-            progress.start(self.entry.emoji, who, "sourcing + clearing assets", topic)
+            progress.start(self.entry.emoji, who, "sourcing + clearing assets", topic or slug)
         try:
             manifest = run_source_assets(pdir)
         except Exception as exc:  # an unusable storyboard, said plainly
@@ -157,7 +130,8 @@ class AssetSourcerAdapter(Adapter):
             if progress is not None:
                 progress.fail(who, msg)
             return {"ok": False, "text": msg, "saved": str(pdir / "asset_manifest.json")}
+        projects.mark_artifact(slug, "asset_manifest", pdir / "asset_manifest.json")
         if progress is not None:
             progress.done(who, "finished sourcing the assets")
-        return {"ok": True, "text": _manifest_digest(manifest), "topic": topic,
+        return {"ok": True, "text": _manifest_digest(manifest), "topic": topic, "slug": slug,
                 "saved": str(pdir / "asset_manifest.json")}
