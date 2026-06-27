@@ -4,6 +4,7 @@ returns a DimResult. Pure functions: unit-test with a synthetic evidence dict.""
 from __future__ import annotations
 
 from .types import DimResult, band_score
+from . import parse as _parse
 
 AUDIO_TARGET_LUFS = -14.0
 AUDIO_TOLERANCE = 1.0   # within ±1 LUFS of target = full marks
@@ -94,3 +95,28 @@ def score_dead_air(ev: dict, t: dict) -> DimResult:
         diags.append(f"dead air on scene(s) {nos} ({', '.join(kinds)})")
     return DimResult("dead_air", score, floor, score >= floor, diags,
                      {"flagged": [s["scene_no"] for s in flagged], "total": len(scenes)})
+
+
+def score_motion_variety(ev: dict, t: dict) -> DimResult:
+    cfg = t["dimensions"]["motion_variety"]
+    floor = float(cfg["floor"])
+    html = ev.get("index_html") or ""
+    blocks = _parse.scene_blocks(html)
+    if not blocks:
+        return DimResult("motion_variety", None, floor, None,
+                         ["no scenes parsed from index.html"], {})
+    choreo = html  # signatures scan the whole doc (choreography is inline)
+    sigs = [_parse.scene_signature(b["html"], choreo) for b in blocks]
+    distinct = len(set(sigs))
+    ratio = distinct / len(sigs)
+    score = band_score(ratio, *cfg["band"])
+    diags = []
+    # dominant signature share
+    dom = max(set(sigs), key=sigs.count)
+    dom_n = sigs.count(dom)
+    if dom_n > 1 and dom_n / len(sigs) >= 0.5:
+        diags.append(f"{dom_n}/{len(sigs)} scenes share the '{dom}' beat → templated")
+    if score < floor:
+        diags.append(f"only {distinct} distinct beat(s) across {len(sigs)} scenes")
+    return DimResult("motion_variety", score, floor, score >= floor, diags,
+                     {"distinct": distinct, "scenes": len(sigs), "signatures": sigs})

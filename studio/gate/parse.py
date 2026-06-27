@@ -1,0 +1,46 @@
+"""studio.gate.parse — static structural parsing of a composed index.html, shared by the
+motion_variety and content_fidelity dimensions. Regex-based (the compositions are
+machine-authored with a stable shape), tolerant of missing pieces."""
+from __future__ import annotations
+
+import re
+
+_SECTION_RE = re.compile(
+    r'<section\b[^>]*\bid="(?P<id>s\d+)"[^>]*\bclass="[^"]*\bscene\b[^"]*"[^>]*>'
+    r'(?P<body>.*?)</section>', re.DOTALL | re.IGNORECASE)
+
+# Beat/layout tokens we recognize in the choreography + markup. Order = priority.
+_BEAT_TOKENS = [
+    ("count-up", r'count-host|countUp|count-up'),
+    ("orbit", r'makeOrbitCluster|class="[^"]*orbit'),
+    ("bell", r'\bbell\b|notif'),
+    ("quote-cards", r'quoteCards|class="[^"]*cards'),
+    ("shatter", r'shatter|crumble'),
+    ("drain", r'grayscale|drain'),
+    ("checklist", r'checklist|checkmark'),
+    ("strike", r'strike|strikethrough'),
+    ("signature", r'signature|writeOn'),
+    ("underline", r'makeOutlineDraw|underline'),
+]
+
+
+def scene_blocks(html: str) -> list[dict]:
+    out = []
+    for m in _SECTION_RE.finditer(html or ""):
+        sid = m.group("id")
+        out.append({"scene_no": int(sid[1:]), "id": sid, "html": m.group("body")})
+    return out
+
+
+def scene_signature(block_html: str, choreo_js: str) -> str:
+    """A stable token for the scene's beat. Looks in BOTH the scene markup and the
+    composition's choreography script (beats are wired by `#sid` selector there)."""
+    sid_m = re.search(r'id="(s\d+)"', block_html)
+    sid = sid_m.group(1) if sid_m else ""
+    # choreography lines that mention this scene id
+    scoped = "\n".join(l for l in (choreo_js or "").splitlines() if f"#{sid} " in l or f'#{sid}"' in l)
+    hay = block_html + "\n" + scoped
+    for name, pat in _BEAT_TOKENS:
+        if re.search(pat, hay, re.IGNORECASE):
+            return name
+    return "plain"
