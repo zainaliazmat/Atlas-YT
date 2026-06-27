@@ -156,6 +156,14 @@
       "exports": [
         "makeBigNumber"
       ]
+    },
+    {
+      "id": "checklist-draw",
+      "partial": "motion-library/checklist-draw.js",
+      "kind": "js",
+      "exports": [
+        "makeChecklistDraw"
+      ]
     }
   ],
   "partials": {
