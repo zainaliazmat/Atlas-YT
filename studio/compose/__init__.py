@@ -155,6 +155,26 @@ class Composer:
                 )
         return "\n      ".join(css)
 
+    # --- archetype resolution ------------------------------------------------
+    def _archetype_for(self, scene: dict) -> str:
+        """Resolve the archetype for a scene.
+
+        Resolution order:
+          1. If ``self._storyboard`` has a tag for ``scene['scene_no']``, return it
+             (the Iris-supplied storyboard tag wins).
+          2. Otherwise delegate to ``archetypes.classify(scene)`` (heuristic fallback).
+
+        ``self._storyboard`` is ``{str(scene_no): archetype}`` and is populated by
+        ``author()`` from ``storyboard.json``; it may be ``None`` when the file is absent
+        (legacy projects) — in that case the fallback always applies.
+        """
+        from . import archetypes
+        sb = self._storyboard or {}
+        tag = sb.get(str(scene.get("scene_no", "")))
+        if tag:
+            return tag
+        return archetypes.classify(scene)
+
     # --- build ---------------------------------------------------------------
     def author(self) -> Path:
         brief = _read_json(self.pdir / "research_brief.json", {})
@@ -162,6 +182,18 @@ class Composer:
         scenes = script.get("scenes") or []
         if not scenes:
             raise ComposeError("script has no scenes")
+
+        # Load storyboard tags once (tag wins; absent file → empty map → classify fallback).
+        # Tolerates absence so legacy projects compose without a storyboard stage.
+        sb_raw = _read_json(self.pdir / "storyboard.json", None)
+        if sb_raw is not None:
+            self._storyboard = {
+                str(s["scene_no"]): s["archetype"]
+                for s in (sb_raw.get("scenes") or [])
+                if "scene_no" in s and "archetype" in s
+            }
+        else:
+            self._storyboard = {}
 
         # save/refresh the pack's reusable beats (compounding policy)
         beats = _motion.ensure_motion_library(self.pack)
@@ -291,7 +323,31 @@ class Composer:
 
     def _scene_beat(self, i: int, scene: dict) -> tuple[dict, str]:
         """Decide the bespoke beat for a scene from its content. Returns
-        (beat_descriptor, extra_scene_html)."""
+        (beat_descriptor, extra_scene_html).
+
+        When ``archetypes.REGISTRY`` has a builder for the resolved archetype,
+        that builder is called and its result is used.  Otherwise the existing
+        generic beat logic is applied unchanged — so this method is safe while
+        REGISTRY is empty (Phase B3) and becomes progressively richer as Phase C
+        builders land.
+        """
+        from . import archetypes
+        sid = f"s{i + 1}"
+        arch = self._archetype_for(scene)
+        if arch in archetypes.REGISTRY:
+            ctx = {
+                "sid": sid,
+                "spray": self.spray,
+                "ink": self.ink,
+                "width": self.width,
+                "height": self.height,
+                "at": round(0.6, 3),
+            }
+            result = archetypes.REGISTRY[arch](scene, ctx)
+            beat = {"kind": arch, "token": result.get("token", arch)}
+            return beat, result.get("html", "") + result.get("beats_js", "")
+
+        # --- existing generic beat logic (unchanged) -------------------------
         text = f"{scene.get('on_screen_text','')} {scene.get('narration','')}".lower()
         num = _num(scene.get("on_screen_text") or scene.get("narration") or "")
         # numeric scene -> count-up stat
