@@ -76,3 +76,21 @@ def score_audio(ev: dict, t: dict) -> DimResult:
         score = min(score, floor - 0.5)   # clipping cannot pass
     return DimResult("audio", round(score, 3), floor, score >= floor, diags,
                      {"lufs": lufs, "clipping": clipping})
+
+
+def score_dead_air(ev: dict, t: dict) -> DimResult:
+    cfg = t["dimensions"]["dead_air"]
+    floor = float(cfg["floor"])
+    scenes = (ev.get("motion") or {}).get("scenes") or []
+    if not scenes:
+        return DimResult("dead_air", None, floor, None, ["no per-scene motion (no render)"], {})
+    flagged = [s for s in scenes if s.get("flags")]
+    clean_frac = 1.0 - len(flagged) / len(scenes)
+    score = band_score(clean_frac, *cfg["band"])
+    diags = []
+    if flagged:
+        nos = ", ".join(str(s["scene_no"]) for s in flagged)
+        kinds = sorted({f for s in flagged for f in s["flags"]})
+        diags.append(f"dead air on scene(s) {nos} ({', '.join(kinds)})")
+    return DimResult("dead_air", score, floor, score >= floor, diags,
+                     {"flagged": [s["scene_no"] for s in flagged], "total": len(scenes)})
