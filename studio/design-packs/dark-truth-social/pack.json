@@ -148,6 +148,14 @@
       "exports": [
         "makeOrbitCluster"
       ]
+    },
+    {
+      "id": "big-number",
+      "partial": "motion-library/big-number.js",
+      "kind": "js",
+      "exports": [
+        "makeBigNumber"
+      ]
     }
   ],
   "partials": {
