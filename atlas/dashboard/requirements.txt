@@ -1,8 +1,0 @@
-# Dashboard service deps (additive; install into the existing root venv).
-#   ../venv/bin/pip install -r dashboard/requirements.txt
-fastapi>=0.110
-uvicorn[standard]>=0.27
-starlette>=0.36
-httpx>=0.27            # API/contract tests (TestClient + async)
-pytest>=8.0
-pytest-playwright>=0.5 # Playwright E2E (then: playwright install chromium)
