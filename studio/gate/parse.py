@@ -15,6 +15,7 @@ _BEAT_TOKENS = [
     ("orbit", r'''makeOrbitCluster|class=["'][^"']*orbit'''),
     ("bell", r'\bbell\b|notif'),
     ("quote-cards", r'''quoteCards|makeHighlighterSwipe|class=["'][^"']*quote-card'''),
+    ("calendar-crumble", r'calendar-crumble|makeCalendarCrumble|calendar-grid|class=["\'][^"\']*data-chart'),
     ("shatter", r'shatter|crumble'),
     ("drain", r'grayscale|drain'),
     ("checklist", r'checklist|checkmark'),

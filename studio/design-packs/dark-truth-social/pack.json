@@ -164,6 +164,14 @@
       "exports": [
         "makeChecklistDraw"
       ]
+    },
+    {
+      "id": "calendar-crumble",
+      "partial": "motion-library/calendar-crumble.js",
+      "kind": "js",
+      "exports": [
+        "makeCalendarCrumble"
+      ]
     }
   ],
   "partials": {
