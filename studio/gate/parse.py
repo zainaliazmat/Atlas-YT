@@ -32,11 +32,19 @@ def scene_blocks(html: str) -> list[dict]:
     return out
 
 
-def scene_signature(block_html: str, choreo_js: str) -> str:
+def scene_signature(block_html: str, choreo_js: str, sid: str = "") -> str:
     """A stable token for the scene's beat. Looks in BOTH the scene markup and the
-    composition's choreography script (beats are wired by `#sid` selector there)."""
-    sid_m = re.search(r'id="(s\d+)"', block_html)
-    sid = sid_m.group(1) if sid_m else ""
+    composition's choreography script (beats are wired by `#sid` selector there).
+
+    ``sid`` should be passed explicitly (e.g. ``b["id"]`` from ``scene_blocks``)
+    because ``block_html`` is the inner body of the <section> tag and does not
+    contain the opening tag where ``id="sN"`` lives.  When ``sid`` is empty the
+    function falls back to a best-effort regex extraction from ``block_html`` so
+    that direct callers without a known sid still degrade gracefully.
+    """
+    if not sid:
+        sid_m = re.search(r'id="(s\d+)"', block_html)
+        sid = sid_m.group(1) if sid_m else ""
     # choreography lines that mention this scene id
     scoped = "\n".join(l for l in (choreo_js or "").splitlines() if f"#{sid} " in l or f'#{sid}"' in l)
     hay = block_html + "\n" + scoped

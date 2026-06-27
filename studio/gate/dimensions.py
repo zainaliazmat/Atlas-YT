@@ -106,7 +106,7 @@ def score_motion_variety(ev: dict, t: dict) -> DimResult:
         return DimResult("motion_variety", None, floor, None,
                          ["no scenes parsed from index.html"], {})
     choreo = html  # signatures scan the whole doc (choreography is inline)
-    sigs = [_parse.scene_signature(b["html"], choreo) for b in blocks]
+    sigs = [_parse.scene_signature(b["html"], choreo, b["id"]) for b in blocks]
     distinct = len(set(sigs))
     ratio = distinct / len(sigs)
     score = band_score(ratio, *cfg["band"])
