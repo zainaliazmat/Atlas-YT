@@ -156,9 +156,9 @@ class TestRegistryDispatch:
         """When REGISTRY has no builder for the archetype, _scene_beat uses the
         existing generic beat logic unchanged (the safe fallthrough).
 
-        Updated (C6): centered-statement now has a builder; we use 'map-focus'
-        (a valid vocab archetype with no Phase-C builder yet) via a storyboard
-        tag to exercise the same fallthrough code path.
+        Updated (C11): self-contained via try/finally — picks a registered
+        archetype, pops its builder temporarily, exercises the fallthrough, then
+        restores the original builder regardless of outcome.
         """
         from studio import config
         monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path)
@@ -179,14 +179,26 @@ class TestRegistryDispatch:
         c.spray = c.colors.get("spray", "#2e5e1f")
         c.ink = c.colors.get("ink", "#1f1f1e")
         c._inlines = []
-        # Force a storyboard tag to 'map-focus' — a vocab archetype with no builder yet.
-        # _archetype_for() uses str(scene_no) as the key.
-        c._storyboard = {"5": "map-focus"}
-        assert "map-focus" not in A.REGISTRY, (
-            "'map-focus' must not be in REGISTRY for this fallthrough test to be valid"
+
+        # Pick any registered archetype and temporarily remove its builder so we
+        # can exercise the "archetype resolved but no builder → generic fallthrough"
+        # path. We use 'map-focus' (scene index 4, non-numeric text → underline).
+        # We ensure the builder is present first by importing the module.
+        import studio.compose.archetypes.map_focus  # noqa: F401 — triggers register()
+        chosen_archetype = "map-focus"
+        assert chosen_archetype in A.REGISTRY, (
+            f"Expected '{chosen_archetype}' to be in REGISTRY for this test"
         )
-        scene = {"scene_no": 5, "on_screen_text": "THE MACHINE",
-                 "point": "p", "narration": "n", "duration_est_sec": 6, "claims": []}
-        beat, extra_html = c._scene_beat(4, scene, 24.0)
-        # scene index 4 = not i==0, not numeric, not social → underline
-        assert beat["kind"] == "underline"
+        original_builder = A.REGISTRY[chosen_archetype]
+        try:
+            del A.REGISTRY[chosen_archetype]
+            # Force storyboard to tag scene 5 as the chosen archetype.
+            # _archetype_for() uses str(scene_no) as the key.
+            c._storyboard = {"5": chosen_archetype}
+            scene = {"scene_no": 5, "on_screen_text": "THE MACHINE",
+                     "point": "p", "narration": "n", "duration_est_sec": 6, "claims": []}
+            beat, extra_html = c._scene_beat(4, scene, 24.0)
+            # scene index 4 = not i==0, not numeric, not social → underline
+            assert beat["kind"] == "underline"
+        finally:
+            A.REGISTRY[chosen_archetype] = original_builder

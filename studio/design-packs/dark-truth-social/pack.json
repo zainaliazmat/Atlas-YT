@@ -204,6 +204,14 @@
       "exports": [
         "makeTileParallax"
       ]
+    },
+    {
+      "id": "map-draw",
+      "partial": "motion-library/map-draw.js",
+      "kind": "js",
+      "exports": [
+        "makeMapDraw"
+      ]
     }
   ],
   "partials": {
