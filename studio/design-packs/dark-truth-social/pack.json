@@ -196,6 +196,14 @@
       "exports": [
         "makeDeviceLoop"
       ]
+    },
+    {
+      "id": "tile-parallax",
+      "partial": "motion-library/tile-parallax.js",
+      "kind": "js",
+      "exports": [
+        "makeTileParallax"
+      ]
     }
   ],
   "partials": {

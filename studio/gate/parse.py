@@ -20,6 +20,7 @@ _BEAT_TOKENS = [
     ("drain", r'grayscale|drain'),
     ("checklist", r'checklist|checkmark'),
     ("device-loop", r'device-loop|makeDeviceLoop|device-feed|slot-reel'),
+    ("tile-parallax", r'tile-parallax|makeTileParallax|tile-panel'),
     ("strike", r'strike|strikethrough'),
     ("signature", r'signature|writeOn'),
     ("underline", r'makeOutlineDraw|underline'),
