@@ -19,6 +19,7 @@ _BEAT_TOKENS = [
     ("shatter", r'shatter|crumble'),
     ("drain", r'grayscale|drain'),
     ("checklist", r'checklist|checkmark'),
+    ("device-loop", r'device-loop|makeDeviceLoop|device-feed|slot-reel'),
     ("strike", r'strike|strikethrough'),
     ("signature", r'signature|writeOn'),
     ("underline", r'makeOutlineDraw|underline'),

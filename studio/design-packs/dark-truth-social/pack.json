@@ -188,6 +188,14 @@
       "exports": [
         "makeStrikeStamp"
       ]
+    },
+    {
+      "id": "device-loop",
+      "partial": "motion-library/device-loop.js",
+      "kind": "js",
+      "exports": [
+        "makeDeviceLoop"
+      ]
     }
   ],
   "partials": {
