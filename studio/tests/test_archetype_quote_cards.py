@@ -81,26 +81,38 @@ def test_build_returns_required_keys():
     assert result["token"] == "quote-cards"
 
 
-def test_build_html_contains_quote_body():
+def test_build_html_is_empty():
+    """The builder must NOT re-render claims html — _plan_scene already emits
+    the .quote-card nodes via _content.render_claims.  Returning html here
+    would double-render and break the GSAP selectors."""
     import studio.compose.archetypes.quote_cards as qc
     scene = _make_scene()
     result = qc.build(scene, {"sid": "s3"})
-    assert "behavioral cocaine" in result["html"].lower(), (
-        "Quote body not found in built html"
+    assert result["html"] == "", (
+        f"build() html must be empty string (claims are emitted by _plan_scene), "
+        f"got: {result['html']!r}"
     )
 
 
-def test_build_html_contains_attribution():
+def test_beats_js_references_quote_card_selector():
+    """beats_js must reference '.quote-card' — the class emitted by _plan_scene
+    via _content.render_claims — so the GSAP selectors find the right nodes."""
     import studio.compose.archetypes.quote_cards as qc
     result = qc.build(_make_scene(), {"sid": "s3"})
-    assert "Aza Raskin" in result["html"], "Attribution (byline) not found in built html"
+    assert ".quote-card" in result["beats_js"], (
+        "beats_js does not reference '.quote-card' selector"
+    )
 
 
-def test_build_html_contains_quote_body_and_byline_classes():
+def test_beats_js_anchored_at_ctx_at():
+    """beats_js must be anchored to ctx['at'] so tweens land in the correct
+    scene window (not at t=0)."""
     import studio.compose.archetypes.quote_cards as qc
-    result = qc.build(_make_scene(), {"sid": "s3"})
-    assert "quote-body" in result["html"], ".quote-body class missing"
-    assert "byline" in result["html"], ".byline class missing"
+    ctx = {"sid": "s3", "spray": "#2e5e1f", "at": 7.5}
+    result = qc.build(_make_scene(), ctx)
+    assert "7.5" in result["beats_js"], (
+        "beats_js does not contain ctx['at'] value 7.5 — timing anchor is wrong"
+    )
 
 
 def test_beats_js_calls_highlighter_swipe():
@@ -123,7 +135,8 @@ def test_beats_js_includes_parallax_entry():
 
 
 def test_build_multiple_claims():
-    """build() must handle scenes with >1 attributed quote."""
+    """build() must handle scenes with >1 attributed quote without error;
+    html is always '' (cards are emitted by _plan_scene, not the builder)."""
     import studio.compose.archetypes.quote_cards as qc
     scene = _make_scene(claims=[
         {"claim_id": "c1",
@@ -134,8 +147,9 @@ def test_build_multiple_claims():
          "source_ref": "F2"},
     ])
     result = qc.build(scene, {"sid": "s3"})
-    assert result["html"].count("quote-card") >= 2, (
-        "Expected ≥2 quote-card elements for 2-claim scene"
+    assert result["html"] == "", "html must be empty — cards emitted by _plan_scene"
+    assert "makeHighlighterSwipe" in result["beats_js"], (
+        "beats_js missing makeHighlighterSwipe for multi-claim scene"
     )
 
 
@@ -143,17 +157,27 @@ def test_build_multiple_claims():
 
 def test_scene_signature_returns_quote_cards():
     """A scene built by this archetype must yield scene_signature == 'quote-cards',
-    proving the gate sees a DISTINCT signature (not 'plain')."""
+    proving the gate sees a DISTINCT signature (not 'plain').
+
+    The .quote-card class is emitted by _plan_scene/_content.render_claims, not
+    by the builder itself (html is '').  For the unit test we supply a representative
+    block_html that contains a .quote-card element (as _plan_scene would produce)
+    alongside the builder's beats_js.
+    """
     import studio.compose.archetypes.quote_cards as qc
     from studio.gate.parse import scene_signature
+    from studio.compose._content import render_claims
 
     scene = _make_scene()
     sid = "s3"
     ctx = {"sid": sid, "spray": "#2e5e1f"}
     result = qc.build(scene, ctx)
 
+    # Simulate the html that _plan_scene emits (claims rendered by _content)
+    block_html = render_claims(scene)
+
     # scene_signature receives: inner block html, ALL the composition js, sid
-    sig = scene_signature(result["html"], result["beats_js"], sid)
+    sig = scene_signature(block_html, result["beats_js"], sid)
     assert sig == "quote-cards", (
         f"Expected scene_signature == 'quote-cards' but got {sig!r}. "
         f"Check that _BEAT_TOKENS pattern matches the built output."
@@ -164,9 +188,12 @@ def test_scene_signature_not_plain():
     """Explicit guard: the signature must be 'quote-cards', never the fallback 'plain'."""
     import studio.compose.archetypes.quote_cards as qc
     from studio.gate.parse import scene_signature
+    from studio.compose._content import render_claims
 
-    result = qc.build(_make_scene(), {"sid": "s5"})
-    sig = scene_signature(result["html"], result["beats_js"], "s5")
+    scene = _make_scene()
+    result = qc.build(scene, {"sid": "s5"})
+    block_html = render_claims(scene)
+    sig = scene_signature(block_html, result["beats_js"], "s5")
     assert sig != "plain", (
         "scene_signature fell back to 'plain' — the gate cannot distinguish this archetype"
     )
@@ -213,3 +240,65 @@ def test_parity_invariant_still_holds():
             f"Parity broken: archetype {arch!r} emits token {tok!r} "
             f"not present in _BEAT_TOKENS"
         )
+
+
+# === (e) compose-level single-render guard ===================================
+
+def test_compose_quote_card_renders_exactly_once(tmp_path, monkeypatch):
+    """End-to-end compose guard: a scene with an attributed-quote claim and a
+    storyboard tag of 'quote-card' must render the .quote-body class exactly once
+    in the final index.html — not twice (the double-render bug).
+
+    This test proves that the builder's html='' fix is effective at the compose
+    level: _plan_scene emits the card via _content.render_claims, and the
+    archetype builder adds ONLY beats_js (no duplicate html).
+    """
+    import json
+    from studio import config
+    from studio.compose import compose
+
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path)
+    pdir = tmp_path / "qc_single"
+    pdir.mkdir()
+
+    (pdir / "research_brief.json").write_text(json.dumps({"topic": "t"}))
+    (pdir / "script.json").write_text(json.dumps({
+        "working_title": "Single Render Test",
+        "scenes": [{
+            "scene_no": 1,
+            "on_screen_text": "QUOTE SCENE",
+            "point": "p",
+            "narration": "Here is what Aza Raskin said.",
+            "duration_est_sec": 8,
+            "claims": [{
+                "claim_id": "c1",
+                "text": '"Sprinkling behavioral cocaine over your interface." — Aza Raskin',
+                "source_ref": "F1",
+            }],
+        }],
+    }))
+    # Tag scene 1 as quote-card via storyboard so the builder is dispatched
+    (pdir / "storyboard.json").write_text(json.dumps({
+        "scenes": [{"scene_no": 1, "archetype": "quote-card"}]
+    }))
+
+    out = compose("qc_single", pack_id="dark-truth-social")
+    html = out.read_text(encoding="utf-8")
+
+    # Extract section for scene 1 only (between id="s1" and id="s2" or end)
+    import re
+    m = re.search(r'<section id="s1".*?</section>', html, re.DOTALL)
+    assert m, "Section s1 not found in composed html"
+    section_html = m.group(0)
+
+    # The quote-body class must appear exactly once — not twice
+    count = section_html.count("quote-body")
+    assert count == 1, (
+        f"Expected 'quote-body' exactly once in section s1, got {count}. "
+        f"Double-render bug may have regressed."
+    )
+    # The attribution must also appear exactly once
+    count_attr = section_html.count("Aza Raskin")
+    assert count_attr == 1, (
+        f"Expected 'Aza Raskin' exactly once in section s1, got {count_attr}."
+    )

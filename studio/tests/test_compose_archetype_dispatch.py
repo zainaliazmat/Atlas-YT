@@ -123,7 +123,12 @@ class TestRegistryDispatch:
                     "beats_js": "// custom beat",
                     "token": "custom-token"}
 
-        # Register the fake builder temporarily
+        # Register the fake builder temporarily, saving the real builder + token so
+        # we restore (not destroy) shared module state in finally — a bare `del`
+        # here would leave the real centered-statement builder missing and its token
+        # stuck at "underline" for every later same-session test.
+        _orig_builder = A.REGISTRY.get("centered-statement")
+        _orig_token = A._TOKEN.get("centered-statement")
         A.REGISTRY["centered-statement"] = fake_builder
         A._TOKEN["centered-statement"] = "underline"  # token already exists
         try:
@@ -150,7 +155,17 @@ class TestRegistryDispatch:
             assert len(called) == 1, "builder should have been called once"
             assert "<div class='custom-archetype'>" in extra_html or "custom-archetype" in extra_html
         finally:
-            del A.REGISTRY["centered-statement"]
+            if _orig_builder is not None:
+                A.REGISTRY["centered-statement"] = _orig_builder
+            else:
+                A.REGISTRY.pop("centered-statement", None)
+            if _orig_token is not None:
+                A._TOKEN["centered-statement"] = _orig_token
+            else:
+                A._TOKEN.pop("centered-statement", None)
+        # guard: shared state restored, not corrupted, for later tests
+        assert A.REGISTRY.get("centered-statement") is _orig_builder
+        assert A._TOKEN.get("centered-statement") == _orig_token
 
     def test_missing_registry_falls_through_to_existing_beat(self, tmp_path, monkeypatch):
         """When REGISTRY has no builder for the archetype, _scene_beat uses the

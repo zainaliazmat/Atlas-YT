@@ -1,6 +1,6 @@
 """studio.compose.archetypes.quote_cards — the 'quote-card' archetype builder.
 
-Produces bespoke, deterministic HTML + GSAP beats for scenes whose centrepiece
+Produces bespoke, deterministic GSAP beats for scenes whose centrepiece
 is one or more attributed quotes (the Raskin/Brichter pattern from the S5
 reference).  Each card gets:
   - a parallax entry tween (y + opacity)
@@ -10,32 +10,18 @@ The archetype is registered at import time so compose dispatches to it
 automatically whenever Iris (or the heuristic classify()) tags a scene as
 'quote-card'.
 
+NOTE: This builder returns ``html: ""`` — the `.quote-card` DOM nodes are
+already emitted by ``Composer._plan_scene`` via ``_content.render_claims``.
+Returning them again would cause double-rendering and break the GSAP beat
+selectors (they would animate duplicate stacked cards).
+
 Determinism guarantee: no Math.random / Date.now / new Date / fetch /
 XMLHttpRequest in any authored string.  The beats_js uses `tl` (the master
 timeline passed by the Composer, bound to `window.__timelines`).
 """
 from __future__ import annotations
 
-from studio.compose import _content
 from studio.compose import archetypes
-
-# ---------------------------------------------------------------------------
-# HTML builder
-# ---------------------------------------------------------------------------
-
-def _build_html(scene: dict) -> str:
-    """Render the quote-card block for this scene using the shared content builder.
-
-    Returns the `.claims` HTML produced by `_content.render_claims`, which already
-    emits `.quote-card / .quote-body / .byline` markup for attributed quotes.
-    Falls back to an empty claims wrapper so the DOM slot always exists.
-    """
-    claims_html = _content.render_claims(scene)
-    if not claims_html:
-        # No attributed claims; emit an empty placeholder so beats still have a mount
-        claims_html = '<div class="claims"></div>'
-    return claims_html
-
 
 # ---------------------------------------------------------------------------
 # GSAP beats builder
@@ -107,16 +93,20 @@ def build(scene: dict, ctx: dict) -> dict:
 
     Returns:
         {"html": str, "beats_js": str, "token": str}
+
+    Note: ``html`` is always ``""`` — the `.quote-card` DOM nodes are emitted
+    by ``Composer._plan_scene`` via ``_content.render_claims``.  Returning
+    them here would double-render the cards and cause the GSAP selectors to
+    animate stacked duplicates.
     """
     sid     = ctx.get("sid", "s0")
     color   = ctx.get("spray", "var(--spray,#2e5e1f)")
     at_base = ctx.get("at", 0.6)
 
-    html_block = _build_html(scene)
-    beats_js   = _build_beats_js(scene, sid, color, at_base)
+    beats_js = _build_beats_js(scene, sid, color, at_base)
 
     return {
-        "html":     html_block,
+        "html":     "",
         "beats_js": beats_js,
         "token":    "quote-cards",
     }
