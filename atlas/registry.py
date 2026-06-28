@@ -55,6 +55,12 @@ class AgentEntry:
     persona: bool = True      # exposes an ask_<name> persona tool
     stub: bool = False        # True = registered slot, specialist not yet built
     role: str = ""            # production role/title (e.g. "Scriptwriter")
+    # RETIRED from Atlas's toolset (reversible): the studio v2 spine now owns the whole
+    # video-production line, so the hand-orchestrated production specialists no longer
+    # expose job/persona tools to Atlas. Their engine code stays on disk and is REUSED
+    # internally by studio (see studio/config.py) — flipping this False brings the tools
+    # back. build_server + the roster skip retired entries; nothing else changes.
+    retired: bool = False
 
 
 REGISTRY: list[AgentEntry] = [
@@ -128,6 +134,7 @@ REGISTRY: list[AgentEntry] = [
         project_dir=str(_ROOT / "scriptwriter"),
         adapter_cls=ScriptwriterAdapter,
         role="Scriptwriter",
+        retired=True,   # studio's script stage owns this now (engine reused internally)
         jobs=[JobSpec(
             name="write_script",
             tool="scriptwriter_write_script",
@@ -150,6 +157,7 @@ REGISTRY: list[AgentEntry] = [
         project_dir=str(_ROOT / "art-director"),
         adapter_cls=ArtDirectorAdapter,
         role="Art Director",
+        retired=True,   # studio's storyboard/compose stages own this now
         jobs=[
             JobSpec(
                 name="design_style",
@@ -182,6 +190,7 @@ REGISTRY: list[AgentEntry] = [
         project_dir=str(_ROOT / "asset-sourcer"),
         adapter_cls=AssetSourcerAdapter,
         role="Asset Sourcer & Licensing",
+        retired=True,   # studio's asset library / compose own this now
         jobs=[JobSpec(
             name="source_assets",
             tool="asset_sourcer_source_assets",
@@ -208,6 +217,7 @@ REGISTRY: list[AgentEntry] = [
         project_dir=str(_ROOT / "audio-designer"),
         adapter_cls=AudioAdapter,
         role="Audio / Sound Designer",
+        retired=True,   # studio's vo stage owns this now (Kokoro engine reused internally)
         jobs=[
             JobSpec(
                 name="record_narration",
@@ -243,6 +253,7 @@ REGISTRY: list[AgentEntry] = [
         project_dir=str(_ROOT / "composition-engineer"),
         adapter_cls=CompositionEngineerAdapter,
         role="Composition Engineer",
+        retired=True,   # studio's compose/draft/review/final stages own this now
         jobs=[
             JobSpec(
                 name="compose_scenes",

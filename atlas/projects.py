@@ -143,6 +143,23 @@ def status_text(slug: str) -> str:
     return "\n".join(lines)
 
 
+def delete_project(slug: str) -> dict:
+    """Permanently delete the project workspace `slug` (its whole projects/<slug>/
+    tree), enforced by the structural boundary (PROJECT tier only — see
+    boundary.guarded_delete). Returns {slug, deleted, path}. `deleted` is False if the
+    slug isn't a real project; raises ValueError on an empty slug and
+    WriteBoundaryError if the boundary refuses the path."""
+    import boundary
+    s = (slug or "").strip()
+    if not s:
+        raise ValueError("a slug is required to delete a project")
+    pdir = project_dir(s)
+    if pdir is None:
+        return {"slug": s, "deleted": False, "path": None}
+    removed = boundary.guarded_delete(pdir)
+    return {"slug": s, "deleted": True, "path": str(removed)}
+
+
 def list_projects() -> list[dict]:
     """All projects (newest first) as {slug, topic, updated} — for resume discovery."""
     if not PROJECTS_DIR.exists():

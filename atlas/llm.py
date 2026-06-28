@@ -45,8 +45,8 @@ PROVIDER = os.environ.get("ATLAS_LLM", "claude").strip().lower()
 
 # Per-use Claude models (subscription). Orchestration/persona reasoning wants a
 # capable-but-fast brain; change here only.
-CLAUDE_MODEL = "claude-sonnet-4-6"     # Atlas's reasoning/persona brain
-ORCH_MODEL = "claude-sonnet-4-6"       # the orchestrator's tool-driving brain (orchestrator.py reads this)
+CLAUDE_MODEL = "claude-opus-4-8"       # Atlas's reasoning/persona brain — Claude Opus 4.8 (full slug; no bare aliases)
+ORCH_MODEL = "claude-opus-4-8"         # the orchestrator's tool-driving brain (orchestrator.py reads this)
 CHAT_TIMEOUT_SEC = 180                 # a chat turn beyond this is stalled, not thinking
 
 GEMINI_MODEL = "gemini-2.5-flash"

@@ -144,60 +144,85 @@ def test_job_tool_carries_a_slug_param_and_forwards_it():
     assert params.get("slug") == "espresso-123"
 
 
-def test_start_project_tool_mints_a_project(tmp_path, monkeypatch):
-    import projects
-    monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path)
-    ptool = tools._make_start_project_tool()
-    result = asyncio.run(ptool.handler({"brief": "the attention economy"}))
-    txt = _text(result)
-    assert "Started project" in txt and "attention-economy" in txt
-    # exactly one project dir with a manifest was created
-    made = [d for d in tmp_path.iterdir() if (d / "project.json").exists()]
-    assert len(made) == 1
+# ----------------------------------------------------------------------
+# Production now flows through the studio spine via the `produce` / `approve_gate`
+# tools (the legacy start_project + hand-called chain is retired). These tools call
+# studio through tools.studio_bridge, which we MOCK so the tests stay pure-unit (no
+# real render / network). The CEO checkpoint is captured, not written to disk.
+# ----------------------------------------------------------------------
+def _final_gate_state(slug="att-econ"):
+    return {"slug": slug, "status": "awaiting_final_gate",
+            "brief": {"topic": "the attention economy"},
+            "stages": {}, "gates": {"final": {"status": "awaiting_approval",
+                                              "approvable": True, "reason": "awaiting approval",
+                                              "details": {"motion_ok": True, "review_ok": True,
+                                                          "under_budget": True}}},
+            "artifacts": {}}
 
 
-def test_start_project_tool_needs_a_brief(tmp_path, monkeypatch):
-    import projects
-    monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path)
-    ptool = tools._make_start_project_tool()
-    result = asyncio.run(ptool.handler({}))
-    assert "give me a brief" in _text(result).lower()
+def test_produce_tool_starts_and_surfaces_the_final_gate(monkeypatch):
+    asks = []
+    monkeypatch.setattr(tools.boundary, "kill_switch_active", lambda: False)
+    monkeypatch.setattr(tools.boundary, "request_from_ceo",
+                        lambda *a, **k: asks.append((a, k)) or {"message": "ok"})
+    monkeypatch.setattr(tools.studio_bridge, "start",
+                        lambda topic, **kw: ("att-econ", _final_gate_state()))
+    ptool = tools._make_produce_tool()
+    txt = _text(asyncio.run(ptool.handler({"topic": "the attention economy"})))
+    assert "FINAL GATE" in txt and "att-econ" in txt
+    assert asks, "the final gate should file a CEO approval checkpoint"
 
 
-def test_project_status_tool_reads_the_checklist(tmp_path, monkeypatch):
-    import projects
-    monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path)
-    info = projects.start_project("home espresso", slug="home-espresso")
-    projects.mark_artifact("home-espresso", "research_brief",
-                           info["project_dir"] + "/research_brief.json")
+def test_produce_tool_needs_a_topic(monkeypatch):
+    monkeypatch.setattr(tools.boundary, "kill_switch_active", lambda: False)
+    ptool = tools._make_produce_tool()
+    assert "topic" in _text(asyncio.run(ptool.handler({}))).lower()
+
+
+def test_produce_tool_respects_kill_switch(monkeypatch):
+    monkeypatch.setattr(tools.boundary, "kill_switch_active", lambda: True)
+    called = []
+    monkeypatch.setattr(tools.studio_bridge, "start",
+                        lambda *a, **k: called.append(1) or ("x", {}))
+    ptool = tools._make_produce_tool()
+    txt = _text(asyncio.run(ptool.handler({"topic": "x"})))
+    assert "STOP kill-switch" in txt and not called
+
+
+def test_approve_gate_tool_resumes_and_reports_complete(monkeypatch):
+    monkeypatch.setattr(tools.boundary, "kill_switch_active", lambda: False)
+    done = {"slug": "att-econ", "status": "complete", "brief": {"topic": "t"},
+            "stages": {}, "gates": {}, "artifacts": {"video": "/x/video.mp4"}}
+    seen = {}
+    def fake_resume(slug, *, approve):
+        seen["slug"], seen["approve"] = slug, approve
+        return done
+    monkeypatch.setattr(tools.studio_bridge, "resume", fake_resume)
+    gtool = tools._make_approve_gate_tool()
+    txt = _text(asyncio.run(gtool.handler({"slug": "att-econ"})))
+    assert "complete" in txt and "/x/video.mp4" in txt
+    assert seen == {"slug": "att-econ", "approve": {"final"}}  # defaults to final
+
+
+def test_approve_gate_tool_needs_a_slug_and_valid_gate(monkeypatch):
+    monkeypatch.setattr(tools.boundary, "kill_switch_active", lambda: False)
+    gtool = tools._make_approve_gate_tool()
+    assert "'slug'" in _text(asyncio.run(gtool.handler({"slug": ""})))
+    assert "final" in _text(asyncio.run(gtool.handler({"slug": "s", "gate": "bogus"})))
+
+
+def test_project_status_tool_lists_and_reads_studio(monkeypatch):
+    monkeypatch.setattr(tools.studio_bridge, "list_projects",
+                        lambda: [{"slug": "home-espresso", "topic": "home espresso",
+                                  "status": "complete", "updated": "z"}])
+    monkeypatch.setattr(tools.studio_bridge, "read_state",
+                        lambda slug: {"slug": slug, "status": "complete",
+                                      "brief": {"topic": "home espresso"}, "stages": {},
+                                      "gates": {}, "artifacts": {}} if slug == "home-espresso"
+                                      else None)
     stool = tools._make_project_status_tool()
-    txt = _text(asyncio.run(stool.handler({"slug": "home-espresso"})))
-    assert "✓ research_brief" in txt and "· script" in txt
-    # no slug -> lists known projects
     listing = _text(asyncio.run(stool.handler({})))
-    assert "home-espresso" in listing
-
-
-def test_start_project_arg_logging_is_captured(tmp_path, monkeypatch):
-    import logging
-
-    import projects
-    monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path)
-    logger = logging.getLogger("atlas")
-    for h in list(logger.handlers):           # ensure THIS test's path is used
-        if getattr(h, "_atlas_file", False):
-            h.close()
-            logger.removeHandler(h)
-    logpath = tmp_path / "atlas.log"
-    tools.configure_logging(logpath)
-    try:
-        ptool = tools._make_start_project_tool()
-        asyncio.run(ptool.handler({"brief": "kokoro tts deep dive"}))
-        contents = logpath.read_text()
-        assert "start_project:" in contents
-        assert "kokoro tts deep dive" in contents
-    finally:
-        for h in list(logger.handlers):
-            if getattr(h, "_atlas_file", False):
-                h.close()
-                logger.removeHandler(h)
+    assert "home-espresso" in listing and "[complete]" in listing
+    detail = _text(asyncio.run(stool.handler({"slug": "home-espresso"})))
+    assert "Production 'home-espresso'" in detail
+    assert "No production" in _text(asyncio.run(stool.handler({"slug": "ghost"})))

@@ -74,25 +74,36 @@ def test_asset_sourcer_slot_is_filled_by_magpie():
     assert as_.display == "Magpie"
 
 
-def test_generated_tools_cover_every_role_plus_orchestration():
+# The five production specialists are RETIRED into the studio spine (1A): their engine
+# code stays on disk (reused internally by studio) but Atlas no longer exposes their
+# job/persona tools. The live delegable agents are the survivors below.
+RETIRED = {"scriptwriter", "art_director", "asset_sourcer", "audio",
+           "composition_engineer"}
+LIVE = (SEVEN | ADDITIVE) - RETIRED   # scout, sage, reference_analyst, + the two coaches
+
+
+def test_generated_tools_cover_live_roles_plus_studio_production():
     adapters = registry.build_adapters()
     prog, _ = list_progress()
     _server, allowed = tools.build_server(adapters, prog)
+    # the LIVE (non-retired) agent job tools are generated
     for t in ("scout_find_topics", "sage_research", "sage_factcheck",
-              "scriptwriter_write_script", "art_director_design_style",
-              "art_director_build_storyboard", "asset_sourcer_source_assets",
-              "audio_record_narration", "audio_mix_audio",
-              "composition_engineer_compose_scenes",
-              "composition_engineer_render_video"):
+              "reference_analyst_build_rubric",
+              "editorial_coach_propose_addendum", "production_coach_propose_addendum"):
         assert f"mcp__atlas__{t}" in allowed, t
-    # the non-registry orchestration tools: project workspace + checklist + contract check
-    for t in ("start_project", "project_status", "validate_artifact"):
+    # the ONE production path: the studio spine + its gates replaced the hand-called chain
+    for t in ("produce", "approve_gate", "project_status", "delete_project"):
         assert f"mcp__atlas__{t}" in allowed, t
-    # the pipeline tool is GONE — Atlas orchestrates via the playbook, not a spine tool
-    assert "mcp__atlas__produce_video" not in allowed
-    # persona tool for every role
-    for n in SEVEN:
-        assert f"mcp__atlas__ask_{n}" in allowed
+    # the legacy production tools + the old workspace tools are GONE
+    for t in ("scriptwriter_write_script", "art_director_design_style",
+              "asset_sourcer_source_assets", "audio_record_narration",
+              "composition_engineer_render_video", "start_project", "validate_artifact"):
+        assert f"mcp__atlas__{t}" not in allowed, t
+    # persona tool for every LIVE role; none for a retired one
+    for n in LIVE:
+        assert f"mcp__atlas__ask_{n}" in allowed, n
+    for n in RETIRED:
+        assert f"mcp__atlas__ask_{n}" not in allowed, n
 
 
 def test_roster_shows_role_and_status():
