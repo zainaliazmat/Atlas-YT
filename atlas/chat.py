@@ -29,6 +29,7 @@ import chat_state
 import llm
 import registry
 import session as _session
+from ceo import cycle as ceo_cycle
 from session import AtlasSession, make_distiller  # noqa: F401  (make_distiller re-exported for the test surface)
 
 HERE = pathlib.Path(__file__).parent
@@ -85,8 +86,25 @@ def _on_status(m: str) -> None:
     print("\n" + m, flush=True)
 
 
+def advance_business(sess: AtlasSession) -> None:
+    """CEO mode: run one business work cycle and print its digest + ask."""
+    print("\nAtlas (CEO): running a business cycle…")
+    try:
+        result = sess.advance_business()
+    except Exception as exc:  # the meeting never crashes
+        print(f"(The CEO cycle hit a problem: {exc}\n Try again, or /new if it persists.)")
+        return
+    print(result.get("digest", "(no digest)"))
+    if result.get("ask"):
+        print("   (Filed to ceo/requests.jsonl — your move when you can.)")
+
+
 def handle_message(sess: AtlasSession, user_msg: str) -> None:
     """One CEO message -> Atlas runs the room (streamed). Terminal-side of session.send."""
+    # "advance the business" routes into the deterministic CEO cycle, not a chat turn.
+    if ceo_cycle.is_advance_command(user_msg):
+        advance_business(sess)
+        return
     print("\nAtlas: ", end="", flush=True)
     try:
         sess.send(user_msg, on_text=_on_text, on_status=_on_status)
@@ -101,6 +119,7 @@ def handle_message(sess: AtlasSession, user_msg: str) -> None:
 # ----------------------------------------------------------------------
 HELP = """Commands:
   /agents              who's on the team and what each does
+  /advance             run one CEO business cycle ("advance the business")
   /ask <agent> <q>     ask one agent directly (e.g. /ask scout is faceless dead?)
   /summary             distill the meeting so far, then show what Atlas remembers
   /new                 distill + start a fresh thread (keeps what Atlas knows)
@@ -131,6 +150,8 @@ def handle_command(sess: AtlasSession, raw: str) -> bool:
               "order (start_project → research → script → fact-check → … → render).")
         print(f"\nAtlas's own brain: {llm.effective_provider()}  "
               "(jobs run on each agent's own engine/provider).")
+    elif cmd == "/advance":
+        advance_business(sess)
     elif cmd == "/ask":
         bits = arg.split(maxsplit=1)
         if len(bits) < 2:

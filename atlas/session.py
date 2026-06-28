@@ -318,6 +318,15 @@ class AtlasSession:
         chat_state.append_turn(self.state, "atlas", reply or "")
         return reply
 
+    # ---- CEO mode (deterministic spine; delegates heavy work to the orchestrator) ----
+    def advance_business(self) -> dict:
+        """Run ONE CEO work cycle and record its digest as a turn. Returns the cycle
+        result {digest, ask, kind, ...} for the frontend to render."""
+        result = self.orch.advance_business()
+        chat_state.append_turn(self.state, "user", "advance the business")
+        chat_state.append_turn(self.state, "atlas", result.get("digest", ""))
+        return result
+
     # ---- direct address (deterministic; bypasses the orchestrator LLM) ----
     def ask_agent(self, agent_name: str, question: str):
         """Ask one agent's persona directly. Returns (entry, reply), or (None, None)

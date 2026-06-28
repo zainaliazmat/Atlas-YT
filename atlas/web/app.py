@@ -48,6 +48,7 @@ import chainlit as cl  # noqa: E402
 import registry  # noqa: E402
 import session as _session  # noqa: E402
 import tools  # noqa: E402
+from ceo import governance as gov  # noqa: E402
 from llm import effective_provider  # noqa: E402
 
 tools.configure_logging()  # start_project arg-logs -> atlas/atlas.log (never stdout)
@@ -219,6 +220,9 @@ def _agents_text() -> str:
 
 HELP_TEXT = (
     "**Commands**\n"
+    "- `/digest` — the CEO digest: state, milestones, latest journal, budget, kill switch\n"
+    "- `/requests` — pending asks: approve/decline checkpoints, paste a key, drop a file\n"
+    "- `/halt` · `/resume` — engage / clear the kill switch (`ceo/STOP`)\n"
     "- `/agents` — who's on the team and what each does\n"
     "- `/summary` — distill the meeting so far, then show what Atlas remembers\n"
     "- `/new` — distill + start a fresh thread (keeps what Atlas knows)\n"
@@ -228,10 +232,119 @@ HELP_TEXT = (
 )
 
 
+# ----------------------------------------------------------------------
+# Governance surface — the CEO digest, the inline request queue, the
+# checkpoints, the kill switch + budget meter. ALL routed through the
+# ceo.governance seam (no new orchestration); the UI is a thin renderer.
+# ----------------------------------------------------------------------
+async def _show_digest(display: str) -> None:
+    await cl.Message(await cl.make_async(gov.digest_panel)(), author=display).send()
+
+
+async def _process_request(req: dict, display: str) -> None:
+    """Surface ONE pending ask and act on the CEO's inline response — an approve/
+    decline checkpoint, a pasted key (-> env), a dropped file (-> placed), or info."""
+    idx = req["index"]
+    ctype = gov.checkpoint_type(req)
+    header = (f"**[{ctype}]** {req.get('what','(no detail)')}\n\n"
+              f"_{req.get('why','')}_\n\n`{req.get('how_to_provide','')}`")
+
+    if gov.is_checkpoint(req):
+        res = await cl.AskActionMessage(
+            content=f"🛂 **Checkpoint** — {header}",
+            actions=[cl.Action(name="approve", payload={"i": idx}, label="✅ Approve"),
+                     cl.Action(name="decline", payload={"i": idx}, label="✖ Decline")],
+            timeout=600).send()
+        if res and res.get("name") == "approve":
+            await cl.make_async(gov.approve_request)(idx, "approved in chat")
+            await cl.Message(f"✅ Approved — {req.get('what')}", author=display).send()
+        else:
+            await cl.make_async(gov.decline_request)(idx, "declined in chat")
+            await cl.Message(f"✖ Declined — {req.get('what')}. Left it on the record.",
+                             author=display).send()
+        return
+
+    kind = req.get("kind")
+    if kind == "api_key":
+        var = gov.suggested_env_var(req) or "API_KEY"
+        ans = await cl.AskUserMessage(
+            content=f"🔑 {header}\n\nPaste the value for `{var}` (or type `skip`):",
+            timeout=600).send()
+        val = ((ans or {}).get("output") or "").strip()
+        if val and val.lower() != "skip":
+            await cl.make_async(gov.provide_api_key)(idx, var, val)
+            await cl.Message(f"🔑 Stored `{var}` in the env file (value never logged).",
+                             author=display).send()
+        else:
+            await cl.Message("Left it pending — paste it whenever you're ready.",
+                             author=display).send()
+    elif kind == "asset":
+        files = await cl.AskFileMessage(
+            content=f"📎 {header}\n\nUpload the file to place it:",
+            accept=["*/*"], max_size_mb=100, max_files=1, timeout=600).send()
+        if files:
+            f = files[0]
+            with open(f.path, "rb") as fh:
+                content = fh.read()
+            await cl.make_async(gov.provide_asset)(idx, f.name, content)
+            await cl.Message(f"📎 Placed `{f.name}` for the team.", author=display).send()
+        else:
+            await cl.Message("No file dropped — left it pending.", author=display).send()
+    else:  # info / anything else -> a freeform answer
+        ans = await cl.AskUserMessage(
+            content=f"💬 {header}\n\nReply with the info (or `skip`):", timeout=600).send()
+        val = ((ans or {}).get("output") or "").strip()
+        if val and val.lower() != "skip":
+            await cl.make_async(gov.provide_info)(idx, val)
+            await cl.Message("📝 Noted and on the record.", author=display).send()
+        else:
+            await cl.Message("Left it pending.", author=display).send()
+
+
+async def _show_requests(display: str) -> None:
+    pend = await cl.make_async(gov.pending_requests)()
+    if not pend:
+        await cl.Message("📭 No pending asks — you're all caught up.",
+                         author=display).send()
+        return
+    await cl.Message(f"📬 **{len(pend)} pending ask(s)** — I'll take them one at a time.",
+                     author=display).send()
+    for req in pend:
+        await _process_request(req, display)
+    await cl.Message("That's the queue. `/digest` for the latest.",
+                     author=display).send()
+
+
+async def _toggle_kill_switch(display: str, on: bool) -> None:
+    await cl.make_async(gov.set_kill_switch)(on)
+    if on:
+        await cl.Message("🛑 **Kill switch ENGAGED** (`ceo/STOP`). Atlas will refuse to "
+                         "act until you `/resume`.", author=display).send()
+    else:
+        await cl.Message("🟢 **Kill switch cleared.** Atlas can act again.",
+                         author=display).send()
+
+
 async def _handle_command(sess, display: str, raw: str) -> bool:
     """Return True if the input was a command (already handled), else False. Works for
     Atlas and for any per-agent session (both share the summary-only lifecycle)."""
     cmd = raw.strip().split(maxsplit=1)[0].lower()
+    # CEO governance commands — only meaningful in the Atlas (Showrunner/CEO) seat.
+    if cmd in ("/digest", "/requests", "/asks", "/inbox", "/halt", "/stop", "/resume",
+               "/budget"):
+        if not isinstance(sess, _session.AtlasSession):
+            await cl.Message("_(Governance lives in the Atlas seat — switch to the "
+                             "Atlas profile, top-left.)_", author=display).send()
+            return True
+        if cmd == "/digest" or cmd == "/budget":
+            await _show_digest(display)
+        elif cmd in ("/requests", "/asks", "/inbox"):
+            await _show_requests(display)
+        elif cmd in ("/halt", "/stop"):
+            await _toggle_kill_switch(display, True)
+        elif cmd == "/resume":
+            await _toggle_kill_switch(display, False)
+        return True
     if cmd == "/help":
         await cl.Message(HELP_TEXT, author=display).send()
     elif cmd == "/agents":
@@ -271,6 +384,8 @@ async def on_chat_start():
         present = "  ".join(f"{e.emoji} {e.display}" for e in registry.REGISTRY)
         hello = ["**Atlas — the meeting room.**  `/help` · pick a teammate from the "
                  "profile menu (top-left) to talk to them directly.",
+                 "_CEO governance:_ `/digest` for the board read-out · `/requests` to "
+                 "clear pending asks + checkpoints · `/halt` to stop the line.",
                  f"In the room: {present}"]
         if resuming and sess.state["transcript"]:
             hello.append("\n_(Resuming — I still have our conversation in mind.)_")
