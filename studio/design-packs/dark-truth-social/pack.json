@@ -220,6 +220,14 @@
       "exports": [
         "makeTimelineRail"
       ]
+    },
+    {
+      "id": "diagram-draw",
+      "partial": "motion-library/diagram-draw.js",
+      "kind": "js",
+      "exports": [
+        "makeDiagramDraw"
+      ]
     }
   ],
   "partials": {

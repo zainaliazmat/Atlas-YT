@@ -23,6 +23,7 @@ _BEAT_TOKENS = [
     ("tile-parallax", r'tile-parallax|makeTileParallax|tile-panel'),
     ("map-draw", r'map-draw|makeMapDraw|map-route'),
     ("timeline-rail", r'timeline-rail|makeTimelineRail|rail-node'),
+    ("diagram-draw", r'diagram-draw|makeDiagramDraw|diagram-node|diagram-edge'),
     ("strike", r'strike|strikethrough'),
     ("signature", r'signature|writeOn'),
     ("underline", r'makeOutlineDraw|underline'),
