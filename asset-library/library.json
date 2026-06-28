@@ -1,0 +1,698 @@
+{
+  "schema_version": "1.0",
+  "assets": [
+    {
+      "id": "font-inter",
+      "kind": "font",
+      "tags": [
+        "font",
+        "sans",
+        "body",
+        "variable",
+        "inter"
+      ],
+      "file": "fonts/font-inter.ttf",
+      "license": "OFL-1.1",
+      "attribution": "Inter — Rasmus Andersson (SIL OFL 1.1)",
+      "source": "Google Fonts",
+      "sha256": "0be2399ea925f1f83ff974764761da9860ec50742ed29a5d4c1ffd0c5c7ac3a8",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.240255+00:00",
+      "used_in": [],
+      "family": "Inter"
+    },
+    {
+      "id": "font-roboto-slab",
+      "kind": "font",
+      "tags": [
+        "font",
+        "slab",
+        "serif",
+        "display",
+        "numbers",
+        "roboto-slab"
+      ],
+      "file": "fonts/font-roboto-slab.ttf",
+      "license": "Apache-2.0",
+      "attribution": "Roboto Slab — Google (Apache License 2.0)",
+      "source": "Google Fonts",
+      "sha256": "ddd7e9a573cd82576e7d3ec27f0d4e09eaf97a4016597373226a7b867d8824b7",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.241708+00:00",
+      "used_in": [],
+      "family": "Roboto Slab",
+      "weight": 900
+    },
+    {
+      "id": "font-rubik-spray-paint",
+      "kind": "font",
+      "tags": [
+        "font",
+        "display",
+        "grunge",
+        "hero",
+        "spray",
+        "rubik-spray-paint"
+      ],
+      "file": "fonts/font-rubik-spray-paint.ttf",
+      "license": "OFL-1.1",
+      "attribution": "Rubik Spray Paint — NaN (SIL OFL 1.1)",
+      "source": "Google Fonts",
+      "sha256": "a4f4fa2933d767d1c3149a7baff6758964e2b836a53c0a7cd0ec846bab935830",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.247292+00:00",
+      "used_in": [],
+      "family": "Rubik Spray Paint",
+      "weight": 400
+    },
+    {
+      "id": "font-sacramento",
+      "kind": "font",
+      "tags": [
+        "font",
+        "script",
+        "signature",
+        "handwriting",
+        "sacramento"
+      ],
+      "file": "fonts/font-sacramento.ttf",
+      "license": "OFL-1.1",
+      "attribution": "Sacramento — Astigmatic (SIL OFL 1.1)",
+      "source": "Google Fonts",
+      "sha256": "a5b9de67be454a826b46d858512e32eec8c30312beb4c4f864aee2390414e9c5",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.249024+00:00",
+      "used_in": [],
+      "family": "Sacramento",
+      "weight": 400
+    },
+    {
+      "id": "font-space-mono",
+      "kind": "font",
+      "tags": [
+        "font",
+        "mono",
+        "label",
+        "caption",
+        "metadata",
+        "space-mono"
+      ],
+      "file": "fonts/font-space-mono.ttf",
+      "license": "OFL-1.1",
+      "attribution": "Space Mono — Colophon (SIL OFL 1.1)",
+      "source": "Google Fonts",
+      "sha256": "508a2a382b46a55be24d9edb70ce7d59be695cd5808e641fda24c40864b0d5d2",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.250313+00:00",
+      "used_in": [],
+      "family": "Space Mono",
+      "weight": 400
+    },
+    {
+      "id": "font-spectral",
+      "kind": "font",
+      "tags": [
+        "font",
+        "serif",
+        "body",
+        "editorial",
+        "spectral"
+      ],
+      "file": "fonts/font-spectral.ttf",
+      "license": "OFL-1.1",
+      "attribution": "Spectral — Production Type (SIL OFL 1.1)",
+      "source": "Google Fonts",
+      "sha256": "be71b92e7cdd074647127fe3c0830e78d28b4889abd2c968ce1fd82f98cb38b0",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.252161+00:00",
+      "used_in": [],
+      "family": "Spectral",
+      "weight": 400
+    },
+    {
+      "id": "icon-bell",
+      "kind": "icon",
+      "tags": [
+        "bell",
+        "notification",
+        "alert",
+        "ui",
+        "lucide"
+      ],
+      "file": "icons/icon-bell.svg",
+      "license": "ISC",
+      "attribution": "Lucide (ISC)",
+      "source": "lucide.dev",
+      "sha256": "665b35cd93b39b1cb2da4f2d9993baa3fbb7a5b62eb20d1795b6884810e8e673",
+      "recolorable": true,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.253057+00:00",
+      "used_in": []
+    },
+    {
+      "id": "icon-check",
+      "kind": "icon",
+      "tags": [
+        "check",
+        "done",
+        "tick",
+        "ui",
+        "lucide"
+      ],
+      "file": "icons/icon-check.svg",
+      "license": "ISC",
+      "attribution": "Lucide (ISC)",
+      "source": "lucide.dev",
+      "sha256": "3751b37796055d12e3b955b9afb117878d82ba26d35629afd460d7b070885c17",
+      "recolorable": true,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.253786+00:00",
+      "used_in": []
+    },
+    {
+      "id": "icon-circle-check",
+      "kind": "icon",
+      "tags": [
+        "circle-check",
+        "verified",
+        "approved",
+        "done",
+        "ui",
+        "lucide"
+      ],
+      "file": "icons/icon-circle-check.svg",
+      "license": "ISC",
+      "attribution": "Lucide (ISC)",
+      "source": "lucide.dev",
+      "sha256": "c520dd82fe258a423f1f386f0a664be326bea9695593149e36e0c472ebd744c4",
+      "recolorable": true,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.254501+00:00",
+      "used_in": []
+    },
+    {
+      "id": "icon-eye-off",
+      "kind": "icon",
+      "tags": [
+        "eye-off",
+        "hidden",
+        "privacy",
+        "grayscale",
+        "ui",
+        "lucide"
+      ],
+      "file": "icons/icon-eye-off.svg",
+      "license": "ISC",
+      "attribution": "Lucide (ISC)",
+      "source": "lucide.dev",
+      "sha256": "11591441db9ae4d43ea416a6c71cf95cf902be561afbda840194caccb05081ee",
+      "recolorable": true,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.255291+00:00",
+      "used_in": []
+    },
+    {
+      "id": "icon-refresh-cw",
+      "kind": "icon",
+      "tags": [
+        "refresh-cw",
+        "refresh",
+        "reload",
+        "pull-to-refresh",
+        "ui",
+        "lucide"
+      ],
+      "file": "icons/icon-refresh-cw.svg",
+      "license": "ISC",
+      "attribution": "Lucide (ISC)",
+      "source": "lucide.dev",
+      "sha256": "b0836e2d489760c8bf7a1d5357bd39a1eebdf3e6514db42454f142009b7e36e1",
+      "recolorable": true,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.256097+00:00",
+      "used_in": []
+    },
+    {
+      "id": "icon-smartphone",
+      "kind": "icon",
+      "tags": [
+        "smartphone",
+        "phone",
+        "device",
+        "mobile",
+        "ui",
+        "lucide"
+      ],
+      "file": "icons/icon-smartphone.svg",
+      "license": "ISC",
+      "attribution": "Lucide (ISC)",
+      "source": "lucide.dev",
+      "sha256": "28fdb0558665dae1aaada3e48988c783c6833fbbb61ba8df6fd54fb339cbaf9a",
+      "recolorable": true,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.256883+00:00",
+      "used_in": []
+    },
+    {
+      "id": "icon-infinity",
+      "kind": "icon",
+      "tags": [
+        "infinity",
+        "loop",
+        "endless",
+        "infinite-scroll",
+        "ui",
+        "lucide"
+      ],
+      "file": "icons/icon-infinity.svg",
+      "license": "ISC",
+      "attribution": "Lucide (ISC)",
+      "source": "lucide.dev",
+      "sha256": "bf2c53ed0341d0dba4a78c574b4eadbc264c1137988788fcc69c67d03e37cd13",
+      "recolorable": true,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.257686+00:00",
+      "used_in": []
+    },
+    {
+      "id": "icon-frown",
+      "kind": "icon",
+      "tags": [
+        "frown",
+        "sad",
+        "negative",
+        "unhappy",
+        "ui",
+        "lucide"
+      ],
+      "file": "icons/icon-frown.svg",
+      "license": "ISC",
+      "attribution": "Lucide (ISC)",
+      "source": "lucide.dev",
+      "sha256": "27018e8f64966cb08acf792b1556009f80aac289b9b16833b89754c822435a53",
+      "recolorable": true,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.258584+00:00",
+      "used_in": []
+    },
+    {
+      "id": "icon-award",
+      "kind": "icon",
+      "tags": [
+        "award",
+        "badge",
+        "reward",
+        "medal",
+        "ui",
+        "lucide"
+      ],
+      "file": "icons/icon-award.svg",
+      "license": "ISC",
+      "attribution": "Lucide (ISC)",
+      "source": "lucide.dev",
+      "sha256": "2d4fd0c7c93249dcf004502fefce62403cf5a6d53098c61ce6377b1c448288db",
+      "recolorable": true,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.259415+00:00",
+      "used_in": []
+    },
+    {
+      "id": "brand-x",
+      "kind": "icon",
+      "tags": [
+        "x",
+        "twitter",
+        "social",
+        "brand",
+        "logo"
+      ],
+      "file": "icons/brand-x.svg",
+      "license": "CC0-1.0",
+      "attribution": "Simple Icons (CC0 1.0); logo is a trademark of its owner",
+      "source": "simpleicons.org",
+      "sha256": "693e68863eceb8dc9f72e2acd386ab9c20a10858dab2c076212f7084cb7a32fe",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.260511+00:00",
+      "used_in": []
+    },
+    {
+      "id": "brand-facebook",
+      "kind": "icon",
+      "tags": [
+        "facebook",
+        "meta",
+        "social",
+        "brand",
+        "logo"
+      ],
+      "file": "icons/brand-facebook.svg",
+      "license": "CC0-1.0",
+      "attribution": "Simple Icons (CC0 1.0); logo is a trademark of its owner",
+      "source": "simpleicons.org",
+      "sha256": "b06d18d844ed621b89faffb1a33440cc0ec4f1ffea9f36191f50db19a47c59a6",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.263906+00:00",
+      "used_in": []
+    },
+    {
+      "id": "brand-instagram",
+      "kind": "icon",
+      "tags": [
+        "instagram",
+        "meta",
+        "social",
+        "brand",
+        "logo"
+      ],
+      "file": "icons/brand-instagram.svg",
+      "license": "CC0-1.0",
+      "attribution": "Simple Icons (CC0 1.0); logo is a trademark of its owner",
+      "source": "simpleicons.org",
+      "sha256": "f53af2d1fc5292ba1433b5c1faf50005ce6a997fa302d1816989929f379a59dc",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.265873+00:00",
+      "used_in": []
+    },
+    {
+      "id": "brand-tiktok",
+      "kind": "icon",
+      "tags": [
+        "tiktok",
+        "social",
+        "brand",
+        "logo"
+      ],
+      "file": "icons/brand-tiktok.svg",
+      "license": "CC0-1.0",
+      "attribution": "Simple Icons (CC0 1.0); logo is a trademark of its owner",
+      "source": "simpleicons.org",
+      "sha256": "6f54ac8d325faacea8935bdc44cbed60206a6b408641799e5fea1cba7c1a0af7",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.267439+00:00",
+      "used_in": []
+    },
+    {
+      "id": "brand-youtube",
+      "kind": "icon",
+      "tags": [
+        "youtube",
+        "google",
+        "social",
+        "brand",
+        "logo"
+      ],
+      "file": "icons/brand-youtube.svg",
+      "license": "CC0-1.0",
+      "attribution": "Simple Icons (CC0 1.0); logo is a trademark of its owner",
+      "source": "simpleicons.org",
+      "sha256": "5038808acbbc4e6edda16cbeb1cc6dec80e4e4ee4e227e039c41229fa222aa8c",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.268523+00:00",
+      "used_in": []
+    },
+    {
+      "id": "sfx-whoosh",
+      "kind": "sfx",
+      "tags": [
+        "whoosh",
+        "swipe",
+        "transition"
+      ],
+      "file": "audio/sfx/sfx-whoosh.mp3",
+      "license": "Pixabay Content License",
+      "attribution": "dragon-studio (Pixabay)",
+      "source": "reference/dark-truth-social",
+      "sha256": "c2efd9d902a59bf9ec5019035d7deadd17762136896b6e3cb6dd99ea50997a30",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.269915+00:00",
+      "used_in": [],
+      "duration": 0.575
+    },
+    {
+      "id": "sfx-slot-reel",
+      "kind": "sfx",
+      "tags": [
+        "slot-reel",
+        "slot-machine",
+        "reward",
+        "payout"
+      ],
+      "file": "audio/sfx/sfx-slot-reel.mp3",
+      "license": "Pixabay Content License",
+      "attribution": "freesound_community (Pixabay)",
+      "source": "reference/dark-truth-social",
+      "sha256": "af83b79bf1aca29ba646c79aa96a05f23f7727be758cdcacc3ca450edc1ca714",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.271714+00:00",
+      "used_in": [],
+      "duration": 3.72
+    },
+    {
+      "id": "sfx-glitch",
+      "kind": "sfx",
+      "tags": [
+        "glitch",
+        "distortion",
+        "rgb-split"
+      ],
+      "file": "audio/sfx/sfx-glitch.mp3",
+      "license": "Pixabay Content License",
+      "attribution": "kave_msri (Pixabay)",
+      "source": "reference/dark-truth-social",
+      "sha256": "dfa33523d2831cbc070c89a91edccee5bd38e871136b80ebe79699b72df13412",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.272938+00:00",
+      "used_in": [],
+      "duration": 1.752
+    },
+    {
+      "id": "sfx-stamp",
+      "kind": "sfx",
+      "tags": [
+        "stamp",
+        "impact",
+        "verdict"
+      ],
+      "file": "audio/sfx/sfx-stamp.mp3",
+      "license": "Unknown",
+      "attribution": "",
+      "source": "reference/dark-truth-social",
+      "sha256": "989afa0ab7273240563fe5dd0085e3f5a81851a83a5f796f92f5dcb43b14fe36",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.274220+00:00",
+      "used_in": [],
+      "duration": 0.601
+    },
+    {
+      "id": "sfx-chime",
+      "kind": "sfx",
+      "tags": [
+        "chime",
+        "logo-sting",
+        "piano",
+        "outro"
+      ],
+      "file": "audio/sfx/sfx-chime.mp3",
+      "license": "Pixabay Content License",
+      "attribution": "universfield (Pixabay)",
+      "source": "reference/dark-truth-social",
+      "sha256": "369db37bfbaacb8000485e6131d72732c3dbac14c4b75bb623c5eb5facd1162f",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.276733+00:00",
+      "used_in": [],
+      "duration": 6.243
+    },
+    {
+      "id": "sfx-notification",
+      "kind": "sfx",
+      "tags": [
+        "notification",
+        "bell",
+        "alert",
+        "ding"
+      ],
+      "file": "audio/sfx/sfx-notification.mp3",
+      "license": "Pixabay Content License",
+      "attribution": "universfield (Pixabay)",
+      "source": "reference/dark-truth-social",
+      "sha256": "86d967f2c46c458c37e7b5ec8bdb0734ca630f5b9a5df7870c716e5ac11b102b",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.278409+00:00",
+      "used_in": [],
+      "duration": 1.128
+    },
+    {
+      "id": "sfx-keyboard",
+      "kind": "sfx",
+      "tags": [
+        "keyboard",
+        "typing",
+        "satisfying"
+      ],
+      "file": "audio/sfx/sfx-keyboard.mp3",
+      "license": "Pixabay Content License",
+      "attribution": "yzaak (Pixabay)",
+      "source": "reference/dark-truth-social",
+      "sha256": "bdfa594696dea0570ad6771fd5b7c4a9fd81e173ec38690ff56fb9c5e1f00707",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.283607+00:00",
+      "used_in": [],
+      "duration": 19.592
+    },
+    {
+      "id": "music-dark-hopeful",
+      "kind": "music",
+      "tags": [
+        "bed",
+        "music",
+        "dark",
+        "hopeful"
+      ],
+      "file": "audio/music/music-dark-hopeful.mp3",
+      "license": "Pixabay Content License",
+      "attribution": "desifreemusic + nastelbom (Pixabay)",
+      "source": "reference/dark-truth-social",
+      "sha256": "3f13d162c5716351bf55b20e04702de5f28cd4f6b603d6ffa0d7561abea73a64",
+      "recolorable": false,
+      "provenance": "generated",
+      "created_at": "2026-06-27T11:41:18.293390+00:00",
+      "used_in": [],
+      "duration": 85.029,
+      "mood": [
+        "dark",
+        "hopeful",
+        "transition",
+        "editorial"
+      ]
+    },
+    {
+      "id": "music-dark-horizon",
+      "kind": "music",
+      "tags": [
+        "bed",
+        "music",
+        "dark",
+        "suspense"
+      ],
+      "file": "audio/music/music-dark-horizon.mp3",
+      "license": "Pixabay Content License",
+      "attribution": "desifreemusic (Pixabay)",
+      "source": "reference/dark-truth-social",
+      "sha256": "abe044f72d21e799c4ac4197a695e90ca6a69be774ca18926ca692826a4a1f00",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.316138+00:00",
+      "used_in": [],
+      "duration": 134.952,
+      "mood": [
+        "dark",
+        "suspense",
+        "tension",
+        "build-up"
+      ]
+    },
+    {
+      "id": "music-hopeful",
+      "kind": "music",
+      "tags": [
+        "bed",
+        "music",
+        "hopeful"
+      ],
+      "file": "audio/music/music-hopeful.mp3",
+      "license": "Pixabay Content License",
+      "attribution": "nastelbom (Pixabay)",
+      "source": "reference/dark-truth-social",
+      "sha256": "31e9127968722d60ca5b0c3811a3e0adb05c28b92c064dd33d283dd3de4b2c87",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.337884+00:00",
+      "used_in": [],
+      "duration": 142.028,
+      "mood": [
+        "hopeful",
+        "uplifting",
+        "warm"
+      ]
+    },
+    {
+      "id": "img-portrait",
+      "kind": "img",
+      "tags": [
+        "portrait",
+        "person",
+        "face",
+        "silhouette"
+      ],
+      "file": "img/img-portrait.jpg",
+      "license": "Pexels License",
+      "attribution": "Pexels",
+      "source": "pexels.com",
+      "sha256": "0b04f8c38d7cfb0202385045b2ac4bbb6ce380e75e0aee31860e2b5c6019e83f",
+      "recolorable": false,
+      "provenance": "sourced",
+      "created_at": "2026-06-27T11:41:18.340723+00:00",
+      "used_in": []
+    },
+    {
+      "id": "snippet-count-up",
+      "kind": "snippet",
+      "tags": [
+        "count-up",
+        "procedural",
+        "ui"
+      ],
+      "file": "snippets/snippet-count-up.js",
+      "license": "CC0-1.0",
+      "attribution": "studio (procedural)",
+      "source": "studio.library.generate",
+      "sha256": "341445f2fda23b58c03a3a6c2e3a51dcd5ed65dfc3dab74932a2f0dc6b2b3a88",
+      "recolorable": true,
+      "provenance": "procedural",
+      "created_at": "2026-06-27T12:18:25.839871+00:00",
+      "used_in": [],
+      "factory": "makeCountUp",
+      "semantic": "count-up",
+      "default_color": "currentColor"
+    },
+    {
+      "id": "snippet-bell",
+      "kind": "snippet",
+      "tags": [
+        "bell",
+        "procedural",
+        "ui"
+      ],
+      "file": "snippets/snippet-bell.js",
+      "license": "CC0-1.0",
+      "attribution": "studio (procedural)",
+      "source": "studio.library.generate",
+      "sha256": "2b868dcaf69529bc15ad9b098eb16288018852be47f4b13119b5a149f8ca1b10",
+      "recolorable": true,
+      "provenance": "procedural",
+      "created_at": "2026-06-27T12:18:25.842144+00:00",
+      "used_in": [],
+      "factory": "makeBell",
+      "semantic": "bell",
+      "default_color": "currentColor"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": "studio-channels-1",
+  "_comment": "One entry per YouTube channel. `produce --channel <id>` selects these defaults; --pack/--voice/--render-budget override per run. Adding a channel is a config change, not a code change.",
+  "channels": {
+    "main": {
+      "name": "Main — long-form editorial",
+      "default_pack": "dark-truth-social",
+      "aspect": "16:9",
+      "publish_target": "youtube",
+      "voice": "am_onyx",
+      "render_budget_sec": 600.0
+    },
+    "explainer": {
+      "name": "Explainer — clean tech",
+      "default_pack": "clean-explainer",
+      "aspect": "16:9",
+      "publish_target": "youtube",
+      "voice": "af_heart",
+      "render_budget_sec": 600.0
+    }
+  }
+}

@@ -242,35 +242,6 @@ def produce_storyboard(pdir: pathlib.Path, topic: str):
                     f"{board.get('total_scenes', 0)} scenes; signature beat on scene {sig}")
 
 
-# ----------------------------------------------------------------------
-# Project-dir resolution for the conversational jobs (params stay {topic})
-# ----------------------------------------------------------------------
-def _resolve_project_dir(topic: str) -> pathlib.Path | None:
-    """Best-effort: find the project dir a conversational job should target.
-
-    Both jobs take only `topic` (no registry change), so we look under the pipeline's
-    projects/ for a project that has a script.json and matches the topic — newest
-    first. Returns None if none is usable.
-    """
-    import pipeline  # lazy to avoid an import cycle (pipeline imports this module)
-    root = pipeline.PROJECTS_DIR
-    if not root.exists():
-        return None
-    want = pipeline._slug(topic or "")
-    best: list[tuple[float, pathlib.Path]] = []
-    for d in root.iterdir():
-        if not (d / "script.json").exists():
-            continue
-        proj = chat_state.load_json(d / "project.json", {})
-        ptopic = proj.get("topic") or proj.get("brief") or ""
-        if want and (pipeline._slug(ptopic) == want or want in d.name):
-            best.append((proj.get("updated", 0) or 0, d))
-    if not best:
-        return None
-    best.sort(reverse=True)
-    return best[0][1]
-
-
 class ArtDirectorAdapter(Adapter):
     module_name = "art_engine"   # art-director/art_engine.py
 
@@ -294,14 +265,20 @@ class ArtDirectorAdapter(Adapter):
             return {"ok": False, "text": f"Iris has no job named {job_name!r}."}
         runner, contract, digest, doing = spec
 
+        import projects
         from contracts import validate
         who = self.entry.display
         topic = (params.get("topic") or "").strip()
+        slug = (params.get("slug") or "").strip()
 
-        pdir = _resolve_project_dir(topic)
-        if pdir is None:
-            msg = (f"Couldn't find a project with a script to design for {topic!r}. "
-                   "Run the script (or the pipeline) first.")
+        # The creative-architecture jobs read the brief; style/storyboard read the script.
+        needs = "research_brief.json" if job_name in (
+            "design_treatment", "design_narrative_intent", "design_motion_mood_board") \
+            else "script.json"
+        pdir = self.resolve_pdir(slug)
+        if pdir is None or not (pdir / needs).exists():
+            msg = (f"No project with a {needs} to design from. Run the upstream step for "
+                   "this slug first.")
             if progress is not None:
                 progress.fail(who, msg)
             return {"ok": False, "text": msg}
@@ -309,16 +286,17 @@ class ArtDirectorAdapter(Adapter):
         # build_storyboard depends on the style guide — design it first if absent.
         if job_name == "build_storyboard" and not (pdir / "style_guide.json").exists():
             if progress is not None:
-                progress.start(self.entry.emoji, who, "designing the style first", topic)
+                progress.start(self.entry.emoji, who, "designing the style first", topic or slug)
             try:
                 run_design_style(pdir)
             except Exception as exc:  # noqa: BLE001
                 if progress is not None:
                     progress.fail(who, str(exc))
                 return {"ok": False, "text": str(exc)}
+            projects.mark_artifact(slug, "style_guide", pdir / "style_guide.json")
 
         if progress is not None:
-            progress.start(self.entry.emoji, who, doing, topic)
+            progress.start(self.entry.emoji, who, doing, topic or slug)
         try:
             result = runner(pdir)
         except Exception as exc:  # an unusable script, said plainly
@@ -332,7 +310,8 @@ class ArtDirectorAdapter(Adapter):
             if progress is not None:
                 progress.fail(who, msg)
             return {"ok": False, "text": msg, "saved": str(pdir / f"{contract}.json")}
+        projects.mark_artifact(slug, contract, pdir / f"{contract}.json")
         if progress is not None:
             progress.done(who, f"finished {doing}")
-        return {"ok": True, "text": digest(result), "topic": topic,
+        return {"ok": True, "text": digest(result), "topic": topic, "slug": slug,
                 "saved": str(pdir / f"{contract}.json")}

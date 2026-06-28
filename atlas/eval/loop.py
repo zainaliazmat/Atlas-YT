@@ -46,7 +46,9 @@ _DENIED_ROOTS = [
     _ATLAS_DIR / "contracts",
 ]
 _DENIED_FILES = [
-    _ATLAS_DIR / "pipeline.py",
+    _ATLAS_DIR / "projects.py",
+    _ATLAS_DIR / "tools.py",
+    _ATLAS_DIR / "orchestrator.py",
     _ATLAS_DIR / "registry.py",
     _ATLAS_DIR / "adapters" / "loader.py",
 ]

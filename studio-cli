@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# studio — one-command launcher for the v2 production CLI (studio.run).
+# Pins the repo-root venv so the real engines' deps (dotenv, ddgs, claude-agent-sdk,
+# opencv, soundfile, …) are always on the path — no "ModuleNotFoundError: dotenv" from
+# running under the wrong Python.
+#
+#   ./studio-cli produce --brief "<brief>" --pack dark-truth-social
+#   ./studio-cli produce --resume <slug> --approve final
+#   ./studio-cli review <slug>
+#   ./studio-cli packs            # list Design Packs
+#
+# Everything after the script name is passed straight through to `python -m studio.run`.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_PY="$ROOT/venv/bin/python"
+
+if [ ! -x "$VENV_PY" ]; then
+  echo "✗ Python venv not found at: $VENV_PY" >&2
+  echo "  Create it first, e.g.:  python3 -m venv venv && venv/bin/pip install -r topic-researcher/requirements.txt" >&2
+  exit 1
+fi
+
+# The fleet uses the Claude subscription, never the metered API — a stray key silently
+# switches the SDK to metered billing, so warn (don't fail) if it's set.
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "! ANTHROPIC_API_KEY is set — the SDK will bill the metered API, not your subscription." >&2
+  echo "  Unset it to use your Claude Code plan:  unset ANTHROPIC_API_KEY" >&2
+fi
+
+cd "$ROOT"
+exec "$VENV_PY" -m studio.run "$@"

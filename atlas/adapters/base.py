@@ -40,6 +40,15 @@ class Adapter(ABC):
             self._engine = load_engine(self.entry.project_dir, self.module_name)
         return self._engine
 
+    # ---- project workspace (explicit slug; the manifest module owns the path) ----
+    @staticmethod
+    def resolve_pdir(slug: str):
+        """The project workspace for `slug` (minted by start_project), or None if the
+        slug is empty / no such project. Production jobs read their upstream artifacts
+        from here and write their output here, so one slug accumulates one video."""
+        import projects
+        return projects.project_dir(slug)
+
     # ---- JOB capability (agent-specific) ----
     @abstractmethod
     def run_job(self, job_name: str, progress, **params) -> dict:

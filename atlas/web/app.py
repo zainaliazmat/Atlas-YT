@@ -1,24 +1,23 @@
-"""Atlas — the web operator UI (Phase A streaming + Phase B gates).
+"""Atlas — the web meeting room (the single chat UI).
 
-A SECOND frontend over the exact same session core (session.AtlasSession) the
-terminal REPL drives — no second service, no duplicated orchestration. This file
-owns only browser I/O; all orchestration/memory logic lives in session.py, and the
-contracts / pipeline / gates / agent engines are untouched.
+The primary frontend over the shared session core (session.AtlasSession). The terminal
+REPL (chat.py) is a thin dev fallback over the SAME core. This file owns only browser
+I/O; all orchestration/memory logic lives in session.py + the orchestrator, and the
+agent engines are untouched.
 
-Phase B adds the two human gates as inline artifact preview + Approve/Revise buttons.
-Approve is a DIRECT, deterministic pipeline.produce(slug, approve=[gate]) call (the
-gate code runs unchanged); its result is recorded into Atlas's transcript so the next
-turn narrates coherently. Revise is just a conversational turn back to Atlas.
+Atlas is the SOLE orchestrator: there is no pipeline and no gate-button machinery.
+Approvals are CONVERSATIONAL — Atlas runs the production playbook by calling its team's
+tools, stops at the fact-check checkpoint to tell you the verdict, and asks in plain
+chat before the final render. You just talk to it.
 
 Run it (from the atlas/ directory, with the shared venv active):
 
     chainlit run web/app.py -w        # -> http://localhost:8000
 
-Phase A scope: stream a meeting turn live — Atlas's words (including the
-"🧠 I'm going with …" decision lines, which are part of Atlas's streamed text) and
-the deterministic 🔎/✅ status lines as they happen. The same summary-only memory
-lifecycle as the REPL: /new, /summary, /help, /agents work here too, and closing the
-tab distills (or parks) the meeting so nothing is lost.
+Streams a meeting turn live — Atlas's words (including the "🧠 I'm going with …"
+decision lines) and the deterministic 🔎/✅ status lines as they happen. The same
+summary-only memory lifecycle as the REPL: /new, /summary, /help, /agents work here
+too, and closing the tab distills (or parks) the meeting so nothing is lost.
 
 NOTE (single-operator local v1): the web UI and the terminal REPL share ONE
 chat_state.json. Atomic writes prevent corruption, but don't run BOTH against the
@@ -46,13 +45,13 @@ if ATLAS_DIR not in sys.path:
 
 import chainlit as cl  # noqa: E402
 
-import project_view  # noqa: E402
 import registry  # noqa: E402
 import session as _session  # noqa: E402
 import tools  # noqa: E402
+from ceo import governance as gov  # noqa: E402
 from llm import effective_provider  # noqa: E402
 
-tools.configure_logging()  # produce_video arg-logs -> atlas/atlas.log (never stdout)
+tools.configure_logging()  # start_project arg-logs -> atlas/atlas.log (never stdout)
 
 ATLAS_PROFILE = "Atlas — Showrunner"
 # Per-agent persona chats keep their own summary-only memory web-locally, SEPARATE
@@ -221,6 +220,9 @@ def _agents_text() -> str:
 
 HELP_TEXT = (
     "**Commands**\n"
+    "- `/digest` — the CEO digest: state, milestones, latest journal, budget, kill switch\n"
+    "- `/requests` — pending asks: approve/decline checkpoints, paste a key, drop a file\n"
+    "- `/halt` · `/resume` — engage / clear the kill switch (`ceo/STOP`)\n"
     "- `/agents` — who's on the team and what each does\n"
     "- `/summary` — distill the meeting so far, then show what Atlas remembers\n"
     "- `/new` — distill + start a fresh thread (keeps what Atlas knows)\n"
@@ -230,10 +232,119 @@ HELP_TEXT = (
 )
 
 
+# ----------------------------------------------------------------------
+# Governance surface — the CEO digest, the inline request queue, the
+# checkpoints, the kill switch + budget meter. ALL routed through the
+# ceo.governance seam (no new orchestration); the UI is a thin renderer.
+# ----------------------------------------------------------------------
+async def _show_digest(display: str) -> None:
+    await cl.Message(await cl.make_async(gov.digest_panel)(), author=display).send()
+
+
+async def _process_request(req: dict, display: str) -> None:
+    """Surface ONE pending ask and act on the CEO's inline response — an approve/
+    decline checkpoint, a pasted key (-> env), a dropped file (-> placed), or info."""
+    idx = req["index"]
+    ctype = gov.checkpoint_type(req)
+    header = (f"**[{ctype}]** {req.get('what','(no detail)')}\n\n"
+              f"_{req.get('why','')}_\n\n`{req.get('how_to_provide','')}`")
+
+    if gov.is_checkpoint(req):
+        res = await cl.AskActionMessage(
+            content=f"🛂 **Checkpoint** — {header}",
+            actions=[cl.Action(name="approve", payload={"i": idx}, label="✅ Approve"),
+                     cl.Action(name="decline", payload={"i": idx}, label="✖ Decline")],
+            timeout=600).send()
+        if res and res.get("name") == "approve":
+            await cl.make_async(gov.approve_request)(idx, "approved in chat")
+            await cl.Message(f"✅ Approved — {req.get('what')}", author=display).send()
+        else:
+            await cl.make_async(gov.decline_request)(idx, "declined in chat")
+            await cl.Message(f"✖ Declined — {req.get('what')}. Left it on the record.",
+                             author=display).send()
+        return
+
+    kind = req.get("kind")
+    if kind == "api_key":
+        var = gov.suggested_env_var(req) or "API_KEY"
+        ans = await cl.AskUserMessage(
+            content=f"🔑 {header}\n\nPaste the value for `{var}` (or type `skip`):",
+            timeout=600).send()
+        val = ((ans or {}).get("output") or "").strip()
+        if val and val.lower() != "skip":
+            await cl.make_async(gov.provide_api_key)(idx, var, val)
+            await cl.Message(f"🔑 Stored `{var}` in the env file (value never logged).",
+                             author=display).send()
+        else:
+            await cl.Message("Left it pending — paste it whenever you're ready.",
+                             author=display).send()
+    elif kind == "asset":
+        files = await cl.AskFileMessage(
+            content=f"📎 {header}\n\nUpload the file to place it:",
+            accept=["*/*"], max_size_mb=100, max_files=1, timeout=600).send()
+        if files:
+            f = files[0]
+            with open(f.path, "rb") as fh:
+                content = fh.read()
+            await cl.make_async(gov.provide_asset)(idx, f.name, content)
+            await cl.Message(f"📎 Placed `{f.name}` for the team.", author=display).send()
+        else:
+            await cl.Message("No file dropped — left it pending.", author=display).send()
+    else:  # info / anything else -> a freeform answer
+        ans = await cl.AskUserMessage(
+            content=f"💬 {header}\n\nReply with the info (or `skip`):", timeout=600).send()
+        val = ((ans or {}).get("output") or "").strip()
+        if val and val.lower() != "skip":
+            await cl.make_async(gov.provide_info)(idx, val)
+            await cl.Message("📝 Noted and on the record.", author=display).send()
+        else:
+            await cl.Message("Left it pending.", author=display).send()
+
+
+async def _show_requests(display: str) -> None:
+    pend = await cl.make_async(gov.pending_requests)()
+    if not pend:
+        await cl.Message("📭 No pending asks — you're all caught up.",
+                         author=display).send()
+        return
+    await cl.Message(f"📬 **{len(pend)} pending ask(s)** — I'll take them one at a time.",
+                     author=display).send()
+    for req in pend:
+        await _process_request(req, display)
+    await cl.Message("That's the queue. `/digest` for the latest.",
+                     author=display).send()
+
+
+async def _toggle_kill_switch(display: str, on: bool) -> None:
+    await cl.make_async(gov.set_kill_switch)(on)
+    if on:
+        await cl.Message("🛑 **Kill switch ENGAGED** (`ceo/STOP`). Atlas will refuse to "
+                         "act until you `/resume`.", author=display).send()
+    else:
+        await cl.Message("🟢 **Kill switch cleared.** Atlas can act again.",
+                         author=display).send()
+
+
 async def _handle_command(sess, display: str, raw: str) -> bool:
     """Return True if the input was a command (already handled), else False. Works for
     Atlas and for any per-agent session (both share the summary-only lifecycle)."""
     cmd = raw.strip().split(maxsplit=1)[0].lower()
+    # CEO governance commands — only meaningful in the Atlas (Showrunner/CEO) seat.
+    if cmd in ("/digest", "/requests", "/asks", "/inbox", "/halt", "/stop", "/resume",
+               "/budget"):
+        if not isinstance(sess, _session.AtlasSession):
+            await cl.Message("_(Governance lives in the Atlas seat — switch to the "
+                             "Atlas profile, top-left.)_", author=display).send()
+            return True
+        if cmd == "/digest" or cmd == "/budget":
+            await _show_digest(display)
+        elif cmd in ("/requests", "/asks", "/inbox"):
+            await _show_requests(display)
+        elif cmd in ("/halt", "/stop"):
+            await _toggle_kill_switch(display, True)
+        elif cmd == "/resume":
+            await _toggle_kill_switch(display, False)
+        return True
     if cmd == "/help":
         await cl.Message(HELP_TEXT, author=display).send()
     elif cmd == "/agents":
@@ -268,12 +379,13 @@ async def on_chat_start():
     sess = await cl.make_async(_REGISTRY.get)(profile)
     cl.user_session.set("sess", sess)
     cl.user_session.set("profile", profile)
-    cl.user_session.set("gate_shown", None)  # fresh connection -> re-surface a gate
 
     if isinstance(sess, _session.AtlasSession):
         present = "  ".join(f"{e.emoji} {e.display}" for e in registry.REGISTRY)
         hello = ["**Atlas — the meeting room.**  `/help` · pick a teammate from the "
                  "profile menu (top-left) to talk to them directly.",
+                 "_CEO governance:_ `/digest` for the board read-out · `/requests` to "
+                 "clear pending asks + checkpoints · `/halt` to stop the line.",
                  f"In the room: {present}"]
         if resuming and sess.state["transcript"]:
             hello.append("\n_(Resuming — I still have our conversation in mind.)_")
@@ -281,8 +393,6 @@ async def on_chat_start():
             hello.append("\n_(Atlas remembers what matters from before — pick up "
                          "wherever you like.)_")
         await cl.Message("\n\n".join(hello), author="Atlas").send()
-        # Surface any project paused at a gate (disk-backed -> survives switches).
-        await _maybe_show_gate(sess)
     else:
         e = sess.entry
         hello = [f"**{e.emoji} {e.display} — {e.role}.**  {e.blurb}",
@@ -392,160 +502,3 @@ async def on_message(message: cl.Message):
             f"\n\n_({display} hit a problem: {error}. Try again, or `/new` if it "
             "persists.)_")
     await msg.update()
-
-    # Only Atlas drives the pipeline -> only Atlas can leave a project at a gate.
-    if is_atlas:
-        await _maybe_show_gate(sess)
-
-
-# ----------------------------------------------------------------------
-# Gates — inline artifact preview + Approve / Revise (Phase B)
-# ----------------------------------------------------------------------
-async def _maybe_show_gate(sess) -> None:
-    try:
-        blk = sess.latest_blocked_project()
-    except Exception:  # noqa: BLE001 — gate detection must never break the chat
-        return
-    if not blk:
-        cl.user_session.set("gate_shown", None)
-        return
-    key = (blk["slug"], blk["gate"], blk.get("updated"))
-    if cl.user_session.get("gate_shown") == key:
-        return  # already presented this exact blocked state
-    cl.user_session.set("gate_shown", key)
-    try:
-        if blk["gate"] == "factcheck":
-            await _show_factcheck_gate(blk)
-        elif blk["gate"] == "final_render":
-            await _show_render_gate(blk)
-    except Exception as exc:  # noqa: BLE001 — preview failure is non-fatal
-        await cl.Message(f"_(Couldn't render the {blk['gate']} gate preview: {exc}. "
-                         f"The project `{blk['slug']}` is paused at that gate.)_",
-                         author="Gate").send()
-
-
-def _gate_actions(slug: str, gate: str, *, include_approve: bool = True) -> list:
-    actions = []
-    if include_approve:
-        actions.append(cl.Action(name="approve_gate", payload={"slug": slug, "gate": gate},
-                                 label="✅ Approve",
-                                 tooltip="Sign off and resume the pipeline"))
-    actions.append(cl.Action(name="revise_gate", payload={"slug": slug, "gate": gate},
-                             label="✍️ Revise", tooltip="Send it back to Atlas to revise"))
-    return actions
-
-
-async def _show_factcheck_gate(blk) -> None:
-    pv = await cl.make_async(project_view.gate1_preview)(blk["project_dir"])
-    v = pv.get("summary", {}) or {}
-    is_block = pv.get("verdict") == "block"
-    lines = [f"### ⚖️ Fact-check gate — *{blk['label']}*",
-             f"**Verdict: `{pv.get('verdict')}`**  ·  "
-             f"verified {v.get('verified', 0)}, flagged {v.get('flagged', 0)}, "
-             f"unverifiable {v.get('unverifiable', 0)}"]
-    if is_block:
-        # A `block` can't be approved away (the pipeline re-earns it), so we DON'T offer
-        # Approve here — it would only re-block. Lead with Revise. (UI-only; the gate
-        # logic in pipeline.py is untouched and still enforces this server-side.)
-        lines.append("> ⛔ This is a **BLOCK** — it can't be approved away. The flagged "
-                     "claims must be revised first, so only **Revise** is offered.")
-    flagged = pv.get("flagged") or []
-    if flagged:
-        lines.append("\n**Flagged / unverifiable claims**")
-        for c in flagged:
-            note = f" — _{c['note']}_" if c.get("note") else ""
-            lines.append(f"- `{c.get('claim_id')}` (scene {c.get('scene_no')}, "
-                         f"{c.get('status')}): \"{c.get('claim_text', '')}\"{note}")
-    else:
-        lines.append("\nNo flagged or unverifiable claims — the report is clean.")
-    sc = pv.get("script", {})
-    lines.append(f"\n**Script:** *{sc.get('working_title', '')}* · "
-                 f"{sc.get('total_scenes', 0)} scenes · ~{sc.get('est_runtime_sec', 0)}s")
-    await cl.Message("\n".join(lines), author="Gate · Fact-check",
-                     actions=_gate_actions(blk["slug"], "factcheck",
-                                           include_approve=not is_block)).send()
-
-
-async def _show_render_gate(blk) -> None:
-    pv = await cl.make_async(project_view.gate2_preview)(blk["project_dir"])
-    plan = pv.get("plan", {})
-    lines = [f"### 🎬 Final-render gate — *{plan.get('working_title') or blk['label']}*",
-             f"{plan.get('scenes', 0)} scenes · ~{plan.get('est_runtime_sec', 0)}s · "
-             f"audio {plan.get('audio_duration_sec', 0)}s",
-             f"_{plan.get('plan', '')}_"]
-    drafts = pv.get("draft_renders") or []
-    lines.append(f"\nReview the **{len(drafts)} draft scene render(s)** below before "
-                 "spending on the final render.")
-    elements = [cl.Video(name=p.parent.parent.name, path=str(p), display="inline")
-                for p in drafts]
-    await cl.Message("\n".join(lines), author="Gate · Final render", elements=elements,
-                     actions=_gate_actions(blk["slug"], "final_render")).send()
-
-
-@cl.action_callback("approve_gate")
-async def on_approve(action: cl.Action):
-    sess = cl.user_session.get("sess")
-    if not isinstance(sess, _session.AtlasSession):
-        return  # gates belong to Atlas; ignore a stale action on another profile
-    slug = action.payload.get("slug")
-    gate = action.payload.get("gate")
-    try:  # prevent a double-click re-approving the same gate
-        await action.remove()
-    except Exception:  # noqa: BLE001
-        pass
-
-    msg = cl.Message(content=f"**Signing off the {gate} gate — resuming the pipeline…**",
-                     author="Pipeline")
-    await msg.send()
-    error, result = await _stream_into(
-        msg,
-        # Approve is a DIRECT, deterministic pipeline call (NOT routed through Atlas);
-        # the gate code runs unchanged. Sync -> worker thread; status streams live.
-        lambda on_text, on_status: cl.make_async(sess.approve_gate)(
-            slug, gate, on_status=on_status))
-    if error:
-        await msg.stream_token(
-            f"\n\n_(The pipeline hit a problem resuming: {error}. Nothing was advanced; "
-            "try again or ask Atlas.)_")
-        await msg.update()
-        return
-
-    await msg.stream_token("\n\n" + _approve_summary(gate, result or {}))
-    await msg.update()
-    # The new state was recorded into Atlas's transcript by approve_gate, so Atlas's
-    # next turn narrates coherently. Surface the NEXT gate (or completion) right away.
-    await _maybe_show_gate(sess)
-
-
-def _approve_summary(gate: str, result: dict) -> str:
-    status = result.get("status")
-    if status == "done":
-        return f"🎬 **Done** — the pipeline finished. Video at `{result.get('video')}`."
-    if status == "blocked":
-        nxt = result.get("gate")
-        if nxt == gate:
-            return (f"⛔ The **{gate}** gate still blocks — {result.get('reason', '')} "
-                    "Use **Revise** to fix it.")
-        return (f"✅ **{gate}** signed off — the pipeline advanced and is now paused at "
-                f"the **{nxt}** gate (see below).")
-    if status == "failed":
-        return f"❌ The pipeline could not advance: {result.get('errors')}."
-    return f"Pipeline state: {status}."
-
-
-@cl.action_callback("revise_gate")
-async def on_revise(action: cl.Action):
-    # Revise is OPEN-ENDED agent work, NOT a deterministic transition — so it's just a
-    # normal conversational turn back to Atlas. We prompt; the CEO's next message flows
-    # to Atlas (which can re-run the scriptwriter, re-research, etc.).
-    gate = action.payload.get("gate")
-    try:
-        await action.remove()
-    except Exception:  # noqa: BLE001
-        pass
-    where = "fact-check" if gate == "factcheck" else "render"
-    await cl.Message(
-        f"Tell me what to change about the {where}, and I'll have the team revise it — "
-        "for example *“soften the claim in scene 2”* or *“re-research the pricing.”* "
-        "Just type it as a normal message.",
-        author="Atlas").send()

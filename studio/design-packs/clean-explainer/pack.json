@@ -1,0 +1,185 @@
+{
+  "id": "clean-explainer",
+  "name": "Clean Tech Explainer",
+  "blurb": "Bright, minimal sans-serif explainer: white canvas, faint grid, soft-shadow cards, single blue accent. Reuses the shared motion mechanism.",
+  "aspect_defaults": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30
+  },
+  "fonts": [
+    {
+      "family": "Inter",
+      "weights": [
+        400,
+        700,
+        800
+      ],
+      "role": "body",
+      "file": "fonts/Inter-VariableFont.ttf",
+      "source": "Google Fonts"
+    },
+    {
+      "family": "Space Mono",
+      "weights": [
+        400
+      ],
+      "role": "mono",
+      "file": "fonts/SpaceMono-Regular.ttf",
+      "source": "Google Fonts"
+    }
+  ],
+  "required_assets": [
+    {
+      "id": "font-inter",
+      "kind": "font",
+      "license": "OFL",
+      "ref": "fonts/Inter-VariableFont.ttf",
+      "note": "heading / subhead / body"
+    },
+    {
+      "id": "font-space-mono",
+      "kind": "font",
+      "license": "OFL",
+      "ref": "fonts/SpaceMono-Regular.ttf",
+      "note": "mono labels / captions"
+    }
+  ],
+  "motion_index": [
+    {
+      "id": "retimer",
+      "partial": "_shared/retimer.js",
+      "kind": "js",
+      "exports": [
+        "makeRetimer"
+      ]
+    },
+    {
+      "id": "transitions",
+      "partial": "_shared/transitions.js",
+      "kind": "js",
+      "exports": [
+        "makeTransitions"
+      ]
+    },
+    {
+      "id": "ticker",
+      "partial": "_shared/ticker.js",
+      "kind": "js",
+      "exports": [
+        "makeTicker"
+      ]
+    },
+    {
+      "id": "outline-self-draw",
+      "partial": "motion-library/outline-self-draw.js",
+      "kind": "js",
+      "exports": [
+        "makeOutlineDraw"
+      ]
+    },
+    {
+      "id": "highlighter-swipe",
+      "partial": "motion-library/highlighter-swipe.js",
+      "kind": "js",
+      "exports": [
+        "makeHighlighterSwipe"
+      ]
+    },
+    {
+      "id": "orbit-cluster",
+      "partial": "motion-library/orbit-cluster.js",
+      "kind": "js",
+      "exports": [
+        "makeOrbitCluster"
+      ]
+    },
+    {
+      "id": "big-number",
+      "partial": "motion-library/big-number.js",
+      "kind": "js",
+      "exports": [
+        "makeBigNumber"
+      ]
+    },
+    {
+      "id": "checklist-draw",
+      "partial": "motion-library/checklist-draw.js",
+      "kind": "js",
+      "exports": [
+        "makeChecklistDraw"
+      ]
+    },
+    {
+      "id": "calendar-crumble",
+      "partial": "motion-library/calendar-crumble.js",
+      "kind": "js",
+      "exports": [
+        "makeCalendarCrumble"
+      ]
+    },
+    {
+      "id": "shatter-glitch",
+      "partial": "motion-library/shatter-glitch.js",
+      "kind": "js",
+      "exports": [
+        "makeShatterGlitch"
+      ]
+    },
+    {
+      "id": "strike-stamp",
+      "partial": "motion-library/strike-stamp.js",
+      "kind": "js",
+      "exports": [
+        "makeStrikeStamp"
+      ]
+    },
+    {
+      "id": "device-loop",
+      "partial": "motion-library/device-loop.js",
+      "kind": "js",
+      "exports": [
+        "makeDeviceLoop"
+      ]
+    },
+    {
+      "id": "tile-parallax",
+      "partial": "motion-library/tile-parallax.js",
+      "kind": "js",
+      "exports": [
+        "makeTileParallax"
+      ]
+    },
+    {
+      "id": "map-draw",
+      "partial": "motion-library/map-draw.js",
+      "kind": "js",
+      "exports": [
+        "makeMapDraw"
+      ]
+    },
+    {
+      "id": "timeline-rail",
+      "partial": "motion-library/timeline-rail.js",
+      "kind": "js",
+      "exports": [
+        "makeTimelineRail"
+      ]
+    },
+    {
+      "id": "diagram-draw",
+      "partial": "motion-library/diagram-draw.js",
+      "kind": "js",
+      "exports": [
+        "makeDiagramDraw"
+      ]
+    }
+  ],
+  "partials": {
+    "filters": "partials/filters.html",
+    "base_css": "partials/base.css",
+    "transitions": "_shared/transitions.js",
+    "ticker": "_shared/ticker.js",
+    "retimer": "_shared/retimer.js"
+  }
+}

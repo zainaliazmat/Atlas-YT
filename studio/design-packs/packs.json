@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "packs": [
+    {
+      "id": "clean-explainer",
+      "name": "Clean Tech Explainer",
+      "dir": "clean-explainer",
+      "blurb": "Bright, minimal sans-serif explainer: white canvas, faint grid, soft-shadow cards, single blue accent. Reuses the shared motion mechanism."
+    },
+    {
+      "id": "dark-truth-social",
+      "name": "Dark Truth Behind the Social Media",
+      "dir": "dark-truth-social",
+      "blurb": "Warm-paper grunge editorial: spray-paint hero type, 1-bit halftone cutouts, live grain, news-conveyor ticker, VO-locked choreography."
+    }
+  ]
+}

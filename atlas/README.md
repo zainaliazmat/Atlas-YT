@@ -1,9 +1,11 @@
 # Atlas — the Showrunner
 
-Atlas is the **head of your agent fleet**: a single "meeting room" chat where you (the
-CEO) talk to a calm showrunner that coordinates an 8-agent video studio and runs it
-through a deterministic production pipeline that turns a topic brief into a finished,
-narrated, fact-checked explainer video.
+Atlas is the **head of your agent fleet** and its **sole orchestrator**: a single chat
+where you (the CEO) talk to a calm showrunner that coordinates an 8-agent video studio.
+There is no separate pipeline and no dashboard — Atlas runs the whole video-production
+flow himself, as a **playbook in his head**, by delegating to his teammates' tools in
+sequence against one project workspace until a topic brief becomes a finished, narrated,
+fact-checked explainer video.
 
 The fleet (all 8 built, all with real engines):
 
@@ -20,7 +22,8 @@ The fleet (all 8 built, all with real engines):
 
 You talk to Atlas. Atlas decides who to send in, runs them, and brings the answer back
 as a clear call. The existing per-agent chats still work for debugging; Atlas's room
-(terminal REPL or the Chainlit **web operator UI**) is the main interface now.
+(the Chainlit **web chat**, or the terminal REPL as a dev fallback) is the only
+interface.
 
 ```
 You: find me research on a viral topic in home espresso
@@ -58,27 +61,25 @@ Atlas is a **supervisor with a registry**, not a hardcoded router. Three pieces:
 3. **Orchestrator** (`orchestrator.py`) — Atlas runs on the Claude Agent SDK. The
    registry's capabilities are exposed as **tools generated FROM the registry**
    (`scout_find_topics`, `sage_research`, `scriptwriter_write_script`, …,
-   `reference_analyst_build_rubric`, `ask_<agent>` for each), plus the single
-   `produce_video` tool that runs the whole pipeline. Atlas's LLM decides which to call
-   and in what order, streaming its reasoning as it goes.
+   `reference_analyst_build_rubric`, `ask_<agent>` for each). Every job tool also
+   carries a `slug` so it reads/writes one project workspace. Three non-registry
+   orchestration tools manage that workspace — `start_project`, `project_status`,
+   `validate_artifact`. Atlas's LLM decides which to call and in what order, following
+   the production **playbook** baked into its system prompt, streaming its reasoning.
 
 ```
               ┌──────────── you (CEO) ────────────┐
-              │   chat.py (REPL)  /  web/app.py    │
+              │   web/app.py (chat)  /  chat.py    │
               └───────────────┬───────────────────┘
                        orchestrator.py
-                   (Claude Agent SDK query loop)
+              (Claude Agent SDK query loop + the PLAYBOOK)
                               │  tools generated from…
                          registry.py ──── adapters/ (in-process, isolated)
                               │
-                 ┌────────────┴─────────────┐
-            ask_<agent> / <agent>_<job>   produce_video
-                                              │
-                                         pipeline.py
-                              (deterministic spine: order + contract
-                               validation + auto-gate + two human gates)
-                                              │
-        Scout · Sage · Marlow · Iris · Magpie · Cadence · Mason  (+ Vera, off-pipeline)
+        ask_<agent> · <agent>_<job>(slug) · start_project · project_status
+                              │            (artifacts accumulate in projects/<slug>/,
+                              │             tracked by a lightweight checklist manifest)
+        Scout · Sage · Marlow · Iris · Magpie · Cadence · Mason  (+ Vera, off-playbook)
                                   → video.mp4
 ```
 
@@ -93,35 +94,40 @@ synchronous engines spin their own event loop, so jobs are dispatched via
 
 ---
 
-## The production pipeline (make me a video)
+## The production playbook (make me a video)
 
-`produce_video` runs `pipeline.py` — a **deterministic state machine**, deliberately
-separate from Atlas's LLM judgment. The conversational plane picks topics and talks to
-you; the spine GUARANTEES stage order, validates every artifact against a frozen
-JSON-Schema contract (`contracts/`) before advancing, and halts on a failed gate.
+There is no pipeline tool. **Atlas IS the production line** — he runs the flow himself
+by calling the team's job tools in order against one project workspace, and tracks
+progress in that project's lightweight checklist manifest (`projects/<slug>/project.json`)
+so no step is skipped and any video resumes cleanly. The playbook lives in
+`orchestrator.py`'s system prompt.
 
-Ten stages, one fixed order, two human gates (★) and one automatic gate (▲):
+The canonical sequence (Atlas threads the `slug` from `start_project` into every job):
 
 ```
-research → script → factcheck ★GATE → style → storyboard
-   → assets ∥ narration → compose ▲auto-gate → audiomix → render ★GATE → video.mp4
+start_project → research → script → factcheck ✦checkpoint → style → storyboard
+   → assets → narration → compose → audiomix → ✦ask-to-proceed → render → video.mp4
 ```
 
-- **All 10 stages bind real engines.** Only `research` keeps an opt-in offline stub
-  fallback, behind the `ATLAS_RESEARCH_STUB` env flag (dev / no-network); by default it
-  runs Sage's real engine like every other stage.
-- **Two human gates as pause-and-resume:** at the **fact-check gate** and the
-  **final-render gate** the runner persists `status: blocked_at_<gate>` to
-  `project.json` and returns — it never blocks mid-tool. You sign off, Atlas re-invokes
-  `produce_video` with `approve=<gate>`, and the pipeline resumes where it left off
-  (done stages are skipped). A fact-check `block` verdict **can't be approved away** —
-  it routes back upstream until the script is fixed.
-- **The compose auto-gate (▲):** before spending a render, Mason self-scans each scene
-  and runs HyperFrames `lint` + `validate` + `inspect`; a scene that fails blocks the
-  stage.
+- **One workspace per video.** `start_project` mints `projects/<slug>/`; each job reads
+  its upstream artifact(s) from that folder and writes its output back there, so a
+  sequence of delegations accumulates ONE video. `project_status(slug)` is the checklist;
+  `validate_artifact(name, slug)` is an *optional* contract check (`contracts/` is kept),
+  not a required gate.
+- **The fact-check checkpoint (a conversation):** after `sage_factcheck`, Atlas reads the
+  verdict and tells you the flagged claims (or that it's clean). A `block` verdict is
+  **never approved away** — Atlas re-delegates to Marlow to revise the flagged claims,
+  re-runs `sage_factcheck`, and repeats until it genuinely passes. He would rather kill a
+  video than narrate an unverified claim.
+- **Ask before the final render:** Atlas pauses and asks you to proceed (plain chat
+  approval) before spending on `composition_engineer_render_video`.
+- **Atlas is a manager, not a fixed pipeline:** partial asks deviate freely — "just
+  research X", "rewrite scene 3", "re-render the composition" call only the relevant
+  job(s) against the active slug.
+- **Determinism for the rendered output** stays inside the specialist engines (Mason's
+  scene self-scan + HyperFrames `lint`/`validate`/`inspect`), exactly as before.
 
-Run it: `python run.py produce "<brief>"`. In the **web operator UI** the two gates
-render as **Approve / Revise** buttons with inline artifact/media previews.
+Just tell Atlas in chat: *"make a short video about the attention economy."*
 
 ---
 
@@ -202,20 +208,21 @@ python run.py "AI tools & productivity for professionals and business"
 Runs the canonical research flow once and prints it: Scout finds topics → Atlas decides
 & says why → Sage researches → Atlas reports.
 
-### Produce a video (the full pipeline)
-```
-python run.py produce "<brief>" [--unattended]
-python run.py produce "" --resume <slug> --approve factcheck   # resume after sign-off
-```
+### Produce a video (just ask Atlas)
+There is no `produce` subcommand. In the chat, say *"make a short video about &lt;topic&gt;"*
+and Atlas runs the playbook himself: `start_project` → research → script → fact-check
+(he tells you the verdict) → style → storyboard → assets → narration → compose → asks
+before the final render → `video.mp4`. He resumes a half-finished video from its
+checklist, and deviates for partial asks ("just research X", "rewrite scene 3").
 
-### Web operator UI (the second frontend)
+### Web chat (the primary frontend)
 ```
 pip install -r requirements-web.txt     # chainlit (terminal needs none of it)
 chainlit run web/app.py -w               # → http://localhost:8000
 ```
-The same meeting room as a web app: streaming chat, the two gates as Approve / Revise
-buttons, inline artifact/media previews, a roster sidebar, and per-agent persona chat.
-It drives the same `session.py` core — no orchestrator or pipeline changes.
+The meeting room as a web app: streaming chat, a roster sidebar, per-agent persona chat,
+and the same summary-only memory lifecycle. Approvals are **conversational** (no gate
+buttons) — Atlas asks in chat. It drives the same `session.py` core as the terminal REPL.
 
 ---
 
@@ -282,9 +289,9 @@ Keys live in the **shared root `.env`** (`atlas/.env.example` documents the rest
 Then:
 ```
 cd atlas
-python run.py chat                       # the meeting room (primary)
+chainlit run web/app.py -w               # the web meeting room (primary)
+python run.py chat                       # the terminal meeting room (dev fallback)
 python run.py "your niche here"          # one-shot research flow
-python run.py produce "<brief>"          # the full video pipeline
 python -m pytest tests/ -q               # pure-unit tests, no network
 ```
 
@@ -301,19 +308,20 @@ atlas/
     scout.py sage.py scriptwriter.py art_director.py
     asset_sourcer.py audio.py composition_engineer.py reference_analyst.py
     stubs.py           # offline placeholder producers (research-stage fallback only)
-  tools.py             # generates SDK tools FROM the registry (+ containment, timeout)
-  pipeline.py          # the deterministic spine: stage order + contracts + gates + resume
-  contracts/           # frozen JSON-Schema artifact shapes + validator
-  orchestrator.py      # Atlas's brain: SDK query loop, streamed reasoning, playbook
+  tools.py             # generates SDK tools FROM the registry (slug-wired) + start_project,
+                       #   project_status, validate_artifact (+ containment, timeout)
+  projects.py          # the lightweight per-project checklist manifest (not a state machine)
+  contracts/           # frozen JSON-Schema artifact shapes + validator (validate_artifact)
+  orchestrator.py      # Atlas's brain: SDK query loop, streamed reasoning, the PLAYBOOK
   progress.py          # deterministic 🔎/📝/✅ status lines
   llm.py               # Atlas's brain seam (ATLAS_LLM switch)
   validate.py          # niche/topic validation (Atlas-owned)
   chat_state.py        # atomic writes + tolerant loads (summary-only memory)
   session.py           # UI-neutral session core shared by both frontends
-  chat.py              # the terminal meeting room REPL + memory + commands
-  web/app.py           # the Chainlit web operator UI (optional, additive)
-  projects/            # per-video working dirs (project.json + artifacts + assets)
-  run.py               # entry: `chat` | `"<niche>"` | `produce "<brief>"`
+  chat.py              # the terminal meeting room REPL + memory + commands (dev fallback)
+  web/app.py           # the Chainlit web chat — the primary interface
+  projects/            # per-video working dirs (project.json manifest + artifacts + assets)
+  run.py               # entry: `chat` | `"<niche>"` (one-shot)
   soul/                # Atlas persona: SOUL.md + STYLE.md + examples/
   tests/               # pure-unit tests (no network/API)
   PLAN.md              # the plan + the pre-build review report

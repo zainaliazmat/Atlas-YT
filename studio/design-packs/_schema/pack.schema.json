@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio/design-packs/_schema/pack.schema.json",
+  "title": "Design Pack manifest (pack.json)",
+  "description": "Declares one Design Pack: identity, default aspect/format, fonts, the assets it requires resolved, and an index of its reusable motion partials.",
+  "type": "object",
+  "required": ["id", "name", "aspect_defaults", "fonts", "required_assets", "motion_index"],
+  "additionalProperties": true,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Stable kebab-case id; matches the directory name under design-packs/."
+    },
+    "name": { "type": "string", "minLength": 1, "description": "Human display name." },
+    "blurb": { "type": "string", "description": "One-line capability/look summary." },
+    "aspect_defaults": {
+      "type": "object",
+      "required": ["width", "height", "fps"],
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "fps": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "fonts": {
+      "type": "array",
+      "description": "Type families the pack uses; resolved from required_assets / the Asset Library.",
+      "items": {
+        "type": "object",
+        "required": ["family", "weights", "role"],
+        "additionalProperties": true,
+        "properties": {
+          "family": { "type": "string" },
+          "weights": { "type": "array", "items": { "type": "integer" }, "minItems": 1 },
+          "role": { "type": "string", "description": "token role this family fills (hero/slab/mono/body/signature)." },
+          "file": { "type": "string", "description": "relative path the Composer/@font-face expects." },
+          "source": { "type": "string", "description": "provenance, e.g. 'Google Fonts'." }
+        }
+      }
+    },
+    "required_assets": {
+      "type": "array",
+      "description": "Every external file the pack needs; resolved + clearance-checked by studio.library.",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "license", "ref"],
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string", "enum": ["font", "image", "audio", "icon", "other"] },
+          "license": { "type": "string", "description": "canonical license code, e.g. OFL/CC0/CC-BY." },
+          "ref": { "type": "string", "description": "relative path or library id." },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "motion_index": {
+      "type": "array",
+      "description": "Reusable motion/partial modules this pack ships (transitions, ticker, retimer, motion-library entries).",
+      "items": {
+        "type": "object",
+        "required": ["id", "partial"],
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string" },
+          "partial": { "type": "string", "description": "relative path under the pack dir." },
+          "exports": { "type": "array", "items": { "type": "string" }, "description": "factory/function names the Composer calls." },
+          "kind": { "type": "string", "enum": ["js", "css", "html", "svg"] }
+        }
+      }
+    },
+    "partials": {
+      "type": "object",
+      "description": "Named map of the pack's authoring partials -> relative paths (convenience for the loader).",
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}

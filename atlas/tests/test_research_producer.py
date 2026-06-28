@@ -15,7 +15,6 @@ import pytest
 
 import chat_state
 import contracts
-import pipeline
 from adapters import sage, stubs
 
 
@@ -99,12 +98,10 @@ def test_real_producer_writes_validated_brief_with_injected_content(tmp_path, fa
 
 
 # ----------------------------------------------------------------------
-# The stub is NO LONGER the default — the pipeline points at the real producer
+# The stub is NO LONGER the default — the real producer routes through the engine
 # ----------------------------------------------------------------------
-def test_real_producer_is_the_default_pipeline_path():
-    research = next(s for s in pipeline.STAGES if s.key == "research")
-    assert research.producer is sage.produce_research
-    assert research.producer is not stubs.produce_research
+def test_real_producer_is_not_the_stub():
+    assert sage.produce_research is not stubs.produce_research
 
 
 def test_no_flag_selects_the_real_engine(tmp_path, fake_engine, monkeypatch):

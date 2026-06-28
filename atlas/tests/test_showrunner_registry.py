@@ -74,22 +74,36 @@ def test_asset_sourcer_slot_is_filled_by_magpie():
     assert as_.display == "Magpie"
 
 
-def test_generated_tools_cover_every_role_plus_produce_video():
+# The five production specialists are RETIRED into the studio spine (1A): their engine
+# code stays on disk (reused internally by studio) but Atlas no longer exposes their
+# job/persona tools. The live delegable agents are the survivors below.
+RETIRED = {"scriptwriter", "art_director", "asset_sourcer", "audio",
+           "composition_engineer"}
+LIVE = (SEVEN | ADDITIVE) - RETIRED   # scout, sage, reference_analyst, + the two coaches
+
+
+def test_generated_tools_cover_live_roles_plus_studio_production():
     adapters = registry.build_adapters()
     prog, _ = list_progress()
     _server, allowed = tools.build_server(adapters, prog)
+    # the LIVE (non-retired) agent job tools are generated
     for t in ("scout_find_topics", "sage_research", "sage_factcheck",
-              "scriptwriter_write_script", "art_director_design_style",
-              "art_director_build_storyboard", "asset_sourcer_source_assets",
-              "audio_record_narration", "audio_mix_audio",
-              "composition_engineer_compose_scenes",
-              "composition_engineer_render_video"):
+              "reference_analyst_build_rubric",
+              "editorial_coach_propose_addendum", "production_coach_propose_addendum"):
         assert f"mcp__atlas__{t}" in allowed, t
-    # the one non-registry tool: the production spine
-    assert "mcp__atlas__produce_video" in allowed
-    # persona tool for every role
-    for n in SEVEN:
-        assert f"mcp__atlas__ask_{n}" in allowed
+    # the ONE production path: the studio spine + its gates replaced the hand-called chain
+    for t in ("produce", "approve_gate", "project_status", "delete_project"):
+        assert f"mcp__atlas__{t}" in allowed, t
+    # the legacy production tools + the old workspace tools are GONE
+    for t in ("scriptwriter_write_script", "art_director_design_style",
+              "asset_sourcer_source_assets", "audio_record_narration",
+              "composition_engineer_render_video", "start_project", "validate_artifact"):
+        assert f"mcp__atlas__{t}" not in allowed, t
+    # persona tool for every LIVE role; none for a retired one
+    for n in LIVE:
+        assert f"mcp__atlas__ask_{n}" in allowed, n
+    for n in RETIRED:
+        assert f"mcp__atlas__ask_{n}" not in allowed, n
 
 
 def test_roster_shows_role_and_status():
@@ -154,12 +168,12 @@ def test_sage_factcheck_job_runs_engine_and_returns_digest(tmp_path, monkeypatch
         "scenes": [{"scene_no": 1, "point": "p", "narration": "n",
                     "claims": [{"claim_id": "c1", "text": "a", "source_ref": 0}]}]})
 
-    monkeypatch.setattr(sage_mod, "_resolve_project_dir", lambda topic: pdir)
+    monkeypatch.setattr(SageAdapter, "resolve_pdir", staticmethod(lambda slug: pdir))
     monkeypatch.setattr(sage_mod, "_factcheck_engine", lambda: _FakeFactcheckEngine())
 
     adapter = SageAdapter(registry.get_entry("sage"))
     prog, _ = list_progress()
-    out = adapter.run_job("factcheck", prog, topic="x")
+    out = adapter.run_job("factcheck", prog, topic="x", slug="proj")
 
     assert out["ok"] is True
     assert "verdict" in out["text"].lower() and "pass" in out["text"].lower()
@@ -171,11 +185,10 @@ def test_sage_factcheck_job_runs_engine_and_returns_digest(tmp_path, monkeypatch
 
 def test_sage_factcheck_job_reports_missing_project(monkeypatch):
     # No resolvable project -> an honest failure, not a crash.
-    from adapters import sage as sage_mod
     from adapters.sage import SageAdapter
-    monkeypatch.setattr(sage_mod, "_resolve_project_dir", lambda topic: None)
+    monkeypatch.setattr(SageAdapter, "resolve_pdir", staticmethod(lambda slug: None))
     adapter = SageAdapter(registry.get_entry("sage"))
     prog, _ = list_progress()
-    out = adapter.run_job("factcheck", prog, topic="nothing here")
+    out = adapter.run_job("factcheck", prog, topic="nothing here", slug="")
     assert out["ok"] is False
     assert adapter._engine is None  # research engine never loaded for a factcheck

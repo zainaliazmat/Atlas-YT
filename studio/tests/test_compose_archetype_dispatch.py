@@ -1,0 +1,219 @@
+"""Tests for Task B3: Composer reads the archetype tag from storyboard.json and resolves
+each scene's archetype = tag-if-present else archetypes.classify(scene).
+
+Unit tests that exercise _archetype_for directly, without a full compose run.
+"""
+import json
+from pathlib import Path
+import pytest
+
+from studio.compose import archetypes as A
+from studio.compose import Composer
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_composer(tmp_path, monkeypatch, storyboard_data=None):
+    """Build a Composer whose pdir points at tmp_path/mini, optionally with a storyboard.json."""
+    from studio import config
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path)
+    pdir = tmp_path / "mini"
+    pdir.mkdir(exist_ok=True)
+    if storyboard_data is not None:
+        (pdir / "storyboard.json").write_text(json.dumps(storyboard_data), encoding="utf-8")
+    c = Composer.__new__(Composer)
+    c.slug = "mini"
+    c.pdir = pdir
+    c._storyboard = None  # will be loaded lazily or via _load_storyboard
+    return c
+
+
+# ---------------------------------------------------------------------------
+# _archetype_for unit tests
+# ---------------------------------------------------------------------------
+
+class TestArchetypeFor:
+    """Target: Composer._archetype_for(scene) -> str.
+
+    Resolution rule:
+      1. If self._storyboard has a tag for scene['scene_no'], return it.
+      2. Otherwise return archetypes.classify(scene).
+    """
+
+    def test_storyboard_tag_wins_over_classify(self, tmp_path, monkeypatch):
+        """When a storyboard tag is present for the scene, it is used regardless of
+        what classify() would return."""
+        c = _make_composer(tmp_path, monkeypatch)
+        # Wire in the storyboard map directly (as author() would after loading)
+        c._storyboard = {"1": "diagram"}
+        scene = {"scene_no": 1, "on_screen_text": "141 users", "claims": []}
+        # classify() would return "big-number" (digit present), but tag wins
+        result = c._archetype_for(scene)
+        assert result == "diagram"
+
+    def test_absent_tag_falls_back_to_classify_big_number(self, tmp_path, monkeypatch):
+        """When scene_no is not in the storyboard map, classify() decides."""
+        c = _make_composer(tmp_path, monkeypatch)
+        c._storyboard = {}
+        scene = {"scene_no": 2, "on_screen_text": "141 users", "claims": []}
+        result = c._archetype_for(scene)
+        assert result == "big-number"
+
+    def test_absent_tag_falls_back_to_classify_centered_statement(self, tmp_path, monkeypatch):
+        """Without a digit or quote claim, classify() returns centered-statement."""
+        c = _make_composer(tmp_path, monkeypatch)
+        c._storyboard = {}
+        scene = {"scene_no": 3, "on_screen_text": "THE MACHINE", "claims": []}
+        result = c._archetype_for(scene)
+        assert result == "centered-statement"
+
+    def test_none_storyboard_falls_back_to_classify(self, tmp_path, monkeypatch):
+        """self._storyboard = None (e.g. storyboard.json absent) falls back to classify."""
+        c = _make_composer(tmp_path, monkeypatch)
+        c._storyboard = None
+        scene = {"scene_no": 1, "on_screen_text": "141 users", "claims": []}
+        result = c._archetype_for(scene)
+        assert result == "big-number"
+
+    def test_storyboard_loaded_from_file_on_author(self, tmp_path, monkeypatch):
+        """author() must load storyboard.json and populate self._storyboard so that
+        _archetype_for can use the tags without a separate call."""
+        from studio import config
+        monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path)
+        pdir = tmp_path / "proj"
+        pdir.mkdir()
+        (pdir / "storyboard.json").write_text(json.dumps({
+            "scenes": [{"scene_no": 1, "archetype": "timeline"}]
+        }), encoding="utf-8")
+        (pdir / "research_brief.json").write_text(json.dumps({"topic": "t"}))
+        (pdir / "script.json").write_text(json.dumps({
+            "working_title": "T",
+            "scenes": [{"scene_no": 1, "on_screen_text": "THE MACHINE",
+                        "point": "p", "narration": "n", "duration_est_sec": 6, "claims": []}]
+        }))
+        # author() must succeed and self._storyboard must be populated
+        c = Composer("proj", "dark-truth-social")
+        c.author()
+        assert c._storyboard == {"1": "timeline"}
+
+
+# ---------------------------------------------------------------------------
+# Registry dispatch (currently inert because REGISTRY is empty)
+# ---------------------------------------------------------------------------
+
+class TestRegistryDispatch:
+    """When REGISTRY gains a builder, _scene_beat must call it for the resolved archetype.
+    Test with a synthetic builder registered and then cleaned up."""
+
+    def test_registry_builder_called_when_archetype_matches(self, tmp_path, monkeypatch):
+        """If REGISTRY has a builder for the resolved archetype, _scene_beat returns
+        html and beats_js from the builder."""
+        from studio import config
+        monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path)
+        pdir = tmp_path / "proj"
+        pdir.mkdir()
+
+        called = []
+
+        def fake_builder(scene, ctx):
+            called.append(scene)
+            return {"html": "<div class='custom-archetype'></div>",
+                    "beats_js": "// custom beat",
+                    "token": "custom-token"}
+
+        # Register the fake builder temporarily, saving the real builder + token so
+        # we restore (not destroy) shared module state in finally — a bare `del`
+        # here would leave the real centered-statement builder missing and its token
+        # stuck at "underline" for every later same-session test.
+        _orig_builder = A.REGISTRY.get("centered-statement")
+        _orig_token = A._TOKEN.get("centered-statement")
+        A.REGISTRY["centered-statement"] = fake_builder
+        A._TOKEN["centered-statement"] = "underline"  # token already exists
+        try:
+            c = Composer.__new__(Composer)
+            c.slug = "proj"
+            c.pdir = pdir
+            from ..packs import load_pack
+            c.pack = load_pack("dark-truth-social")
+            c.tokens = c.pack.tokens
+            c.colors = c.tokens.get("colors", {})
+            from studio import config as cfg
+            ad = c.pack.manifest.get("aspect_defaults", {})
+            c.width = int(ad.get("width", cfg.DEFAULT_WIDTH))
+            c.height = int(ad.get("height", cfg.DEFAULT_HEIGHT))
+            c.fps = int(c.tokens.get("motion", {}).get("fps", cfg.DEFAULT_FPS))
+            c.spray = c.colors.get("spray", "#2e5e1f")
+            c.ink = c.colors.get("ink", "#1f1f1e")
+            c._inlines = []
+            # Storyboard: no tag → classify → centered-statement
+            c._storyboard = {}
+            scene = {"scene_no": 1, "on_screen_text": "THE MACHINE",
+                     "point": "p", "narration": "n", "duration_est_sec": 6, "claims": []}
+            beat, extra_html = c._scene_beat(0, scene, 0.0)
+            assert len(called) == 1, "builder should have been called once"
+            assert "<div class='custom-archetype'>" in extra_html or "custom-archetype" in extra_html
+        finally:
+            if _orig_builder is not None:
+                A.REGISTRY["centered-statement"] = _orig_builder
+            else:
+                A.REGISTRY.pop("centered-statement", None)
+            if _orig_token is not None:
+                A._TOKEN["centered-statement"] = _orig_token
+            else:
+                A._TOKEN.pop("centered-statement", None)
+        # guard: shared state restored, not corrupted, for later tests
+        assert A.REGISTRY.get("centered-statement") is _orig_builder
+        assert A._TOKEN.get("centered-statement") == _orig_token
+
+    def test_missing_registry_falls_through_to_existing_beat(self, tmp_path, monkeypatch):
+        """When REGISTRY has no builder for the archetype, _scene_beat uses the
+        existing generic beat logic unchanged (the safe fallthrough).
+
+        Updated (C11): self-contained via try/finally — picks a registered
+        archetype, pops its builder temporarily, exercises the fallthrough, then
+        restores the original builder regardless of outcome.
+        """
+        from studio import config
+        monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path)
+        pdir = tmp_path / "proj"
+        pdir.mkdir()
+
+        c = Composer.__new__(Composer)
+        c.slug = "proj"
+        c.pdir = pdir
+        c.pack = __import__("studio.packs", fromlist=["load_pack"]).load_pack("dark-truth-social")
+        c.tokens = c.pack.tokens
+        c.colors = c.tokens.get("colors", {})
+        from studio import config as cfg
+        ad = c.pack.manifest.get("aspect_defaults", {})
+        c.width = int(ad.get("width", cfg.DEFAULT_WIDTH))
+        c.height = int(ad.get("height", cfg.DEFAULT_HEIGHT))
+        c.fps = int(c.tokens.get("motion", {}).get("fps", cfg.DEFAULT_FPS))
+        c.spray = c.colors.get("spray", "#2e5e1f")
+        c.ink = c.colors.get("ink", "#1f1f1e")
+        c._inlines = []
+
+        # Pick any registered archetype and temporarily remove its builder so we
+        # can exercise the "archetype resolved but no builder → generic fallthrough"
+        # path. We use 'map-focus' (scene index 4, non-numeric text → underline).
+        # We ensure the builder is present first by importing the module.
+        import studio.compose.archetypes.map_focus  # noqa: F401 — triggers register()
+        chosen_archetype = "map-focus"
+        assert chosen_archetype in A.REGISTRY, (
+            f"Expected '{chosen_archetype}' to be in REGISTRY for this test"
+        )
+        original_builder = A.REGISTRY[chosen_archetype]
+        try:
+            del A.REGISTRY[chosen_archetype]
+            # Force storyboard to tag scene 5 as the chosen archetype.
+            # _archetype_for() uses str(scene_no) as the key.
+            c._storyboard = {"5": chosen_archetype}
+            scene = {"scene_no": 5, "on_screen_text": "THE MACHINE",
+                     "point": "p", "narration": "n", "duration_est_sec": 6, "claims": []}
+            beat, extra_html = c._scene_beat(4, scene, 24.0)
+            # scene index 4 = not i==0, not numeric, not social → underline
+            assert beat["kind"] == "underline"
+        finally:
+            A.REGISTRY[chosen_archetype] = original_builder

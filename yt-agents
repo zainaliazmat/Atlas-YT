@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# yt-agents — one-command launcher for the YT-AGENTS Control Room dashboard.
+# yt-agents — one-command launcher for Atlas, the YT-AGENTS chat.
 #
-#   ./yt-agents               start the dashboard (opens your browser)
+# Atlas is the sole orchestrator; you talk to him in one chat and he runs the whole
+# team (including full video production) as a playbook. This boots the Chainlit web
+# chat (the primary interface). For the terminal fallback, see `--terminal`.
+#
+#   ./yt-agents               start the web chat (opens your browser)
 #   ./yt-agents --port 9000   use a different port
-#   ./yt-agents --no-open     don't auto-open the browser
+#   ./yt-agents --no-open     don't auto-open the browser (headless)
+#   ./yt-agents --terminal    run the terminal REPL instead of the web chat
 #   ./yt-agents --help        show this help
 #
 # Env overrides:  YT_AGENTS_PORT, YT_AGENTS_HOST
@@ -11,52 +16,57 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_PY="$ROOT/venv/bin/python"
+CHAINLIT="$ROOT/venv/bin/chainlit"
 HOST="${YT_AGENTS_HOST:-127.0.0.1}"
-PORT="${YT_AGENTS_PORT:-8848}"
+PORT="${YT_AGENTS_PORT:-8000}"
 OPEN=1
+TERMINAL=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) PORT="$2"; shift 2 ;;
     --host) HOST="$2"; shift 2 ;;
     --no-open) OPEN=0; shift ;;
+    --terminal|--repl) TERMINAL=1; shift ;;
     -h|--help)
-      sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "yt-agents: unknown option '$1' (try --help)" >&2; exit 2 ;;
   esac
 done
 
-# 1) venv must exist (the project uses the repo-root venv, never ANTHROPIC_API_KEY).
+# 1) venv must exist (the project uses the repo-root venv).
 if [ ! -x "$VENV_PY" ]; then
   echo "✗ Python venv not found at: $VENV_PY" >&2
   echo "  Create it first, e.g.:  python3 -m venv venv && venv/bin/pip install -r atlas/requirements.txt" >&2
   exit 1
 fi
 
-# 2) ensure the dashboard's own deps are present (one-time, only if missing).
-if ! "$VENV_PY" -c "import fastapi, uvicorn" >/dev/null 2>&1; then
-  echo "• Installing dashboard dependencies (first run)…"
-  "$VENV_PY" -m pip install -q -r "$ROOT/atlas/dashboard/requirements.txt"
+# 2) the fleet uses the Claude subscription, never the metered API — warn (don't fail)
+#    if a stray key is set, which would silently switch the SDK to metered billing.
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "! ANTHROPIC_API_KEY is set — the SDK will bill the metered API, not your subscription." >&2
+  echo "  Unset it to use your Claude Code plan:  unset ANTHROPIC_API_KEY" >&2
 fi
 
-URL="http://$HOST:$PORT/"
-echo "🧭  YT-AGENTS Control Room  →  $URL    (Ctrl+C to stop)"
-
-# 3) open the browser once the server is actually up (best-effort, non-fatal).
-if [ "$OPEN" = "1" ]; then
-  (
-    for _ in $(seq 1 40); do
-      if "$VENV_PY" -c "import socket,sys; s=socket.socket(); s.settimeout(0.3);
-sys.exit(0 if s.connect_ex(('$HOST', $PORT))==0 else 1)" 2>/dev/null; then
-        (xdg-open "$URL" || open "$URL" || true) >/dev/null 2>&1
-        break
-      fi
-      sleep 0.4
-    done
-  ) &
-fi
-
-# 4) run the server in the foreground (exec → Ctrl+C stops it cleanly).
 cd "$ROOT/atlas"
-exec "$VENV_PY" -m dashboard.server --host "$HOST" --port "$PORT"
+
+# Terminal fallback: the REPL over the same session core.
+if [ "$TERMINAL" = "1" ]; then
+  exec "$VENV_PY" run.py chat
+fi
+
+# 3) web chat needs chainlit; install it (one-time) if missing.
+if [ ! -x "$CHAINLIT" ]; then
+  echo "• Installing the web chat dependency (chainlit, first run)…"
+  "$VENV_PY" -m pip install -q chainlit
+fi
+
+echo "🧭  Atlas — the meeting room  →  http://$HOST:$PORT/    (Ctrl+C to stop)"
+
+# chainlit opens the browser itself unless --headless; honor --no-open.
+HEADLESS=()
+[ "$OPEN" = "1" ] || HEADLESS=(--headless)
+
+# 4) run the web chat in the foreground (exec → Ctrl+C stops it cleanly).
+exec "$CHAINLIT" run web/app.py --host "$HOST" --port "$PORT" "${HEADLESS[@]}"

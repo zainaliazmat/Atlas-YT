@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio/design-packs/_schema/tokens.schema.json",
+  "title": "Design Pack tokens (tokens.json)",
+  "description": "The exact design tokens the Composer authors against: color palette, type role map, motion grammar, and the procedural textures the pack provides.",
+  "type": "object",
+  "required": ["colors", "type", "motion", "textures"],
+  "additionalProperties": true,
+  "properties": {
+    "colors": {
+      "type": "object",
+      "description": "name -> CSS color. Names become --<name> custom properties in base.css.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^(#[0-9a-fA-F]{3,8}|rg(b|ba)\\(.*\\)|[a-zA-Z]+)$"
+      }
+    },
+    "type": {
+      "type": "object",
+      "description": "role -> { font, weight }. Roles are author-facing (hero/slab/mono/body/signature).",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["font", "weight"],
+        "additionalProperties": true,
+        "properties": {
+          "font": { "type": "string" },
+          "weight": { "type": "integer", "minimum": 1, "maximum": 1000 }
+        }
+      }
+    },
+    "motion": {
+      "type": "object",
+      "required": ["fps", "eases", "budget"],
+      "additionalProperties": true,
+      "properties": {
+        "fps": { "type": "integer", "minimum": 1 },
+        "eases": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "the allowed GSAP eases for this pack (deterministic, seek-safe)."
+        },
+        "budget": {
+          "type": "object",
+          "description": "motion budget guardrails the Composer + review loop respect.",
+          "additionalProperties": true,
+          "properties": {
+            "max_shader_transitions": { "type": "integer", "minimum": 0 },
+            "transition_overlap_sec": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "[min,max] seam overlap so no static frame sits between scenes."
+            },
+            "alive_always_on": { "type": "boolean", "description": "require always-on texture motion across the whole runtime." }
+          }
+        }
+      }
+    },
+    "textures": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "procedural texture/filter ids the pack defines in partials/filters.html (e.g. halftone, spray-rough, grain)."
+    }
+  }
+}

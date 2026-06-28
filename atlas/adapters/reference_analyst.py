@@ -5,10 +5,10 @@ directly (paths the CEO hands her):
 - build_rubric(videos, ceo_prefs) -> reference_rubric.json (banded quality targets +
   a judged style profile, merged into a durable named "standard")
 
-Vera is NOT a pipeline stage. She DEFINES the standard later stages can be tuned toward;
-she never generates or improves a video. So there is no project-dir resolution here (no
-_resolve_project_dir like the producers) — she consumes local video paths and writes her
-own durable, MERGING rubric under the sibling project's standards/.
+Vera is NOT part of the production playbook. She DEFINES the standard later work can be
+tuned toward; she never generates or improves a video. So she takes no project `slug` —
+she consumes local video paths and writes her own durable, MERGING rubric under the
+sibling project's standards/.
 
 DECOUPLING: Vera's engine emits the rubric as a plain dict in the frozen shape and NEVER
 imports atlas. ATLAS owns the contract — it stamps `schema_version` (from the engine's
